@@ -48,7 +48,7 @@ cd "$WIN_DIR"
 
 # Keep Electron package version aligned with tools/bastion_version.txt
 BASTION_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/bastion_version.txt" 2>/dev/null || true)"
-BASTION_VERSION="${BASTION_VERSION:-1.0.4}"
+BASTION_VERSION="${BASTION_VERSION:-1.0.5}"
 if command -v node >/dev/null 2>&1; then
   node -e "
     const fs=require('fs');

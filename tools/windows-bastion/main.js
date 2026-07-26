@@ -47,7 +47,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.4";
+  return "1.0.5";
 }
 
 function playerSafeBastionNotes(notes) {
