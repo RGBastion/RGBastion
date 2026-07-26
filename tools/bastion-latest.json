@@ -1,0 +1,7 @@
+{
+  "version": "1.0.1",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.1/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.1/RedGalaxy-Bastion.exe",
+  "notes": "Upload this file as a release asset named bastion-latest.json (also attach RedGalaxy-Bastion.dmg and RedGalaxy-Bastion.exe). Bump version above installed Bastion (currently 1.0.0) so clients offer the update.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.1"
+}

@@ -1,0 +1,67 @@
+{
+  "id": "demo-patrol",
+  "title": "Patrol dimostrativo",
+  "requireGameScene": true,
+  "login_timeout_ms": 180000,
+  "endCaption": "Capitolo dimostrativo completato.",
+  "steps": [
+    {
+      "type": "caption",
+      "text": "Capitolo 1: la nave entra nel settore e inizia la pattuglia automatica.",
+      "ms": 4500
+    },
+    {
+      "type": "wait",
+      "ms": 1500
+    },
+    {
+      "type": "patrol",
+      "pause_ms": 1200,
+      "tolerance": 28,
+      "timeout_ms": 40000,
+      "points": [
+        { "x": 1800, "y": 1400 },
+        { "x": 2400, "y": 1700 },
+        { "x": 2100, "y": 2200 }
+      ]
+    },
+    {
+      "type": "caption",
+      "text": "Avvicinamento al cargo più vicino...",
+      "ms": 2500
+    },
+    {
+      "type": "collect_nearest",
+      "radius": 450,
+      "timeout_ms": 35000
+    },
+    {
+      "type": "caption",
+      "text": "Individuato bersaglio NPC: lock e fuoco.",
+      "ms": 2500
+    },
+    {
+      "type": "lock_nearest_npc",
+      "radius": 700
+    },
+    {
+      "type": "attack",
+      "duration_ms": 9000
+    },
+    {
+      "type": "stop_attack"
+    },
+    {
+      "type": "caption",
+      "text": "Ritorno al punto di partenza.",
+      "ms": 2200
+    },
+    {
+      "type": "move",
+      "x": 1800,
+      "y": 1400,
+      "tolerance": 30,
+      "timeout_ms": 40000
+    }
+  ]
+}

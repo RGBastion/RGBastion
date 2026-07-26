@@ -1,0 +1,1539 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_NAME="RedGalaxy Mac Runner"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+BUNDLE_MODE=0
+BASTION_MODE=0
+if [[ "$SCRIPT_DIR" == *"/RedGalaxy Bastion.app/Contents/Resources" ]]; then
+  BUNDLE_MODE=1
+  BASTION_MODE=1
+elif [[ "$SCRIPT_DIR" == *"/RedGalaxy Native.app/Contents/Resources" ]]; then
+  BUNDLE_MODE=1
+fi
+if [[ "${REDGALAXY_BASTION:-0}" == "1" ]]; then
+  BASTION_MODE=1
+fi
+
+# GUI-launched apps inherit a minimal PATH without Homebrew. Prepend common
+# locations and any brotli shipped inside the .app Resources tree.
+augment_tool_path() {
+  local extras=(
+    "$SCRIPT_DIR/brotli/bin"
+    /opt/homebrew/bin
+    /usr/local/bin
+    /opt/homebrew/sbin
+    /usr/local/sbin
+  )
+  local entry=""
+  local path_prefix=""
+  for entry in "${extras[@]}"; do
+    if [[ -d "$entry" ]]; then
+      case ":${PATH:-}:" in
+        *":$entry:"*) ;;
+        *) path_prefix="${path_prefix:+$path_prefix:}$entry" ;;
+      esac
+    fi
+  done
+  if [[ -n "$path_prefix" ]]; then
+    PATH="$path_prefix${PATH:+:$PATH}"
+    export PATH
+  fi
+  if [[ -d "$SCRIPT_DIR/brotli/lib" ]]; then
+    # Prefer bundled dylibs when the CLI lives next to them.
+    export DYLD_FALLBACK_LIBRARY_PATH="$SCRIPT_DIR/brotli/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+  fi
+}
+augment_tool_path
+
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+DEFAULT_EXE="$HOME/Desktop/RedGalaxy-Setup.exe"
+OFFICIAL_SITE="${REDGALAXY_OFFICIAL_SITE:-https://www.redgalaxygame.space}"
+UPDATE_MANIFEST_URL="${REDGALAXY_UPDATE_MANIFEST_URL:-https://updates.redgalaxygame.space/latest.json}"
+UPDATE_INSTALLER_URL="${REDGALAXY_UPDATE_INSTALLER_URL:-https://updates.redgalaxygame.space/RedGalaxy-Setup.exe}"
+UPDATE_USER_AGENT="${REDGALAXY_UPDATE_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedGalaxy-Bastion-Updater/1.0}"
+NATIVE_SUPPORT_DIR="$HOME/Library/Application Support/RedGalaxy Native"
+BASTION_SUPPORT_DIR="$HOME/Library/Application Support/RedGalaxy Bastion"
+NATIVE_APP_WEB_DIR="$NATIVE_SUPPORT_DIR/web"
+BASTION_APP_WEB_DIR="$BASTION_SUPPORT_DIR/web"
+NATIVE_VERSION_FILE="$NATIVE_SUPPORT_DIR/version.txt"
+BASTION_VERSION_FILE="$BASTION_SUPPORT_DIR/version.txt"
+NATIVE_DOWNLOAD_DIR="$NATIVE_SUPPORT_DIR/downloads"
+BASTION_DOWNLOAD_DIR="$BASTION_SUPPORT_DIR/downloads"
+DATA_DIR="${REDGALAXY_DATA_DIR:-$HOME/Library/Application Support/RedGalaxy Mac Runner}"
+PREFIX_DIR="${REDGALAXY_WINEPREFIX:-$DATA_DIR/prefix}"
+LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Mac Runner}"
+STATE_DIR="$DATA_DIR/state"
+LAST_EXE_FILE="$STATE_DIR/last-game-exe.txt"
+WEB_PID_FILE="$STATE_DIR/native-web.pid"
+RUNTIME_DIR="$PROJECT_DIR/runtimes"
+LOCAL_WINE_APP="$RUNTIME_DIR/Wine Stable.app"
+LOCAL_WINE_BIN="$LOCAL_WINE_APP/Contents/Resources/wine/bin/wine"
+WEB_DIR="$PROJECT_DIR/artifacts/redgalaxy-native-web"
+WEB_PORT="${REDGALAXY_WEB_PORT:-8765}"
+WEB_URL="http://127.0.0.1:$WEB_PORT/"
+EXTRACTOR="$PROJECT_DIR/tools/extract_redgalaxy_web.py"
+BASTION_PATCHER="$PROJECT_DIR/tools/apply_bastion_patches.py"
+STORY_SRC="$PROJECT_DIR/tools/story"
+
+configure_bundle_paths() {
+  if [[ "$BUNDLE_MODE" != "1" ]]; then
+    if [[ "$BASTION_MODE" == "1" ]]; then
+      APP_NAME="RedGalaxy Bastion Updater"
+      NATIVE_SUPPORT_DIR="$BASTION_SUPPORT_DIR"
+      NATIVE_APP_WEB_DIR="$BASTION_APP_WEB_DIR"
+      NATIVE_VERSION_FILE="$BASTION_VERSION_FILE"
+      NATIVE_DOWNLOAD_DIR="$BASTION_DOWNLOAD_DIR"
+      WEB_DIR="$BASTION_APP_WEB_DIR"
+      DATA_DIR="${REDGALAXY_DATA_DIR:-$BASTION_SUPPORT_DIR}"
+      PREFIX_DIR="${REDGALAXY_WINEPREFIX:-$DATA_DIR/prefix}"
+      LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Bastion}"
+      STATE_DIR="$DATA_DIR/state"
+      LAST_EXE_FILE="$STATE_DIR/last-game-exe.txt"
+      RUNTIME_DIR="$BASTION_SUPPORT_DIR/runtimes"
+      LOCAL_WINE_APP="$RUNTIME_DIR/Wine Stable.app"
+      LOCAL_WINE_BIN="$LOCAL_WINE_APP/Contents/Resources/wine/bin/wine"
+    fi
+    return 0
+  fi
+
+  if [[ "$BASTION_MODE" == "1" ]]; then
+    APP_NAME="RedGalaxy Bastion Updater"
+    NATIVE_SUPPORT_DIR="$BASTION_SUPPORT_DIR"
+    NATIVE_APP_WEB_DIR="$BASTION_APP_WEB_DIR"
+    NATIVE_VERSION_FILE="$BASTION_VERSION_FILE"
+    NATIVE_DOWNLOAD_DIR="$BASTION_DOWNLOAD_DIR"
+    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Bastion}"
+    STORY_SRC="$SCRIPT_DIR/web/story"
+    if [[ ! -d "$STORY_SRC" ]]; then
+      STORY_SRC="$SCRIPT_DIR/story"
+    fi
+  else
+    APP_NAME="RedGalaxy Native Updater"
+    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Native}"
+  fi
+
+  EXTRACTOR="$SCRIPT_DIR/extract_redgalaxy_web.py"
+  BASTION_PATCHER="$SCRIPT_DIR/apply_bastion_patches.py"
+  RUNTIME_DIR="$NATIVE_SUPPORT_DIR/runtimes"
+  LOCAL_WINE_APP="$RUNTIME_DIR/Wine Stable.app"
+  LOCAL_WINE_BIN="$LOCAL_WINE_APP/Contents/Resources/wine/bin/wine"
+  DATA_DIR="${REDGALAXY_DATA_DIR:-$NATIVE_SUPPORT_DIR}"
+  PREFIX_DIR="${REDGALAXY_WINEPREFIX:-$DATA_DIR/prefix}"
+  STATE_DIR="$DATA_DIR/state"
+  LAST_EXE_FILE="$STATE_DIR/last-game-exe.txt"
+  WEB_DIR="$NATIVE_APP_WEB_DIR"
+}
+
+configure_bundle_paths
+WINE_STABLE_VERSION="11.0_1"
+WINE_STABLE_ARCHIVE="wine-stable-${WINE_STABLE_VERSION}-osx64.tar.xz"
+WINE_STABLE_URL="https://github.com/Gcenx/macOS_Wine_builds/releases/download/${WINE_STABLE_VERSION}/${WINE_STABLE_ARCHIVE}"
+WINE_STABLE_SHA256="b50dc50ec7f41d58b115a6b685d4d1315ba3c797bd3aa0f49213f2703cb82388"
+DEFAULT_WEBVIEW_ARGS="--disable-gpu --disable-gpu-compositing --disable-vulkan --disable-features=Vulkan,DefaultANGLEVulkan,UseSkiaRenderer,DawnGraphite,SkiaGraphite,WebGPU --use-angle=swiftshader --enable-unsafe-swiftshader --no-sandbox"
+RUNNER_VERSION="1.0.0"
+
+YES=0
+EXE_PATH=""
+DOWNLOADED_INSTALLER=""
+SILENT=0
+SAFE_WEBVIEW=0
+OPEN_BROWSER=auto
+
+usage() {
+  cat <<'USAGE'
+RedGalaxy Mac Runner
+
+Usage:
+  redgalaxy-mac-runner doctor [--exe PATH]
+  redgalaxy-mac-runner install-deps [--yes]
+  redgalaxy-mac-runner install-local-wine [--yes]
+  redgalaxy-mac-runner install [--silent] [--exe PATH]
+  redgalaxy-mac-runner extract-web
+  redgalaxy-mac-runner check-updates
+  redgalaxy-mac-runner update-native [--yes] [--silent] [--exe PATH]
+  redgalaxy-mac-runner update-from-web [--yes] [--silent] [--exe PATH]
+  redgalaxy-mac-runner update-bastion [--yes] [--silent] [--exe PATH]
+  redgalaxy-mac-runner ensure-bastion
+  redgalaxy-mac-runner serve-web
+  redgalaxy-mac-runner serve-web-foreground
+  redgalaxy-mac-runner native-web
+  redgalaxy-mac-runner native-web-foreground
+  redgalaxy-mac-runner test [--safe-webview]
+  redgalaxy-mac-runner install-and-test [--yes] [--silent] [--safe-webview] [--exe PATH]
+  redgalaxy-mac-runner launch [--safe-webview] [PATH_TO_INSTALLED_EXE]
+  redgalaxy-mac-runner rescan
+  redgalaxy-mac-runner stop
+  redgalaxy-mac-runner logs
+
+Environment overrides:
+  REDGALAXY_WINE=/path/to/wine
+  REDGALAXY_WINEPREFIX=/path/to/prefix
+  REDGALAXY_DATA_DIR=/path/to/data
+  REDGALAXY_WEB_PORT=8765
+  REDGALAXY_TEST_SECONDS=20
+  REDGALAXY_WEBVIEW_ARGS="--disable-gpu --no-sandbox ..."
+USAGE
+}
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+warn() {
+  printf '[%s] WARNING: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+}
+
+die() {
+  printf '[%s] ERROR: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+find_brotli() {
+  local candidate=""
+  local candidates=(
+    "${BROTLI:-}"
+    "$(command -v brotli 2>/dev/null || true)"
+    /opt/homebrew/bin/brotli
+    /usr/local/bin/brotli
+    "$SCRIPT_DIR/brotli/bin/brotli"
+  )
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "$candidate" && -x "$candidate" ]] && brotli_works "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+brotli_works() {
+  local bin="$1"
+  # Smoke-test: compress+decompress roundtrip. Broken bundled dylibs fail here.
+  printf 'rg' | "$bin" -c 2>/dev/null | "$bin" -d -c 2>/dev/null | grep -q '^rg$'
+}
+
+prefer_python3() {
+  local candidate=""
+  for candidate in \
+    /usr/local/bin/python3 \
+    /opt/homebrew/bin/python3 \
+    "$(command -v python3 2>/dev/null || true)" \
+    /usr/bin/python3
+  do
+    if [[ -n "$candidate" && -x "$candidate" ]]; then
+      # Prefer 3.10+ (extract script uses PEP 604 unions).
+      if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    fi
+  done
+  command -v python3 >/dev/null 2>&1 || return 1
+  command -v python3
+}
+
+ensure_brotli() {
+  local brotli_bin=""
+  brotli_bin="$(find_brotli || true)"
+  if [[ -n "$brotli_bin" ]]; then
+    export BROTLI="$brotli_bin"
+    # Keep PATH consistent for child tools (python extract uses shutil.which).
+    local brotli_dir
+    brotli_dir="$(cd "$(dirname "$brotli_bin")" && pwd -P)"
+    case ":${PATH:-}:" in
+      *":$brotli_dir:"*) ;;
+      *) PATH="$brotli_dir${PATH:+:$PATH}"; export PATH ;;
+    esac
+    log "Using brotli: $brotli_bin"
+    return 0
+  fi
+
+  if [[ "$SILENT" != "1" ]] && command -v brew >/dev/null 2>&1 && confirm "Install free brotli CLI with Homebrew now?"; then
+    brew install brotli
+    brotli_bin="$(find_brotli || true)"
+    if [[ -n "$brotli_bin" ]]; then
+      export BROTLI="$brotli_bin"
+      return 0
+    fi
+  fi
+
+  die "brotli is required to extract the embedded Tauri assets. Reinstall the Bastion/Native DMG (ships brotli) or run: brew install brotli"
+}
+
+confirm() {
+  local prompt="$1"
+  if [[ "$YES" == "1" ]]; then
+    return 0
+  fi
+  printf '%s [y/N] ' "$prompt"
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES|Yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+mkdirs() {
+  mkdir -p "$DATA_DIR" "$PREFIX_DIR" "$LOG_DIR" "$STATE_DIR"
+}
+
+log_file() {
+  mkdir -p "$LOG_DIR"
+  printf '%s/redgalaxy-%s.log' "$LOG_DIR" "$(date '+%Y%m%d-%H%M%S')"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --yes|-y)
+        YES=1
+        shift
+        ;;
+      --exe)
+        [[ $# -ge 2 ]] || die "--exe requires a path"
+        EXE_PATH="$2"
+        shift 2
+        ;;
+      --silent)
+        SILENT=1
+        shift
+        ;;
+      --safe-webview)
+        SAFE_WEBVIEW=1
+        shift
+        ;;
+      --open)
+        OPEN_BROWSER=1
+        shift
+        ;;
+      --no-open)
+        OPEN_BROWSER=0
+        shift
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        if [[ -z "$EXE_PATH" && -f "$1" ]]; then
+          EXE_PATH="$1"
+          shift
+        else
+          die "Unknown argument: $1"
+        fi
+        ;;
+    esac
+  done
+}
+
+resolve_setup_exe() {
+  if [[ -n "$EXE_PATH" ]]; then
+    [[ -f "$EXE_PATH" ]] || die "Installer not found: $EXE_PATH"
+    printf '%s\n' "$EXE_PATH"
+    return 0
+  fi
+
+  if [[ -f "$DEFAULT_EXE" ]]; then
+    printf '%s\n' "$DEFAULT_EXE"
+    return 0
+  fi
+
+  local found=""
+  found="$(find "$HOME/Desktop" -maxdepth 1 -type f -iname 'redgalaxy*setup*.exe' -print -quit 2>/dev/null || true)"
+  if [[ -n "$found" ]]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+
+  die "Could not find RedGalaxy installer on Desktop. Use --exe /path/to/file.exe"
+}
+
+rosetta_installed() {
+  pkgutil --files com.apple.pkg.RosettaUpdateAuto >/dev/null 2>&1
+}
+
+find_cross_over_wine() {
+  local candidates=(
+    "/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/bin/wine"
+    "/Applications/CrossOver Preview.app/Contents/SharedSupport/CrossOver/bin/wine"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_wine() {
+  if [[ -n "${REDGALAXY_WINE:-}" && -x "${REDGALAXY_WINE:-}" ]]; then
+    printf '%s\n' "$REDGALAXY_WINE"
+    return 0
+  fi
+
+  if command -v wine >/dev/null 2>&1; then
+    command -v wine
+    return 0
+  fi
+
+  if command -v wine64 >/dev/null 2>&1; then
+    command -v wine64
+    return 0
+  fi
+
+  if [[ -x "$LOCAL_WINE_BIN" ]]; then
+    printf '%s\n' "$LOCAL_WINE_BIN"
+    return 0
+  fi
+
+  local project_runtime="$PROJECT_DIR/runtimes/Wine Stable.app/Contents/Resources/wine/bin/wine"
+  if [[ -x "$project_runtime" ]]; then
+    printf '%s\n' "$project_runtime"
+    return 0
+  fi
+
+  find_cross_over_wine && return 0
+  return 1
+}
+
+find_wine_sibling() {
+  local wine_bin="$1"
+  local tool="$2"
+  local sibling
+  sibling="$(dirname "$wine_bin")/$tool"
+  if [[ -x "$sibling" ]]; then
+    printf '%s\n' "$sibling"
+    return 0
+  fi
+  if command -v "$tool" >/dev/null 2>&1; then
+    command -v "$tool"
+    return 0
+  fi
+  return 1
+}
+
+find_sikarugir() {
+  local candidates=(
+    "/Applications/Sikarugir.app"
+    "/Applications/Sikarugir Creator.app"
+    "$HOME/Applications/Sikarugir.app"
+    "$HOME/Applications/Sikarugir Creator.app"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -d "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+describe_setup() {
+  local setup="$1"
+  if command -v file >/dev/null 2>&1; then
+    file "$setup" || true
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$setup" || true
+  fi
+}
+
+doctor() {
+  local setup
+  setup="$(resolve_setup_exe)"
+
+  log "$APP_NAME $RUNNER_VERSION"
+  log "macOS: $(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  log "CPU: $(uname -m)"
+  log "Installer: $setup"
+  describe_setup "$setup"
+
+  if rosetta_installed; then
+    log "Rosetta: installed"
+  else
+    warn "Rosetta is not installed. Apple Silicon needs it for x86 Windows runners."
+  fi
+
+  local wine_bin=""
+  wine_bin="$(find_wine || true)"
+  if [[ -n "$wine_bin" ]]; then
+    log "Wine-compatible backend: $wine_bin"
+    "$wine_bin" --version 2>/dev/null || true
+  else
+    warn "No Wine-compatible command-line backend found."
+  fi
+
+  local sikarugir_app=""
+  sikarugir_app="$(find_sikarugir || true)"
+  if [[ -n "$sikarugir_app" ]]; then
+    log "Sikarugir app: $sikarugir_app"
+  else
+    warn "Sikarugir app not found."
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    log "Homebrew: $(command -v brew)"
+  else
+    warn "Homebrew is not installed."
+  fi
+  if brotli_bin="$(find_brotli || true)"; [[ -n "$brotli_bin" ]]; then
+    log "brotli: $brotli_bin"
+  else
+    warn "brotli is not installed. It is needed for native-web extraction."
+  fi
+
+  log "Data directory: $DATA_DIR"
+  log "Wine prefix: $PREFIX_DIR"
+  log "Local Wine runtime: $LOCAL_WINE_APP"
+  log "Native web output: $WEB_DIR"
+  log "Native web URL: $WEB_URL"
+  log "Logs: $LOG_DIR"
+}
+
+install_local_wine() {
+  if [[ -x "$LOCAL_WINE_BIN" ]]; then
+    log "Local Wine runtime already exists: $LOCAL_WINE_BIN"
+    return 0
+  fi
+
+  need_cmd curl
+  need_cmd shasum
+  need_cmd tar
+
+  mkdir -p "$RUNTIME_DIR"
+  local archive="$RUNTIME_DIR/$WINE_STABLE_ARCHIVE"
+  local partial="$archive.part"
+
+  log "Downloading Wine Stable $WINE_STABLE_VERSION"
+  log "Source: $WINE_STABLE_URL"
+  curl -fL "$WINE_STABLE_URL" -o "$partial"
+
+  log "Verifying SHA-256"
+  printf '%s  %s\n' "$WINE_STABLE_SHA256" "$partial" | shasum -a 256 -c -
+  mv "$partial" "$archive"
+
+  log "Extracting Wine runtime into: $RUNTIME_DIR"
+  tar -xJf "$archive" -C "$RUNTIME_DIR"
+  [[ -x "$LOCAL_WINE_BIN" ]] || die "Wine binary was not found after extraction: $LOCAL_WINE_BIN"
+  log "Local Wine installed: $LOCAL_WINE_BIN"
+}
+
+install_deps() {
+  if [[ "$(uname -m)" == "arm64" ]] && ! rosetta_installed; then
+    if confirm "Install Rosetta 2 now?"; then
+      /usr/sbin/softwareupdate --install-rosetta --agree-to-license
+    else
+      die "Rosetta is required on Apple Silicon."
+    fi
+  else
+    log "Rosetta is already installed or not needed."
+  fi
+
+  if find_wine >/dev/null 2>&1; then
+    log "Wine-compatible backend is already available: $(find_wine)"
+    return 0
+  fi
+
+  if confirm "Download a local Wine Stable runtime into this workspace now?"; then
+    install_local_wine
+  fi
+
+  if find_wine >/dev/null 2>&1; then
+    log "Wine-compatible backend is available: $(find_wine)"
+    return 0
+  fi
+
+  need_cmd brew
+
+  if find_sikarugir >/dev/null 2>&1; then
+    log "Sikarugir is already installed."
+    return 0
+  fi
+
+  if confirm "Install Sikarugir with Homebrew now?"; then
+    if brew commands | grep -qx 'trust'; then
+      brew trust Sikarugir-App/sikarugir
+    else
+      brew tap Sikarugir-App/sikarugir
+    fi
+    brew install --cask Sikarugir-App/sikarugir/sikarugir
+  else
+    die "No installable backend was added."
+  fi
+}
+
+prepare_wine_prefix() {
+  local wine_bin="$1"
+  mkdirs
+  export WINEPREFIX="$PREFIX_DIR"
+  export WINEDEBUG="${REDGALAXY_WINEDEBUG:--all}"
+
+  local wineboot_bin=""
+  wineboot_bin="$(find_wine_sibling "$wine_bin" wineboot || true)"
+  if [[ -n "$wineboot_bin" ]]; then
+    log "Initializing Wine prefix: $PREFIX_DIR"
+    "$wineboot_bin" -u
+  else
+    warn "wineboot not found; Wine will initialize the prefix on first run."
+  fi
+}
+
+install_with_wine() {
+  local setup="$1"
+  local wine_bin="$2"
+  local run_log
+  run_log="$(log_file)"
+
+  prepare_wine_prefix "$wine_bin"
+
+  log "Running installer with: $wine_bin"
+  log "Installer output: $run_log"
+  export WINEPREFIX="$PREFIX_DIR"
+  export WINEDEBUG="${REDGALAXY_WINEDEBUG:--all}"
+  local installer_args=()
+  if [[ "$SILENT" == "1" ]]; then
+    installer_args+=("/S")
+    log "Installer mode: silent NSIS (/S)"
+  else
+    log "Installer mode: interactive"
+  fi
+  "$wine_bin" "$setup" "${installer_args[@]}" >"$run_log" 2>&1
+  log "Installer finished. Log saved to: $run_log"
+}
+
+open_with_sikarugir() {
+  local setup="$1"
+  local sikarugir_app
+  sikarugir_app="$(find_sikarugir || true)"
+
+  if [[ -z "$sikarugir_app" ]]; then
+    die "Sikarugir is not installed. Run: $(basename "$0") install-deps"
+  fi
+
+  log "Opening installer with Sikarugir fallback."
+  log "If Sikarugir asks for a wrapper/engine, create a new wrapper and choose this installer:"
+  log "$setup"
+  open -a "$sikarugir_app" "$setup"
+}
+
+score_exe() {
+  local path="$1"
+  local lower
+  lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+  local score=0
+
+  [[ "$lower" == *"redgalaxy-client.exe" ]] && score=$((score + 250))
+  [[ "$lower" == *"/appdata/local/redgalaxy/"* ]] && score=$((score + 180))
+  [[ "$lower" == *"redgalaxy"* || "$lower" == *"red galaxy"* ]] && score=$((score + 100))
+  [[ "$lower" == *"/program files/"* || "$lower" == *"/program files (x86)/"* ]] && score=$((score + 25))
+  [[ "$lower" == *"game"* ]] && score=$((score + 10))
+  [[ "$lower" == *"launcher"* ]] && score=$((score + 8))
+
+  [[ "$lower" == *"unins"* || "$lower" == *"uninstall"* ]] && score=$((score - 200))
+  [[ "$lower" == *"setup"* || "$lower" == *"installer"* ]] && score=$((score - 150))
+  [[ "$lower" == *"edge"* || "$lower" == *"webview"* || "$lower" == *"copilot"* ]] && score=$((score - 180))
+  [[ "$lower" == *"/microsoft/"* || "$lower" == *"/microsoftedge"* ]] && score=$((score - 140))
+  [[ "$lower" == *"crash"* || "$lower" == *"report"* ]] && score=$((score - 120))
+  [[ "$lower" == *"vc_redist"* || "$lower" == *"dxsetup"* ]] && score=$((score - 120))
+  [[ "$lower" == *"/windows/"* ]] && score=$((score - 100))
+
+  printf '%d|%s\n' "$score" "$path"
+}
+
+find_installed_game_exe() {
+  local root="$PREFIX_DIR/drive_c"
+  [[ -d "$root" ]] || return 1
+
+  local scored
+  scored="$(
+    while IFS= read -r -d '' exe; do
+      score_exe "$exe"
+    done < <(find "$root" -type f -iname '*.exe' -print0 2>/dev/null)
+  )"
+
+  [[ -n "$scored" ]] || return 1
+  printf '%s\n' "$scored" | sort -t '|' -k1,1nr | awk -F '|' 'NR == 1 && $1 > -100 { print substr($0, index($0, "|") + 1) }'
+}
+
+write_launcher() {
+  local game_exe="$1"
+  local launcher="$DATA_DIR/Launch RedGalaxy.command"
+  local native_app="/Applications/RedGalaxy Native.app"
+  local project_native_app="$PROJECT_DIR/dist/RedGalaxy Native.app"
+
+  mkdirs
+  printf '%s\n' "$game_exe" >"$LAST_EXE_FILE"
+  cat >"$launcher" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Su macOS il client Windows (Tauri/WebView2) crasha sotto Wine.
+# Usa la modalita' native-web integrata, non redgalaxy-client.exe.
+RUNNER="$PROJECT_DIR/bin/redgalaxy-mac-runner"
+if [[ -d "$project_native_app/Contents/MacOS" ]]; then
+  open "$project_native_app"
+  exit 0
+fi
+if [[ -d "$native_app/Contents/MacOS" ]]; then
+  open "$native_app"
+  exit 0
+fi
+if [[ -x "\$RUNNER" ]]; then
+  exec "\$RUNNER" native-web-foreground
+fi
+/usr/bin/osascript -e 'display alert "RedGalaxy" message "Installazione completata, ma il .exe Windows non puo avviarsi sotto Wine su macOS. Usa RedGalaxy Native.app." as critical'
+exit 1
+EOF
+  chmod +x "$launcher"
+  log "Game executable: $game_exe"
+  log "Launcher created (native-web): $launcher"
+  warn "The Windows client cannot run under free Wine on macOS (WebView2 page fault)."
+  warn "Wine install is still useful for updates. Play with RedGalaxy Native.app or native-web."
+}
+
+install_game() {
+  local setup
+  setup="$(resolve_setup_exe)"
+
+  local wine_bin=""
+  wine_bin="$(find_wine || true)"
+  if [[ -n "$wine_bin" ]]; then
+    install_with_wine "$setup" "$wine_bin"
+
+    local game_exe=""
+    game_exe="$(find_installed_game_exe || true)"
+    if [[ -n "$game_exe" ]]; then
+      write_launcher "$game_exe"
+      log "Installation complete. To play on macOS open RedGalaxy Native.app."
+      log "If the Windows installer tried to launch the game at the end, ignore any Wine crash dialog."
+    else
+      warn "Could not identify the installed game executable automatically."
+      warn "Run 'find \"$PREFIX_DIR/drive_c\" -iname \"*.exe\"' and pass the chosen file to launch."
+    fi
+    return 0
+  fi
+
+  warn "No command-line Wine backend is installed."
+  if find_sikarugir >/dev/null 2>&1; then
+    open_with_sikarugir "$setup"
+    return 0
+  fi
+
+  warn "No Sikarugir fallback is installed either."
+  if confirm "Install Sikarugir now?"; then
+    install_deps
+    open_with_sikarugir "$setup"
+  else
+    die "Cannot install without Wine/CrossOver/Sikarugir."
+  fi
+}
+
+launch_game() {
+  local requested="${1:-}"
+  warn "Launching the Windows .exe under Wine is unsupported on macOS (WebView2 crash)."
+  warn "Use RedGalaxy Native.app or: $(basename "$0") native-web-foreground"
+  if [[ "$BUNDLE_MODE" != "1" ]] && confirm "Open native-web mode instead?"; then
+    extract_web_assets
+    serve_web_foreground
+    return 0
+  fi
+
+  local game_exe="$requested"
+  local wine_bin=""
+  wine_bin="$(find_wine || true)"
+  [[ -n "$wine_bin" ]] || die "No Wine-compatible backend found."
+
+  if [[ -z "$game_exe" && -f "$LAST_EXE_FILE" ]]; then
+    game_exe="$(cat "$LAST_EXE_FILE")"
+  fi
+  if [[ -z "$game_exe" ]]; then
+    game_exe="$(find_installed_game_exe || true)"
+  fi
+  [[ -n "$game_exe" && -f "$game_exe" ]] || die "Installed game executable not found."
+
+  local run_log
+  run_log="$(log_file)"
+  export WINEPREFIX="$PREFIX_DIR"
+  export WINEDEBUG="${REDGALAXY_WINEDEBUG:--all}"
+  if [[ "$SAFE_WEBVIEW" == "1" ]]; then
+    export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="${REDGALAXY_WEBVIEW_ARGS:-$DEFAULT_WEBVIEW_ARGS}"
+    log "WebView2 safe args: $WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"
+  fi
+
+  log "Launching: $game_exe"
+  log "Runtime log: $run_log"
+  (
+    cd "$(dirname "$game_exe")"
+    "$wine_bin" "$game_exe" >"$run_log" 2>&1
+  ) &
+  printf '%s\n' "$!" >"$STATE_DIR/last-pid.txt"
+  log "Process started with pid $(cat "$STATE_DIR/last-pid.txt")."
+}
+
+rescan_launcher() {
+  local wine_bin=""
+  wine_bin="$(find_wine || true)"
+  [[ -n "$wine_bin" ]] || die "No Wine-compatible backend found."
+
+  local game_exe=""
+  game_exe="$(find_installed_game_exe || true)"
+  [[ -n "$game_exe" && -f "$game_exe" ]] || die "Could not identify an installed game executable."
+  write_launcher "$game_exe"
+}
+
+find_web_client_exe() {
+  local game_exe=""
+  if [[ -f "$LAST_EXE_FILE" ]]; then
+    game_exe="$(cat "$LAST_EXE_FILE")"
+  fi
+  if [[ -z "$game_exe" || ! -f "$game_exe" ]]; then
+    game_exe="$(find_installed_game_exe || true)"
+  fi
+  [[ -n "$game_exe" && -f "$game_exe" ]] || die "Installed RedGalaxy client not found. Run: $(basename "$0") install --silent"
+  printf '%s\n' "$game_exe"
+}
+
+extract_web_assets() {
+  local game_exe
+  local python_bin
+  game_exe="$(find_web_client_exe)"
+  python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
+  ensure_brotli
+  [[ -f "$EXTRACTOR" ]] || die "Extractor not found: $EXTRACTOR"
+
+  log "Extracting native web client from: $game_exe"
+  log "Output directory: $WEB_DIR"
+  "$python_bin" "$EXTRACTOR" "$game_exe" "$WEB_DIR"
+  validate_extracted_web_root "$WEB_DIR"
+  log "Native web assets are ready."
+}
+
+validate_extracted_web_root() {
+  local root="$1"
+  # Require a non-empty index.html so a leftover/empty staging dir cannot pass.
+  [[ -s "$root/index.html" ]] || die "Extraction did not produce index.html"
+  [[ -d "$root/assets" ]] || die "Extraction did not produce assets/ (brotli decompress likely failed)"
+  if ! compgen -G "$root/assets/index-*.js" >/dev/null; then
+    die "Extraction did not produce assets/index-*.js (brotli decompress likely failed)"
+  fi
+  local js_hit=""
+  js_hit="$(compgen -G "$root/assets/index-*.js" | head -1 || true)"
+  [[ -n "$js_hit" && -s "$js_hit" ]] || die "Extraction produced empty assets/index-*.js (brotli decompress likely failed)"
+}
+
+extract_web_assets_to() {
+  local out_dir="$1"
+  [[ -n "$out_dir" ]] || die "Missing output directory for extraction"
+  local game_exe
+  local python_bin
+  game_exe="$(find_web_client_exe)"
+  python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
+  ensure_brotli
+  [[ -f "$EXTRACTOR" ]] || die "Extractor not found: $EXTRACTOR"
+
+  log "Extracting native web client from: $game_exe"
+  log "Output directory: $out_dir"
+  mkdir -p "$out_dir"
+  "$python_bin" "$EXTRACTOR" "$game_exe" "$out_dir"
+  validate_extracted_web_root "$out_dir"
+  log "Native web assets are ready."
+}
+
+version_from_release_id() {
+  local raw="${1:-}"
+  raw="${raw#redgalaxy-client@}"
+  raw="${raw%%+*}"
+  raw="${raw%%-*}"
+  printf '%s\n' "$raw"
+}
+
+# Prefer the index.html entry chunk — leftover index-*.js from older extracts can lie.
+read_embedded_web_version() {
+  local web_root="${1:-$NATIVE_APP_WEB_DIR}"
+  [[ -f "$web_root/index.html" ]] || return 1
+  local asset=""
+  asset="$(grep -oE '/assets/index-[^\"'\'']+\.js' "$web_root/index.html" 2>/dev/null | head -1 || true)"
+  asset="${asset#/}"
+  [[ -n "$asset" && -f "$web_root/$asset" ]] || return 1
+  local match=""
+  match="$(grep -oE 'redgalaxy-client@[0-9][0-9A-Za-z.+_-]*' "$web_root/$asset" 2>/dev/null | head -1 || true)"
+  [[ -n "$match" ]] || return 1
+  version_from_release_id "$match"
+}
+
+read_version_file() {
+  if [[ -f "$NATIVE_VERSION_FILE" ]]; then
+    tr -d '[:space:]' <"$NATIVE_VERSION_FILE"
+    return 0
+  fi
+  return 1
+}
+
+# Source of truth for "installed game client" is the live web embed, not version.txt.
+# version.txt alone can claim a newer server version after a skipped/partial extract.
+read_installed_client_version() {
+  local embedded=""
+  embedded="$(read_embedded_web_version "$NATIVE_APP_WEB_DIR" 2>/dev/null || true)"
+  if [[ -n "$embedded" ]]; then
+    printf '%s\n' "$embedded"
+    return 0
+  fi
+  embedded="$(read_embedded_web_version "$WEB_DIR" 2>/dev/null || true)"
+  if [[ -n "$embedded" ]]; then
+    printf '%s\n' "$embedded"
+    return 0
+  fi
+  read_version_file
+}
+
+game_web_is_complete() {
+  local web="$1"
+  [[ -s "$web/index.html" ]] || return 1
+  [[ -d "$web/assets" ]] || return 1
+  local asset=""
+  asset="$(grep -oE '/assets/index-[^\"'\'']+\.js' "$web/index.html" 2>/dev/null | head -1 || true)"
+  asset="${asset#/}"
+  [[ -n "$asset" && -s "$web/$asset" ]] || return 1
+  [[ -d "$web/maps" ]] || return 1
+  [[ -d "$web/ships" ]] || return 1
+  # Locales + woff2 are required for WKWebView boot (fonts.load otherwise hangs → black screen).
+  [[ -s "$web/lang/tr.json" || -s "$web/lang/en.json" ]] || return 1
+  if ! compgen -G "$web/assets/"*.woff2 >/dev/null; then
+    return 1
+  fi
+  # Fused extract paths (extractor bug leftovers) indicate corrupt game assets.
+  if find "$web" \( -name '*atlasships*' -o -name '*jsonships*' -o -name '*webpships*' \) 2>/dev/null | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+# True when live game web matches the official remote version and looks complete.
+game_client_matches_remote() {
+  local remote="$1"
+  local web="$NATIVE_APP_WEB_DIR"
+  local embedded=""
+  game_web_is_complete "$web" || return 1
+  embedded="$(read_embedded_web_version "$web" || true)"
+  [[ -n "$embedded" ]] || return 1
+  [[ "$embedded" == "$remote" ]] && return 0
+  # Allow embedded slightly ahead of manifest; never accept embedded behind remote.
+  if version_is_newer "$embedded" "$remote"; then
+    return 0
+  fi
+  return 1
+}
+
+cached_installer_matches_remote() {
+  local remote="$1"
+  local cached="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  [[ -e "$cached" ]] || return 1
+  local target=""
+  target="$(readlink "$cached" 2>/dev/null || true)"
+  [[ -n "$target" ]] || target="$cached"
+  local base
+  base="$(basename "$target")"
+  # e.g. RedGalaxy_0.6.18_x64-setup.exe
+  [[ "$base" == *"_${remote}_"* ]] || [[ "$base" == *"-${remote}-"* ]] || [[ "$base" == *"${remote}"* ]]
+}
+
+fetch_remote_client_version() {
+  need_cmd curl
+  local manifest=""
+  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
+  UPDATE_MANIFEST_JSON="$manifest" python3 - <<'PY'
+import json
+import os
+import sys
+
+raw = os.environ.get("UPDATE_MANIFEST_JSON", "")
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    print(f"Invalid update manifest JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+version = str(data.get("version", "")).strip()
+if not version:
+    print("Update manifest is missing version.", file=sys.stderr)
+    sys.exit(1)
+print(version)
+PY
+}
+
+fetch_remote_installer_url() {
+  need_cmd curl
+  local manifest=""
+  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
+  UPDATE_MANIFEST_JSON="$manifest" FALLBACK_URL="$UPDATE_INSTALLER_URL" python3 - <<'PY'
+import json
+import os
+import sys
+
+raw = os.environ.get("UPDATE_MANIFEST_JSON", "")
+fallback = os.environ.get("FALLBACK_URL", "").strip()
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError as exc:
+    print(f"Invalid update manifest JSON: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+platforms = data.get("platforms") or {}
+win = platforms.get("windows-x86_64") or platforms.get("windows") or {}
+url = ""
+if isinstance(win, dict):
+    url = str(win.get("url") or "").strip()
+if not url:
+    url = fallback
+if not url:
+    print("Update manifest is missing installer URL.", file=sys.stderr)
+    sys.exit(1)
+print(url)
+PY
+}
+
+resolve_story_src() {
+  if [[ -n "${REDGALAXY_STORY_SRC:-}" && -d "${REDGALAXY_STORY_SRC}" ]]; then
+    printf '%s\n' "$REDGALAXY_STORY_SRC"
+    return 0
+  fi
+  if [[ -f "$STORY_SRC/autopilot.js" || -f "$STORY_SRC/redgalaxy_story_autopilot.js" ]]; then
+    printf '%s\n' "$STORY_SRC"
+    return 0
+  fi
+  if [[ -f "$PROJECT_DIR/tools/story/redgalaxy_story_autopilot.js" ]]; then
+    printf '%s\n' "$PROJECT_DIR/tools/story"
+    return 0
+  fi
+  die "Bastion story sources not found (looked in $STORY_SRC)"
+}
+
+apply_bastion_overlay() {
+  local game_web="$1"
+  local out_web="${2:-$NATIVE_APP_WEB_DIR}"
+  local story_dir
+  local python_bin
+  story_dir="$(resolve_story_src)"
+  python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
+  [[ -f "$BASTION_PATCHER" ]] || die "Bastion patcher not found: $BASTION_PATCHER"
+  [[ -f "$game_web/index.html" ]] || die "Game web root missing index.html: $game_web"
+
+  local staging="$NATIVE_SUPPORT_DIR/staging-web"
+  rm -rf "$staging"
+  mkdir -p "$NATIVE_SUPPORT_DIR"
+
+  if [[ "$game_web" == "$out_web" ]]; then
+    log "Applying Bastion overlays in place: $out_web"
+    "$python_bin" "$BASTION_PATCHER" --in-place "$out_web" --story-src "$story_dir"
+  else
+    log "Building Bastion web root from official assets"
+    log "Game source: $game_web"
+    log "Story source: $story_dir"
+    log "Output: $out_web"
+    "$python_bin" "$BASTION_PATCHER" --game-src "$game_web" --story-src "$story_dir" --out "$staging"
+    rm -rf "$out_web"
+    mkdir -p "$(dirname "$out_web")"
+    mv "$staging" "$out_web"
+  fi
+
+  [[ -f "$out_web/index.html" ]] || die "Bastion web root missing index.html"
+  [[ -f "$out_web/story/autopilot.js" ]] || die "Bastion web root missing story/autopilot.js"
+  log "Bastion web root ready: $out_web"
+}
+
+bastion_web_is_intact() {
+  local web="$1"
+  local html=""
+  local asset=""
+  local asset_path=""
+  [[ -f "$web/index.html" ]] || return 1
+  [[ -f "$web/story/autopilot.js" ]] || return 1
+  [[ -f "$web/story/i18n.js" ]] || return 1
+  html="$(cat "$web/index.html" 2>/dev/null || true)"
+  [[ "$html" == *"__RG_STORY_MODE__"* ]] || return 1
+  [[ "$html" == *"/story/i18n.js"* ]] || return 1
+  [[ "$html" == *"/story/autopilot.js"* ]] || return 1
+  asset="$(printf '%s\n' "$html" | grep -oE '/assets/index-[^"'"'"']+\.js' | head -1 || true)"
+  [[ -n "$asset" ]] || return 1
+  asset_path="$web$asset"
+  [[ -f "$asset_path" ]] || return 1
+  grep -q '__RG_GAME__' "$asset_path" || return 1
+  grep -q '__RG_NET__' "$asset_path" || return 1
+  return 0
+}
+
+# Heal App Support Bastion overlay without downloading a new game client.
+# Used when version says "already up to date" but story/hooks were wiped.
+ensure_bastion_overlay() {
+  [[ "$BASTION_MODE" == "1" ]] || return 0
+  configure_bundle_paths
+  local web="$NATIVE_APP_WEB_DIR"
+  if [[ ! -f "$web/index.html" ]]; then
+    log "No Bastion web cache at $web — nothing to ensure (bundle will be used)."
+    return 0
+  fi
+  if bastion_web_is_intact "$web"; then
+    # Still refresh story files from the current story source when they drift.
+    local story_dir
+    story_dir="$(resolve_story_src)"
+    if [[ -f "$story_dir/autopilot.js" || -f "$story_dir/redgalaxy_story_autopilot.js" ]]; then
+      local python_bin
+      python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
+      [[ -f "$BASTION_PATCHER" ]] || die "Bastion patcher not found: $BASTION_PATCHER"
+      log "Refreshing Bastion story overlay in place (version up to date): $web"
+      "$python_bin" "$BASTION_PATCHER" --in-place "$web" --story-src "$story_dir"
+    else
+      log "Bastion overlay intact at $web"
+    fi
+    return 0
+  fi
+  log "Bastion overlay incomplete at $web — repairing in place from bundled story."
+  apply_bastion_overlay "$web" "$web"
+  bastion_web_is_intact "$web" || die "Bastion repair failed: overlay still incomplete at $web"
+  log "Bastion overlay repaired: $web"
+}
+
+version_is_newer() {
+  local remote="$1"
+  local local_version="$2"
+  [[ -n "$remote" && -n "$local_version" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$local_version" "$remote" | sort -V | tail -1)" == "$remote" && "$remote" != "$local_version" ]]
+}
+
+write_installed_client_version() {
+  local version="$1"
+  [[ -n "$version" ]] || return 0
+  mkdir -p "$NATIVE_SUPPORT_DIR"
+  printf '%s\n' "$version" >"$NATIVE_VERSION_FILE"
+}
+
+check_updates() {
+  local installed=""
+  local remote=""
+
+  installed="$(read_installed_client_version || true)"
+  remote="$(fetch_remote_client_version)"
+
+  log "Official site: $OFFICIAL_SITE"
+  log "Update manifest: $UPDATE_MANIFEST_URL"
+  log "Installed client version: ${installed:-unknown}"
+  log "Latest client version: $remote"
+
+  if [[ -z "$installed" ]]; then
+    warn "Installed version is unknown. Run update-native (or update-from-web) once to register the current version."
+    return 0
+  fi
+
+  if version_is_newer "$remote" "$installed"; then
+    log "Update available: $installed -> $remote"
+    return 0
+  fi
+
+  log "You are up to date."
+}
+
+download_official_installer() {
+  need_cmd curl
+  mkdir -p "$NATIVE_DOWNLOAD_DIR"
+
+  local installer_url=""
+  installer_url="$(fetch_remote_installer_url)"
+  local basename
+  basename="$(basename "$installer_url")"
+  [[ -n "$basename" ]] || basename="RedGalaxy-Setup.exe"
+
+  local destination="$NATIVE_DOWNLOAD_DIR/$basename"
+  local partial="$destination.part"
+  log "Downloading latest installer from: $installer_url"
+  curl -fL -A "$UPDATE_USER_AGENT" "$installer_url" -o "$partial"
+  mv "$partial" "$destination"
+  # Keep a stable alias for cached reuse.
+  ln -sfn "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" 2>/dev/null || cp -f "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  DOWNLOADED_INSTALLER="$destination"
+  log "Installer saved to: $destination"
+}
+
+publish_web_root() {
+  local staging="$1"
+  local out_web="$2"
+  validate_extracted_web_root "$staging"
+  mkdir -p "$(dirname "$out_web")"
+  # Swap only after a fully validated staging tree so a failed extract never
+  # wipes a working live web root.
+  local previous=""
+  previous="$NATIVE_SUPPORT_DIR/web-previous-$$"
+  rm -rf "$previous"
+  if [[ -e "$out_web" ]]; then
+    mv "$out_web" "$previous"
+  fi
+  if ! mv "$staging" "$out_web"; then
+    if [[ -e "$previous" ]]; then
+      mv "$previous" "$out_web" || true
+    fi
+    die "Failed to publish web assets to: $out_web"
+  fi
+  rm -rf "$previous"
+  validate_extracted_web_root "$out_web"
+}
+
+update_native_app_assets() {
+  install_game
+  local staging=""
+  local lock_dir="$NATIVE_SUPPORT_DIR/update.lock"
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    # Stale lock from a killed updater: if empty and older than 2h, reclaim.
+    if [[ -d "$lock_dir" ]] && [[ -z "$(ls -A "$lock_dir" 2>/dev/null || true)" ]]; then
+      local lock_age=0
+      lock_age="$(( $(date +%s) - $(stat -f %m "$lock_dir" 2>/dev/null || echo 0) ))"
+      if (( lock_age > 7200 )); then
+        rmdir "$lock_dir" 2>/dev/null || true
+      fi
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+      die "Another RedGalaxy update is already running (lock: $lock_dir). Wait for it to finish, or remove the lock directory if it is stale."
+    fi
+  fi
+  # shellcheck disable=SC2064
+  trap "rmdir '$lock_dir' 2>/dev/null || true" EXIT
+
+  # Always extract into a fresh staging dir (Native + Bastion) so validation
+  # cannot pass on stale in-place leftovers, then publish atomically.
+  staging="$NATIVE_SUPPORT_DIR/extract-raw-$$"
+  rm -rf "$staging"
+  mkdir -p "$staging"
+  extract_web_assets_to "$staging"
+
+  if [[ "$BASTION_MODE" == "1" ]]; then
+    apply_bastion_overlay "$staging" "$NATIVE_APP_WEB_DIR"
+    rm -rf "$staging"
+  else
+    log "Publishing official game web (no Bastion/story patches): $NATIVE_APP_WEB_DIR"
+    publish_web_root "$staging" "$NATIVE_APP_WEB_DIR"
+  fi
+
+  # version.txt is written by update_from_web from the live embed after this returns.
+  if [[ "$BASTION_MODE" == "1" ]]; then
+    log "Updated RedGalaxy Bastion assets at: $NATIVE_APP_WEB_DIR"
+    log "Official game web refreshed; Bastion story/autopilot re-applied on top."
+    log "Restart RedGalaxy Bastion.app to load the updated assets."
+  else
+    log "Updated RedGalaxy Native.app assets at: $NATIVE_APP_WEB_DIR"
+    log "Official game web only (no Bastion/story patches)."
+    log "Restart RedGalaxy Native.app (or let the host reload) to use these assets."
+  fi
+
+  rmdir "$lock_dir" 2>/dev/null || true
+  trap - EXIT
+}
+
+update_native() {
+  BASTION_MODE=0
+  configure_bundle_paths
+  if [[ "$BUNDLE_MODE" != "1" ]]; then
+    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Native}"
+  fi
+  update_from_web
+}
+
+update_bastion() {
+  BASTION_MODE=1
+  configure_bundle_paths
+  update_from_web
+}
+
+update_from_web() {
+  local installed=""
+  local remote=""
+  local recorded=""
+  local need_refresh=0
+
+  mkdir -p "$LOG_DIR"
+  local update_log="$LOG_DIR/redgalaxy-update-$(date '+%Y%m%d-%H%M%S').log"
+  log "Update log: $update_log"
+  exec > >(tee -a "$update_log") 2>&1
+
+  installed="$(read_installed_client_version || true)"
+  recorded="$(read_version_file || true)"
+  remote="$(fetch_remote_client_version)"
+
+  log "Manifest (official game) version: $remote"
+  log "Live web embed version: ${installed:-unknown}"
+  log "Recorded version.txt: ${recorded:-none}"
+
+  if [[ -n "$recorded" && -n "$installed" && "$recorded" != "$installed" ]]; then
+    warn "version.txt ($recorded) disagrees with live game web ($installed) — will refresh game assets."
+    need_refresh=1
+  fi
+
+  if ! game_client_matches_remote "$remote"; then
+    warn "Game web incomplete or behind official $remote (live=${installed:-missing}) — will refresh."
+    need_refresh=1
+  fi
+
+  if [[ "$need_refresh" != "1" && -n "$installed" ]] && ! version_is_newer "$remote" "$installed"; then
+    log "Already up to date: live game web is $installed (official $remote)."
+    # Keep version.txt honest with the live embed.
+    write_installed_client_version "$installed"
+    if [[ "$BASTION_MODE" == "1" ]]; then
+      ensure_bastion_overlay
+    fi
+    return 0
+  fi
+
+  if [[ -n "$installed" ]]; then
+    log "Updating RedGalaxy game client: $installed -> $remote"
+  else
+    log "Installing RedGalaxy game client version $remote"
+  fi
+
+  # Never reuse a cached installer that does not match the official remote version.
+  if [[ -z "$EXE_PATH" && -f "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" ]] && cached_installer_matches_remote "$remote"; then
+    EXE_PATH="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+    log "Using cached installer matching $remote: $EXE_PATH"
+  elif [[ -z "$EXE_PATH" ]]; then
+    if [[ -e "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" ]]; then
+      warn "Cached installer does not match official $remote — downloading fresh."
+    fi
+    download_official_installer
+    EXE_PATH="$DOWNLOADED_INSTALLER"
+  fi
+
+  [[ -n "$EXE_PATH" && -f "$EXE_PATH" ]] || die "Installer not found: ${EXE_PATH:-<empty>}"
+
+  if ! find_wine >/dev/null 2>&1; then
+    if confirm "Wine is required to apply the Windows installer. Download the local Wine runtime now?"; then
+      install_local_wine
+    fi
+  fi
+
+  update_native_app_assets
+
+  local embedded_after=""
+  embedded_after="$(read_embedded_web_version "$NATIVE_APP_WEB_DIR" || true)"
+  if [[ -z "$embedded_after" ]]; then
+    die "Update finished but live game web has no redgalaxy-client@version embed."
+  fi
+  if [[ "$embedded_after" != "$remote" ]] && version_is_newer "$remote" "$embedded_after"; then
+    warn "Live web is $embedded_after after update; official manifest is $remote. Recording live embed (not the newer manifest claim)."
+  fi
+  write_installed_client_version "$embedded_after"
+
+  if [[ "$BASTION_MODE" == "1" ]]; then
+    log "Update complete. Restart RedGalaxy Bastion.app to use game client $embedded_after (or let the host reload)."
+  else
+    log "Update complete. Restart RedGalaxy Native.app to use game client $embedded_after."
+  fi
+}
+
+find_web_listener_pid() {
+  command -v lsof >/dev/null 2>&1 || return 1
+  lsof -nP -tiTCP:"$WEB_PORT" -sTCP:LISTEN 2>/dev/null | head -1
+}
+
+web_server_running() {
+  local pid=""
+  if [[ -f "$WEB_PID_FILE" ]]; then
+    pid="$(cat "$WEB_PID_FILE")"
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  pid="$(find_web_listener_pid || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+    mkdirs
+    printf '%s\n' "$pid" >"$WEB_PID_FILE"
+    return 0
+  fi
+  return 1
+}
+
+serve_web() {
+  [[ -f "$WEB_DIR/index.html" ]] || extract_web_assets
+  need_cmd python3
+  mkdirs
+
+  if web_server_running; then
+    log "Native web server is already running: $WEB_URL"
+    return 0
+  fi
+
+  local run_log
+  run_log="$LOG_DIR/redgalaxy-native-web-$(date '+%Y%m%d-%H%M%S').log"
+  log "Starting native web server: $WEB_URL"
+  log "Server log: $run_log"
+  (
+    cd "$WEB_DIR"
+    nohup python3 -m http.server "$WEB_PORT" --bind 127.0.0.1 >"$run_log" 2>&1 &
+    printf '%s\n' "$!" >"$WEB_PID_FILE"
+  )
+  sleep 1
+
+  if web_server_running; then
+    log "Native web server is ready: $WEB_URL"
+  else
+    warn "Native web server did not stay running."
+    logs
+    return 1
+  fi
+}
+
+open_native_web() {
+  serve_web
+  if command -v open >/dev/null 2>&1; then
+    log "Opening browser: $WEB_URL"
+    open "$WEB_URL"
+  else
+    log "Open this URL in your browser: $WEB_URL"
+  fi
+}
+
+serve_web_foreground() {
+  [[ -f "$WEB_DIR/index.html" ]] || extract_web_assets
+  need_cmd python3
+
+  if web_server_running; then
+    log "RedGalaxy is already running: $WEB_URL"
+    if [[ "$OPEN_BROWSER" != "0" && -x /usr/bin/open ]]; then
+      /usr/bin/open "$WEB_URL" >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+
+  log "Serving RedGalaxy in the foreground: $WEB_URL"
+  log "Keep this Terminal window open while playing. Press Ctrl-C to stop."
+
+  if [[ "$OPEN_BROWSER" != "0" && -x /usr/bin/open ]]; then
+    (
+      sleep 1
+      /usr/bin/open "$WEB_URL" >/dev/null 2>&1 || true
+    ) &
+  fi
+
+  cd "$WEB_DIR"
+  exec python3 -m http.server "$WEB_PORT" --bind 127.0.0.1
+}
+
+test_game() {
+  local seconds="${REDGALAXY_TEST_SECONDS:-20}"
+  launch_game
+
+  local pid
+  pid="$(cat "$STATE_DIR/last-pid.txt")"
+  log "Testing for ${seconds}s..."
+  sleep "$seconds"
+  if kill -0 "$pid" >/dev/null 2>&1; then
+    log "Test result: process is still running after ${seconds}s."
+    log "Leaving the game open. Use '$(basename "$0") stop' to stop Wine if needed."
+  else
+    warn "Test result: process exited before ${seconds}s."
+    logs
+  fi
+}
+
+stop_wine() {
+  local wine_bin=""
+  wine_bin="$(find_wine || true)"
+  if [[ -n "$wine_bin" ]]; then
+    local wineserver_bin=""
+    wineserver_bin="$(find_wine_sibling "$wine_bin" wineserver || true)"
+    if [[ -n "$wineserver_bin" ]]; then
+      export WINEPREFIX="$PREFIX_DIR"
+      "$wineserver_bin" -k || true
+    fi
+  fi
+
+  if [[ -f "$STATE_DIR/last-pid.txt" ]]; then
+    local pid
+    pid="$(cat "$STATE_DIR/last-pid.txt")"
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill "$pid" || true
+    fi
+  fi
+  if [[ -f "$WEB_PID_FILE" ]]; then
+    local web_pid
+    web_pid="$(cat "$WEB_PID_FILE")"
+    if [[ -n "$web_pid" ]] && kill -0 "$web_pid" >/dev/null 2>&1; then
+      kill "$web_pid" || true
+    fi
+  fi
+  log "Stop command sent."
+}
+
+logs() {
+  mkdir -p "$LOG_DIR"
+  log "Log directory: $LOG_DIR"
+  local latest
+  latest="$(ls -t "$LOG_DIR"/*.log 2>/dev/null | head -1 || true)"
+  if [[ -n "$latest" ]]; then
+    log "Latest log: $latest"
+    tail -80 "$latest" || true
+  else
+    log "No logs found yet."
+  fi
+}
+
+main() {
+  local command="${1:-}"
+  if [[ -z "$command" ]]; then
+    usage
+    exit 0
+  fi
+  shift || true
+  parse_args "$@"
+
+  case "$command" in
+    doctor) doctor ;;
+    install-deps) install_deps ;;
+    install-local-wine) install_local_wine ;;
+    install) install_game ;;
+    extract-web) extract_web_assets ;;
+    check-updates) check_updates ;;
+    update-native) update_native ;;
+    update-from-web) update_from_web ;;
+    update-bastion) update_bastion ;;
+    ensure-bastion)
+      BASTION_MODE=1
+      configure_bundle_paths
+      ensure_bastion_overlay
+      ;;
+    serve-web) serve_web ;;
+    serve-web-foreground) serve_web_foreground ;;
+    native-web)
+      extract_web_assets
+      if [[ "$OPEN_BROWSER" == "0" ]]; then
+        serve_web
+      else
+        open_native_web
+      fi
+      ;;
+    native-web-foreground)
+      extract_web_assets
+      serve_web_foreground
+      ;;
+    launch) launch_game "${1:-}" ;;
+    rescan) rescan_launcher ;;
+    test) test_game ;;
+    install-and-test)
+      install_game
+      if find_wine >/dev/null 2>&1 && [[ -f "$LAST_EXE_FILE" ]]; then
+        test_game
+      else
+        log "Automatic test waits for a command-line Wine backend and a detected game executable."
+      fi
+      ;;
+    stop) stop_wine ;;
+    logs) logs ;;
+    --help|-h|help) usage ;;
+    *) die "Unknown command: $command" ;;
+  esac
+}
+
+main "$@"

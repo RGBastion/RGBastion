@@ -1,0 +1,22 @@
+# Build outputs / large binaries
+dist/
+artifacts/
+runtimes/
+*.dmg
+*.exe
+*.app/
+default.profraw
+*.profraw
+
+# Dependencies / caches
+**/node_modules/
+**/__pycache__/
+*.pyc
+.DS_Store
+
+# Local / secrets
+.env
+.env.*
+*.pem
+*.p12
+credentials.json

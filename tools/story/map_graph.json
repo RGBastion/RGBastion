@@ -1,0 +1,721 @@
+{
+  "nodes": {
+    "MAP1": {
+      "id": "MAP1",
+      "name": "HELIOS-1",
+      "short": "H-1",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP2": {
+      "id": "MAP2",
+      "name": "NOVA-1",
+      "short": "N-1",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP3": {
+      "id": "MAP3",
+      "name": "ORION-1",
+      "short": "O-1",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP4": {
+      "id": "MAP4",
+      "name": "HELIOS-2",
+      "short": "H-2",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP5": {
+      "id": "MAP5",
+      "name": "NOVA-2",
+      "short": "N-2",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP6": {
+      "id": "MAP6",
+      "name": "ORION-2",
+      "short": "O-2",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP7": {
+      "id": "MAP7",
+      "name": "NOVA-3",
+      "short": "N-3",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP8": {
+      "id": "MAP8",
+      "name": "HELIOS-3",
+      "short": "H-3",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP9": {
+      "id": "MAP9",
+      "name": "ORION-3",
+      "short": "O-3",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP10": {
+      "id": "MAP10",
+      "name": "NOVA-4",
+      "short": "N-4",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP11": {
+      "id": "MAP11",
+      "name": "HELIOS-4",
+      "short": "H-4",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP12": {
+      "id": "MAP12",
+      "name": "ORION-4",
+      "short": "O-4",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "SECTOR_X": {
+      "id": "SECTOR_X",
+      "name": "Sector X",
+      "short": "Sector X",
+      "faction": "NEUTRAL",
+      "w": 48000,
+      "h": 30000
+    },
+    "SECTOR_Y": {
+      "id": "SECTOR_Y",
+      "name": "Sector Y",
+      "short": "Sector Y",
+      "faction": "NEUTRAL",
+      "w": 48000,
+      "h": 30000
+    },
+    "PYRO": {
+      "id": "PYRO",
+      "name": "Pyro",
+      "short": "Pyro",
+      "faction": "NEUTRAL",
+      "w": 30000,
+      "h": 18000
+    },
+    "MAP13": {
+      "id": "MAP13",
+      "name": "HELIOS-5",
+      "short": "H-5",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP14": {
+      "id": "MAP14",
+      "name": "NOVA-5",
+      "short": "N-5",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP15": {
+      "id": "MAP15",
+      "name": "ORION-5",
+      "short": "O-5",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP16": {
+      "id": "MAP16",
+      "name": "HELIOS-6",
+      "short": "H-6",
+      "faction": "HELIOS",
+      "w": 20800,
+      "h": 13000
+    },
+    "MAP17": {
+      "id": "MAP17",
+      "name": "NOVA-6",
+      "short": "N-6",
+      "faction": "NOVA",
+      "w": 20800,
+      "h": 13000
+    },
+    "MAP18": {
+      "id": "MAP18",
+      "name": "ORION-6",
+      "short": "O-6",
+      "faction": "ORION",
+      "w": 20800,
+      "h": 13000
+    },
+    "MAP19": {
+      "id": "MAP19",
+      "name": "HELIOS-7",
+      "short": "H-7",
+      "faction": "HELIOS",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP20": {
+      "id": "MAP20",
+      "name": "NOVA-7",
+      "short": "N-7",
+      "faction": "NOVA",
+      "w": 16000,
+      "h": 10000
+    },
+    "JAIL": {
+      "id": "JAIL",
+      "name": "Sector Z",
+      "short": "Sector Z",
+      "faction": "NEUTRAL",
+      "w": 16000,
+      "h": 10000
+    },
+    "MAP21": {
+      "id": "MAP21",
+      "name": "ORION-7",
+      "short": "O-7",
+      "faction": "ORION",
+      "w": 16000,
+      "h": 10000
+    },
+    "RAID_VOID": {
+      "id": "RAID_VOID",
+      "name": "VOID GATE",
+      "short": "VOID",
+      "faction": "raid"
+    },
+    "RAID_RIFT": {
+      "id": "RAID_RIFT",
+      "name": "RIFT GATE",
+      "short": "RIFT",
+      "faction": "raid"
+    },
+    "RAID_NEBULA": {
+      "id": "RAID_NEBULA",
+      "name": "NEBULA GATE",
+      "short": "NEBULA",
+      "faction": "raid"
+    },
+    "RAID_INFERNO": {
+      "id": "RAID_INFERNO",
+      "name": "INFERNO GATE",
+      "short": "INFERNO",
+      "faction": "raid"
+    }
+  },
+  "edges": [
+    {
+      "from": "MAP1",
+      "to": "MAP4",
+      "portalId": "m1_to_m4",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP2",
+      "to": "MAP5",
+      "portalId": "m2_to_m5",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP3",
+      "to": "MAP6",
+      "portalId": "m3_to_m6",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP4",
+      "to": "MAP1",
+      "portalId": "m4_to_m1",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP4",
+      "to": "MAP8",
+      "portalId": "m4_to_m8",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP4",
+      "to": "MAP11",
+      "portalId": "m4_to_m11",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP5",
+      "to": "MAP2",
+      "portalId": "m5_to_m2",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP5",
+      "to": "MAP7",
+      "portalId": "m5_to_m7",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP5",
+      "to": "MAP10",
+      "portalId": "m5_to_m10",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP6",
+      "to": "MAP3",
+      "portalId": "m6_to_m3",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP6",
+      "to": "MAP9",
+      "portalId": "m6_to_m9",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP6",
+      "to": "MAP12",
+      "portalId": "m6_to_m12",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP7",
+      "to": "MAP5",
+      "portalId": "m7_to_m5",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP7",
+      "to": "MAP10",
+      "portalId": "m7_to_m10",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP7",
+      "to": "MAP9",
+      "portalId": "m7_to_m9",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP7",
+      "to": "MAP8",
+      "portalId": "m7_to_m8",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP8",
+      "to": "MAP4",
+      "portalId": "m8_to_m4",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP8",
+      "to": "MAP11",
+      "portalId": "m8_to_m11",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP8",
+      "to": "MAP7",
+      "portalId": "m8_to_m7",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP8",
+      "to": "MAP9",
+      "portalId": "m8_to_m9",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP9",
+      "to": "MAP6",
+      "portalId": "m9_to_m6",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP9",
+      "to": "MAP12",
+      "portalId": "m9_to_m12",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP9",
+      "to": "MAP7",
+      "portalId": "m9_to_m7",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP9",
+      "to": "MAP8",
+      "portalId": "m9_to_m8",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP10",
+      "to": "MAP7",
+      "portalId": "m10_to_m7",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP10",
+      "to": "MAP5",
+      "portalId": "m10_to_m5",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP10",
+      "to": "SECTOR_X",
+      "portalId": "m10_to_sx",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP11",
+      "to": "MAP8",
+      "portalId": "m11_to_m8",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP11",
+      "to": "MAP4",
+      "portalId": "m11_to_m4",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP11",
+      "to": "SECTOR_X",
+      "portalId": "m11_to_sx",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP12",
+      "to": "MAP9",
+      "portalId": "m12_to_m9",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP12",
+      "to": "MAP6",
+      "portalId": "m12_to_m6",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP12",
+      "to": "SECTOR_X",
+      "portalId": "m12_to_sx",
+      "x": 15000,
+      "y": 5000
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP11",
+      "portalId": "sx_to_m11",
+      "x": 24000,
+      "y": 2400
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP10",
+      "portalId": "sx_to_m10",
+      "x": 13080,
+      "y": 21300
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP12",
+      "portalId": "sx_to_m12",
+      "x": 34920,
+      "y": 21300
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP13",
+      "portalId": "sx_to_m13",
+      "x": 24000,
+      "y": 27600
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP14",
+      "portalId": "sx_to_m14",
+      "x": 34920,
+      "y": 8700
+    },
+    {
+      "from": "SECTOR_X",
+      "to": "MAP15",
+      "portalId": "sx_to_m15",
+      "x": 13080,
+      "y": 8700
+    },
+    {
+      "from": "SECTOR_Y",
+      "to": "SECTOR_X",
+      "portalId": "sy_to_sx",
+      "x": 24000,
+      "y": 15000
+    },
+    {
+      "from": "SECTOR_Y",
+      "to": "PYRO",
+      "portalId": "sy_to_pyro",
+      "x": 12000,
+      "y": 6000
+    },
+    {
+      "from": "PYRO",
+      "to": "SECTOR_X",
+      "portalId": "pyro_to_sx",
+      "x": 14500,
+      "y": 17500
+    },
+    {
+      "from": "MAP13",
+      "to": "SECTOR_X",
+      "portalId": "m13_to_sx",
+      "x": 8000,
+      "y": 1000
+    },
+    {
+      "from": "MAP13",
+      "to": "MAP16",
+      "portalId": "m13_to_m16",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP13",
+      "to": "MAP19",
+      "portalId": "m13_to_m19",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP13",
+      "to": "SECTOR_Y",
+      "portalId": "m13_to_sy",
+      "x": 8000,
+      "y": 9000
+    },
+    {
+      "from": "MAP14",
+      "to": "SECTOR_X",
+      "portalId": "m14_to_sx",
+      "x": 1000,
+      "y": 5000
+    },
+    {
+      "from": "MAP14",
+      "to": "MAP17",
+      "portalId": "m14_to_m17",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP14",
+      "to": "MAP20",
+      "portalId": "m14_to_m20",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP14",
+      "to": "SECTOR_Y",
+      "portalId": "m14_to_sy",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP15",
+      "to": "SECTOR_X",
+      "portalId": "m15_to_sx",
+      "x": 15000,
+      "y": 5000
+    },
+    {
+      "from": "MAP15",
+      "to": "MAP18",
+      "portalId": "m15_to_m18",
+      "x": 1000,
+      "y": 9000
+    },
+    {
+      "from": "MAP15",
+      "to": "MAP21",
+      "portalId": "m15_to_m21",
+      "x": 8000,
+      "y": 1000
+    },
+    {
+      "from": "MAP15",
+      "to": "SECTOR_Y",
+      "portalId": "m15_to_sy",
+      "x": 15000,
+      "y": 1000
+    },
+    {
+      "from": "MAP16",
+      "to": "MAP13",
+      "portalId": "m16_to_m13",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP16",
+      "to": "MAP19",
+      "portalId": "m16_to_m19",
+      "x": 19800,
+      "y": 12000
+    },
+    {
+      "from": "MAP17",
+      "to": "MAP14",
+      "portalId": "m17_to_m14",
+      "x": 19800,
+      "y": 1000
+    },
+    {
+      "from": "MAP17",
+      "to": "MAP20",
+      "portalId": "m17_to_m20",
+      "x": 1000,
+      "y": 12000
+    },
+    {
+      "from": "MAP18",
+      "to": "MAP15",
+      "portalId": "m18_to_m15",
+      "x": 10400,
+      "y": 12000
+    },
+    {
+      "from": "MAP18",
+      "to": "MAP21",
+      "portalId": "m18_to_m21",
+      "x": 10400,
+      "y": 1000
+    },
+    {
+      "from": "MAP19",
+      "to": "MAP16",
+      "portalId": "m19_to_m16",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP19",
+      "to": "MAP13",
+      "portalId": "m19_to_m13",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP20",
+      "to": "MAP17",
+      "portalId": "m20_to_m17",
+      "x": 15000,
+      "y": 9000
+    },
+    {
+      "from": "MAP20",
+      "to": "MAP14",
+      "portalId": "m20_to_m14",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP21",
+      "to": "MAP18",
+      "portalId": "m21_to_m18",
+      "x": 8000,
+      "y": 9000
+    },
+    {
+      "from": "MAP21",
+      "to": "MAP15",
+      "portalId": "m21_to_m15",
+      "x": 15000,
+      "y": 1000
+    }
+  ],
+  "aw": {
+    "MAP1": "HELIOS-1",
+    "MAP2": "NOVA-1",
+    "MAP3": "ORION-1",
+    "MAP4": "HELIOS-2",
+    "MAP5": "NOVA-2",
+    "MAP6": "ORION-2",
+    "MAP7": "NOVA-3",
+    "MAP8": "HELIOS-3",
+    "MAP9": "ORION-3",
+    "MAP10": "NOVA-4",
+    "MAP11": "HELIOS-4",
+    "MAP12": "ORION-4",
+    "MAP13": "HELIOS-5",
+    "MAP14": "NOVA-5",
+    "MAP15": "ORION-5",
+    "MAP16": "HELIOS-6",
+    "MAP17": "NOVA-6",
+    "MAP18": "ORION-6",
+    "MAP19": "HELIOS-7",
+    "MAP20": "NOVA-7",
+    "MAP21": "ORION-7",
+    "SECTOR_X": "SECTOR X",
+    "SECTOR_Y": "SECTOR Y",
+    "RAID_VOID": "VOID GATE",
+    "RAID_RIFT": "RIFT GATE",
+    "RAID_NEBULA": "NEBULA GATE",
+    "RAID_INFERNO": "INFERNO GATE"
+  }
+}
