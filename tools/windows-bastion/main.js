@@ -47,7 +47,82 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.0";
+  return "1.0.2";
+}
+
+function playerSafeBastionNotes(notes) {
+  const trimmed = String(notes || "").trim();
+  if (!trimmed) return "";
+  const lower = trimmed.toLowerCase();
+  const blocked = [
+    "upload this file",
+    "release asset",
+    "bump version",
+    "owner/repo",
+    "github.com/",
+    "trascina",
+    "developer",
+    "ricostruisci",
+    "manifest",
+  ];
+  if (blocked.some((needle) => lower.includes(needle))) {
+    return "";
+  }
+  return trimmed;
+}
+
+function bastionReplaceableExePath() {
+  const portable = String(process.env.PORTABLE_EXECUTABLE_FILE || "").trim();
+  if (portable && fs.existsSync(portable)) {
+    return portable;
+  }
+  if (app.isPackaged) {
+    const exe = process.execPath;
+    if (exe && /\.exe$/i.test(exe)) {
+      return exe;
+    }
+  }
+  return "";
+}
+
+function scheduleWindowsExeSwapAndRelaunch(currentExe, newExe) {
+  const batPath = path.join(
+    app.getPath("temp"),
+    `bastion-relaunch-${process.pid}-${Date.now()}.bat`
+  );
+  const bat = [
+    "@echo off",
+    "setlocal",
+    `set "TARGET=${currentExe}"`,
+    `set "SOURCE=${newExe}"`,
+    `set "PID=${process.pid}"`,
+    ":wait",
+    'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL',
+    "if not errorlevel 1 (",
+    "  timeout /t 1 /nobreak >NUL",
+    "  goto wait",
+    ")",
+    "timeout /t 1 /nobreak >NUL",
+    'copy /Y "%SOURCE%" "%TARGET%" >NUL',
+    "if errorlevel 1 (",
+    '  move /Y "%SOURCE%" "%TARGET%" >NUL',
+    ")",
+    'start "" "%TARGET%"',
+    'del /F /Q "%SOURCE%" >NUL 2>&1',
+    `del /F /Q "${batPath}" >NUL 2>&1`,
+    "endlocal",
+    "",
+  ].join("\r\n");
+  fs.writeFileSync(batPath, bat, "utf8");
+  const child = spawn("cmd.exe", ["/c", batPath], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  child.unref();
+  setTimeout(() => {
+    app.quit();
+  }, 400);
 }
 
 function isBastionManifestConfigured(url = BASTION_UPDATE_MANIFEST_URL) {
@@ -1208,12 +1283,12 @@ async function applyBastionSelfUpdate() {
 
     const exeUrl = String(manifest.exe || manifest.windows || "").trim();
     const releaseUrl = String(manifest.releaseUrl || manifest.html_url || "").trim();
-    const notes = String(manifest.notes || "").trim();
+    const notes = playerSafeBastionNotes(manifest.notes);
 
     if (!exeUrl) {
       if (releaseUrl) {
         await shell.openExternal(releaseUrl);
-        const msg = `Apro la pagina release ${remote}. Scarica l'exe e riavvia Bastion.`;
+        const msg = `Apro la pagina di download ${remote}. Installa la nuova versione e riavvia Bastion.`;
         setUpdateStatus({
           running: false,
           kind: "bastion",
@@ -1253,6 +1328,40 @@ async function applyBastionSelfUpdate() {
       });
     });
 
+    const replaceTarget = bastionReplaceableExePath();
+    if (replaceTarget) {
+      setUpdateStatus({
+        kind: "bastion",
+        phase: "install",
+        percent: 96,
+        message: `Installazione Bastion ${remote}…`,
+      });
+      const staged = `${replaceTarget}.bastion-new.exe`;
+      fs.copyFileSync(destPath, staged);
+      scheduleWindowsExeSwapAndRelaunch(replaceTarget, staged);
+      const msg =
+        `Aggiornamento a Bastion ${remote} pronto. Chiudo e riavvio automaticamente.` +
+        (notes ? `\n\n${notes}` : "");
+      setUpdateStatus({
+        running: false,
+        kind: "bastion",
+        phase: "done",
+        percent: 100,
+        message: `Installato ${remote} — riavvio…`,
+        path: replaceTarget,
+      });
+      return {
+        updated: true,
+        configured: true,
+        localVersion,
+        remote,
+        path: replaceTarget,
+        relaunching: true,
+        message: msg,
+        notes,
+      };
+    }
+
     try {
       await shell.openPath(destPath);
     } catch (err) {
@@ -1265,14 +1374,14 @@ async function applyBastionSelfUpdate() {
     }
 
     const msg =
-      `Scaricato Bastion ${remote}. Chiudi questa app, avvia il nuovo exe e riparti.\n` +
-      (notes ? `\nNote: ${notes}` : "");
+      `Scaricato Bastion ${remote}. Chiudi questa app e avvia il nuovo file, poi riparti.` +
+      (notes ? `\n\n${notes}` : "");
     setUpdateStatus({
       running: false,
       kind: "bastion",
       phase: "done",
       percent: 100,
-      message: `Scaricato ${remote} — riavvia dal nuovo exe`,
+      message: `Scaricato ${remote} — avvia il nuovo exe`,
       path: destPath,
     });
     return {
@@ -1311,6 +1420,13 @@ async function triggerBastionSelfUpdate() {
           message: "Aggiornamento non disponibile",
           detail: "Impossibile verificare aggiornamenti Bastion in questo momento. Riprova più tardi o reinstalla.",
         });
+      } else if (result.relaunching) {
+        dialog.showMessageBox(mainWindow, {
+          type: "info",
+          title: "Aggiornamento Bastion",
+          message: `Bastion ${result.remote} installato`,
+          detail: result.message || "Riavvio in corso…",
+        });
       } else if (result.updated) {
         dialog.showMessageBox(mainWindow, {
           type: "info",
@@ -1318,7 +1434,7 @@ async function triggerBastionSelfUpdate() {
           message: `Nuova versione ${result.remote} pronta`,
           detail:
             `${result.message}\n\nFile:\n${result.path}\n\n` +
-            "Al prossimo avvio del nuovo exe, App Support/story verrà risincronizzato automaticamente.",
+            "Chiudi Bastion e avvia il nuovo exe.",
         });
       } else if (result.openedRelease) {
         dialog.showMessageBox(mainWindow, {

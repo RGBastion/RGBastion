@@ -1,96 +1,9 @@
 {
   "name": "redgalaxy-bastion",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedGalaxy Bastion",
   "license": "UNLICENSED",
-  "private": true,
-  "scripts": {
-    "start": "electron .",
-    "pack:dir": "electron-builder --win dir --x64",
-    "pack:zip": "electron-builder --win zip --x64",
-    "pack:portable": "electron-builder --win portable --x64",
-    "pack:nsis": "electron-builder --win nsis --x64",
-    "pack:win": "electron-builder --win zip portable --x64"
-  },
-  "build": {
-    "appId": "local.redgalaxy.bastion",
-    "productName": "RedGalaxy Bastion",
-    "copyright": "RedGalaxy Bastion",
-    "directories": {
-      "output": "../../dist/windows-bastion",
-      "buildResources": "build"
-    },
-    "files": [
-      "main.js",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "../../artifacts/redgalaxy-story-web",
-        "to": "web",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "../extract_redgalaxy_web.js",
-        "to": "extract_redgalaxy_web.js"
-      },
-      {
-        "from": "../apply_bastion_patches.js",
-        "to": "apply_bastion_patches.js"
-      },
-      {
-        "from": "../italian_ui_overrides.json",
-        "to": "italian_ui_overrides.json"
-      },
-      {
-        "from": "../extract_redgalaxy_web.py",
-        "to": "extract_redgalaxy_web.py"
-      },
-      {
-        "from": "../apply_bastion_patches.py",
-        "to": "apply_bastion_patches.py"
-      }
-    ],
-    "asar": true,
-    "win": {
-      "target": [
-        {
-          "target": "zip",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.png",
-      "artifactName": "RedGalaxy-Bastion-${version}-${arch}.${ext}",
-      "executableName": "RedGalaxy-Bastion"
-    },
-    "portable": {
-      "artifactName": "RedGalaxy-Bastion.${ext}"
-    },
-    "nsis": {
-      "oneClick": true,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "RedGalaxy Bastion",
-      "artifactName": "RedGalaxy-Bastion-Setup.${ext}"
-    },
-    "compression": "maximum"
-  },
-  "devDependencies": {
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8"
-  }
+  "private": true
 }

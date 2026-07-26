@@ -1,5 +1,6 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#import <unistd.h>
 
 @interface RedGalaxyHostApp : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler>
 @property(strong) NSWindow *window;
@@ -988,7 +989,295 @@
 - (NSString *)bastionAppVersion {
     NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     v = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return v.length > 0 ? v : @"1.0.0";
+    return v.length > 0 ? v : @"1.0.2";
+}
+
+- (NSString *)playerSafeBastionNotes:(NSString *)notes {
+    NSString *trimmed = [notes stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length == 0) {
+        return @"";
+    }
+    NSString *lower = trimmed.lowercaseString;
+    NSArray<NSString *> *blocked = @[
+        @"upload this file", @"release asset", @"bump version", @"OWNER/REPO",
+        @"github.com/", @"trascina", @"developer", @"ricostruisci", @"manifest"
+    ];
+    for (NSString *needle in blocked) {
+        if ([lower containsString:needle.lowercaseString]) {
+            return @"";
+        }
+    }
+    return trimmed;
+}
+
+- (BOOL)directoryIsWritable:(NSString *)dir {
+    if (dir.length == 0) {
+        return NO;
+    }
+    return [[NSFileManager defaultManager] isWritableFileAtPath:dir];
+}
+
+- (BOOL)pathLooksLikeMountedDiskImage:(NSString *)path {
+    return [path hasPrefix:@"/Volumes/"];
+}
+
+- (NSString *)bastionAppInstallDestination {
+    NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
+    NSString *parent = [bundlePath stringByDeletingLastPathComponent];
+    NSString *appName = [bundlePath lastPathComponent];
+    if (appName.length == 0) {
+        appName = @"RedGalaxy Bastion.app";
+    }
+
+    if (![self pathLooksLikeMountedDiskImage:bundlePath] && [self directoryIsWritable:parent]) {
+        return [parent stringByAppendingPathComponent:appName];
+    }
+
+    NSString *applications = @"/Applications";
+    if ([self directoryIsWritable:applications]) {
+        return [applications stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+    }
+
+    NSArray<NSString *> *userApps = NSSearchPathForDirectoriesInDomains(NSApplicationDirectory, NSUserDomainMask, YES);
+    if (userApps.count > 0 && [self directoryIsWritable:userApps[0]]) {
+        return [userApps[0] stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+    }
+
+    return [applications stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+}
+
+- (NSString *)runShellCommand:(NSString *)launchPath arguments:(NSArray<NSString *> *)arguments output:(NSString **)outOutput {
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = launchPath;
+    task.arguments = arguments ?: @[];
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = pipe;
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    } @catch (NSException *ex) {
+        if (outOutput) {
+            *outOutput = ex.reason ?: @"command failed";
+        }
+        return nil;
+    }
+    NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
+    if (outOutput) {
+        *outOutput = text;
+    }
+    if (task.terminationStatus != 0) {
+        return nil;
+    }
+    return text;
+}
+
+- (NSString *)mountBastionDMG:(NSString *)dmgPath error:(NSError **)outError {
+    NSString *output = nil;
+    NSString *ok = [self runShellCommand:@"/usr/bin/hdiutil"
+                               arguments:@[@"attach", dmgPath, @"-nobrowse", @"-readonly", @"-plist"]
+                                  output:&output];
+    if (!ok) {
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:2 userInfo:@{
+                NSLocalizedDescriptionKey: output.length > 0 ? output : @"Impossibile montare il DMG"
+            }];
+        }
+        return nil;
+    }
+
+    NSData *plistData = [output dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *plist = plistData
+        ? [NSPropertyListSerialization propertyListWithData:plistData options:0 format:nil error:nil]
+        : nil;
+    if (![plist isKindOfClass:[NSDictionary class]]) {
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:3 userInfo:@{
+                NSLocalizedDescriptionKey: @"Risposta mount DMG non valida"
+            }];
+        }
+        return nil;
+    }
+
+    NSArray *entities = plist[@"system-entities"];
+    if (![entities isKindOfClass:[NSArray class]]) {
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:4 userInfo:@{
+                NSLocalizedDescriptionKey: @"Nessun volume trovato nel DMG"
+            }];
+        }
+        return nil;
+    }
+
+    for (id entry in entities) {
+        if (![entry isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSString *mountPoint = entry[@"mount-point"];
+        if ([mountPoint isKindOfClass:[NSString class]] && mountPoint.length > 0 &&
+            [[NSFileManager defaultManager] fileExistsAtPath:mountPoint]) {
+            return mountPoint;
+        }
+    }
+
+    if (outError) {
+        *outError = [NSError errorWithDomain:@"BastionUpdate" code:5 userInfo:@{
+            NSLocalizedDescriptionKey: @"Volume DMG non montato"
+        }];
+    }
+    return nil;
+}
+
+- (void)unmountBastionVolume:(NSString *)mountPoint {
+    if (mountPoint.length == 0) {
+        return;
+    }
+    [self runShellCommand:@"/usr/bin/hdiutil" arguments:@[@"detach", mountPoint, @"-force"] output:nil];
+}
+
+- (NSString *)findBastionAppInDirectory:(NSString *)root {
+    if (root.length == 0) {
+        return nil;
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *preferred = [root stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+    if ([fm fileExistsAtPath:preferred]) {
+        return preferred;
+    }
+
+    NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:root];
+    NSString *relative = nil;
+    while ((relative = [enumerator nextObject])) {
+        if ([relative.pathExtension.lowercaseString isEqualToString:@"app"] &&
+            [relative.lastPathComponent.lowercaseString containsString:@"bastion"]) {
+            [enumerator skipDescendants];
+            return [root stringByAppendingPathComponent:relative];
+        }
+    }
+
+    enumerator = [fm enumeratorAtPath:root];
+    while ((relative = [enumerator nextObject])) {
+        if ([relative.pathExtension.lowercaseString isEqualToString:@"app"]) {
+            [enumerator skipDescendants];
+            return [root stringByAppendingPathComponent:relative];
+        }
+    }
+    return nil;
+}
+
+- (BOOL)installBastionAppFromDMG:(NSString *)dmgPath
+                   toDestination:(NSString *)destAppPath
+                           error:(NSError **)outError {
+    NSString *mountPoint = [self mountBastionDMG:dmgPath error:outError];
+    if (!mountPoint) {
+        return NO;
+    }
+
+    NSString *sourceApp = [self findBastionAppInDirectory:mountPoint];
+    if (sourceApp.length == 0) {
+        [self unmountBastionVolume:mountPoint];
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:6 userInfo:@{
+                NSLocalizedDescriptionKey: @"Nel DMG non c'è RedGalaxy Bastion.app"
+            }];
+        }
+        return NO;
+    }
+
+    NSString *stagingParent = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"bastion-update-%@", [[NSUUID UUID] UUIDString]]];
+    NSError *mkdirError = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:stagingParent
+                                   withIntermediateDirectories:YES
+                                                    attributes:nil
+                                                         error:&mkdirError]) {
+        [self unmountBastionVolume:mountPoint];
+        if (outError) *outError = mkdirError;
+        return NO;
+    }
+
+    NSString *stagingApp = [stagingParent stringByAppendingPathComponent:[destAppPath lastPathComponent]];
+    NSString *dittoOut = nil;
+    NSString *dittoOk = [self runShellCommand:@"/usr/bin/ditto"
+                                    arguments:@[sourceApp, stagingApp]
+                                       output:&dittoOut];
+    [self unmountBastionVolume:mountPoint];
+    if (!dittoOk) {
+        [[NSFileManager defaultManager] removeItemAtPath:stagingParent error:nil];
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:7 userInfo:@{
+                NSLocalizedDescriptionKey: dittoOut.length > 0 ? dittoOut : @"Copia dal DMG non riuscita"
+            }];
+        }
+        return NO;
+    }
+
+    NSString *destParent = [destAppPath stringByDeletingLastPathComponent];
+    [[NSFileManager defaultManager] createDirectoryAtPath:destParent
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
+
+    // ditto can replace a running .app bundle; the process keeps old mappings until relaunch.
+    NSString *replaceOut = nil;
+    NSString *replaceOk = [self runShellCommand:@"/usr/bin/ditto"
+                                      arguments:@[stagingApp, destAppPath]
+                                         output:&replaceOut];
+    [[NSFileManager defaultManager] removeItemAtPath:stagingParent error:nil];
+    if (!replaceOk) {
+        if (outError) {
+            *outError = [NSError errorWithDomain:@"BastionUpdate" code:8 userInfo:@{
+                NSLocalizedDescriptionKey: replaceOut.length > 0 ? replaceOut : @"Installazione non riuscita"
+            }];
+        }
+        return NO;
+    }
+    return YES;
+}
+
+- (void)relaunchBastionAtPath:(NSString *)appPath {
+    if (appPath.length == 0) {
+        return;
+    }
+    NSString *script = [NSTemporaryDirectory() stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"bastion-relaunch-%d.sh", getpid()]];
+    NSString *body = [NSString stringWithFormat:
+        @"#!/bin/bash\n"
+        @"APP=%@\n"
+        @"PID=%d\n"
+        @"while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done\n"
+        @"sleep 0.4\n"
+        @"open \"$APP\"\n"
+        @"rm -f -- %@"
+        @"\n",
+        [self shellQuote:appPath],
+        getpid(),
+        [self shellQuote:script]];
+    [body writeToFile:script atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    [[NSFileManager defaultManager] setAttributes:@{NSFilePosixPermissions: @0755}
+                                     ofItemAtPath:script
+                                            error:nil];
+
+    NSTask *helper = [[NSTask alloc] init];
+    helper.launchPath = @"/bin/bash";
+    helper.arguments = @[script];
+    helper.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    helper.standardError = [NSFileHandle fileHandleWithNullDevice];
+    @try {
+        [helper launch];
+    } @catch (NSException *ex) {
+        NSLog(@"Bastion relaunch helper failed: %@", ex);
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:appPath]];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [NSApp terminate:nil];
+    });
+}
+
+- (NSString *)shellQuote:(NSString *)value {
+    NSString *escaped = [value stringByReplacingOccurrencesOfString:@"'" withString:@"'\"'\"'"];
+    return [NSString stringWithFormat:@"'%@'", escaped ?: @""];
 }
 
 - (NSString *)bastionUpdateManifestURL {
@@ -1137,8 +1426,8 @@
     if (remote.length == 0) {
         NSAlert *alert = [[NSAlert alloc] init];
         alert.alertStyle = NSAlertStyleWarning;
-        alert.messageText = @"Manifest Bastion non valido";
-        alert.informativeText = @"Il JSON remoto non contiene \"version\".";
+        alert.messageText = @"Aggiornamento non riuscito";
+        alert.informativeText = @"Informazioni di aggiornamento incomplete. Riprova più tardi.";
         [alert runModal];
         return;
     }
@@ -1156,7 +1445,8 @@
     NSString *releaseUrl = [manifest[@"releaseUrl"] isKindOfClass:[NSString class]]
         ? (NSString *)manifest[@"releaseUrl"]
         : ([manifest[@"html_url"] isKindOfClass:[NSString class]] ? (NSString *)manifest[@"html_url"] : @"");
-    NSString *notes = [manifest[@"notes"] isKindOfClass:[NSString class]] ? (NSString *)manifest[@"notes"] : @"";
+    NSString *notes = [self playerSafeBastionNotes:
+        [manifest[@"notes"] isKindOfClass:[NSString class]] ? (NSString *)manifest[@"notes"] : @""];
 
     if (dmg.length == 0) {
         if (releaseUrl.length > 0) {
@@ -1165,9 +1455,8 @@
             alert.alertStyle = NSAlertStyleInformational;
             alert.messageText = @"Nuova versione disponibile";
             alert.informativeText = [NSString stringWithFormat:
-                @"Scarica il DMG Bastion %@, montalo e sostituisci l'app in /Applications.\n"
-                @"Al prossimo avvio App Support/story verrà risincronizzato.",
-                remote];
+                @"Versione installata: %@\nNuova: %@\n\nApro la pagina di download. Installa la nuova versione e riavvia Bastion.",
+                localVersion, remote];
             [alert runModal];
             return;
         }
@@ -1181,22 +1470,27 @@
 
     NSAlert *confirm = [[NSAlert alloc] init];
     confirm.alertStyle = NSAlertStyleInformational;
-    confirm.messageText = @"Nuova versione disponibile";
+    confirm.messageText = @"Aggiornamento Bastion disponibile";
     NSMutableString *detail = [NSMutableString stringWithFormat:
-        @"Installata: %@\nNuova: %@\n\nScarico il DMG e lo apro. Poi trascina la nuova app in Applicazioni e riavvia.",
+        @"Installata: %@\nNuova: %@\n\nScarico e installo automaticamente, poi riavvio Bastion.",
         localVersion, remote];
     if (notes.length > 0) {
-        [detail appendFormat:@"\n\nNote: %@", notes];
+        [detail appendFormat:@"\n\n%@", notes];
     }
     confirm.informativeText = detail;
-    [confirm addButtonWithTitle:@"Scarica DMG"];
+    [confirm addButtonWithTitle:@"Aggiorna ora"];
     [confirm addButtonWithTitle:@"Annulla"];
     if ([confirm runModal] != NSAlertFirstButtonReturn) {
         return;
     }
 
-    NSArray<NSString *> *dirs = NSSearchPathForDirectoriesInDomains(NSDownloadsDirectory, NSUserDomainMask, YES);
-    NSString *downloads = dirs.count > 0 ? dirs[0] : NSTemporaryDirectory();
+    NSArray<NSString *> *dirs = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+    NSString *cacheRoot = dirs.count > 0 ? dirs[0] : NSTemporaryDirectory();
+    NSString *downloads = [cacheRoot stringByAppendingPathComponent:@"RedGalaxyBastionUpdates"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:downloads
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
     NSString *fileName = [[NSURL URLWithString:dmg] lastPathComponent];
     if (fileName.length == 0) {
         fileName = [NSString stringWithFormat:@"RedGalaxy-Bastion-%@.dmg", remote];
@@ -1214,15 +1508,30 @@
         return;
     }
 
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:destPath]];
+    NSString *installPath = [self bastionAppInstallDestination];
+    NSError *installError = nil;
+    BOOL installed = [self installBastionAppFromDMG:destPath toDestination:installPath error:&installError];
+    if (!installed) {
+        [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:destPath]];
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.alertStyle = NSAlertStyleWarning;
+        alert.messageText = @"Installazione automatica non riuscita";
+        alert.informativeText = [NSString stringWithFormat:
+            @"%@\n\nHo aperto il DMG scaricato. Copia RedGalaxy Bastion.app nella cartella Applicazioni e riavvia.",
+            installError.localizedDescription ?: @"Errore sconosciuto"];
+        [alert runModal];
+        return;
+    }
+
     NSAlert *done = [[NSAlert alloc] init];
     done.alertStyle = NSAlertStyleInformational;
-    done.messageText = @"DMG scaricato";
+    done.messageText = @"Aggiornamento completato";
     done.informativeText = [NSString stringWithFormat:
-        @"File:\n%@\n\nMonta il DMG, sostituisci RedGalaxy Bastion in Applicazioni, poi riavvia.\n"
-        @"Al prossimo avvio lo story overlay in App Support verrà risincronizzato.",
-        destPath];
+        @"Bastion %@ è stato installato in:\n%@\n\nRiavvio l'app ora.",
+        remote, installPath];
+    [done addButtonWithTitle:@"Riavvia"];
     [done runModal];
+    [self relaunchBastionAtPath:installPath];
 }
 
 @end

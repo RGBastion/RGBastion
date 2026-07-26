@@ -89,7 +89,7 @@ Artifact tipici:
 
 ```text
 dist/RedGalaxy-Bastion.exe              # portable single-file (anche buildabile da macOS)
-dist/RedGalaxy-Bastion-1.0.0-x64.zip    # cartella Electron unpackata
+dist/RedGalaxy-Bastion-1.0.2-x64.zip    # cartella Electron unpackata
 dist/windows-bastion/                   # output completo electron-builder
 ```
 

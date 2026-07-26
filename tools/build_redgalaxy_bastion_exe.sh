@@ -45,6 +45,23 @@ fi
 
 echo "==> Installing Electron build deps..."
 cd "$WIN_DIR"
+
+# Keep Electron package version aligned with tools/bastion_version.txt
+BASTION_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/bastion_version.txt" 2>/dev/null || true)"
+BASTION_VERSION="${BASTION_VERSION:-1.0.2}"
+if command -v node >/dev/null 2>&1; then
+  node -e "
+    const fs=require('fs');
+    const p='package.json';
+    const j=JSON.parse(fs.readFileSync(p,'utf8'));
+    if (j.version !== process.argv[1]) {
+      j.version = process.argv[1];
+      fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+      console.log('Synced package.json version to', process.argv[1]);
+    }
+  " "$BASTION_VERSION"
+fi
+
 if [[ ! -d node_modules/electron || ! -d node_modules/electron-builder ]]; then
   npm install
 else
