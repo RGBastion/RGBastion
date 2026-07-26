@@ -4,7 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 BASTION_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/bastion_version.txt" 2>/dev/null || true)"
-BASTION_VERSION="${BASTION_VERSION:-1.0.2}"
+BASTION_VERSION="${BASTION_VERSION:-1.0.4}"
 
 "$SCRIPT_DIR/prepare_redgalaxy_story_web.sh"
 

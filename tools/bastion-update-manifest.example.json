@@ -1,7 +1,7 @@
 {
-  "version": "1.0.2",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.2/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.2/RedGalaxy-Bastion.exe",
-  "notes": "Correzioni aggiornamento automatico Bastion e allineamento versione.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.2"
+  "version": "1.0.4",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.4/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.4/RedGalaxy-Bastion.exe",
+  "notes": "Orbit circolare vicino al portale (niente ovale); aggiornamento gioco Windows senza hang sulla barra.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.4"
 }

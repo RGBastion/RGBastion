@@ -47,7 +47,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.2";
+  return "1.0.4";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -758,10 +758,32 @@ function writeInstalledVersion(version) {
   fs.writeFileSync(versionFilePath(), `${version}\n`, "utf8");
 }
 
+function killProcessTree(child) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      return;
+    }
+    child.kill("SIGKILL");
+  } catch {
+    try {
+      child.kill();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function runCommand(command, args, opts = {}) {
   const timeoutMs = Number(opts.timeoutMs) || 0;
+  const onOutput = typeof opts.onOutput === "function" ? opts.onOutput : null;
   const spawnOpts = { ...opts };
   delete spawnOpts.timeoutMs;
+  delete spawnOpts.onOutput;
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -779,19 +801,19 @@ function runCommand(command, args, opts = {}) {
     const timer =
       timeoutMs > 0
         ? setTimeout(() => {
-            try {
-              child.kill();
-            } catch {
-              /* ignore */
-            }
+            killProcessTree(child);
             finish(() => reject(new Error(`${command} timeout after ${timeoutMs}ms\n${out}`)));
           }, timeoutMs)
         : null;
     child.stdout.on("data", (d) => {
-      out += d.toString();
+      const text = d.toString();
+      out += text;
+      if (onOutput) onOutput(text);
     });
     child.stderr.on("data", (d) => {
-      out += d.toString();
+      const text = d.toString();
+      out += text;
+      if (onOutput) onOutput(text);
     });
     child.on("error", (err) => finish(() => reject(err)));
     child.on("close", (code) => {
@@ -943,9 +965,33 @@ function nodeToolPath(basename) {
   return packaged;
 }
 
-async function runNodeTool(scriptPath, scriptArgs) {
-  const nodeBin = process.execPath;
-  return runCommand(nodeBin, [scriptPath, ...scriptArgs], { timeoutMs: 300000 });
+async function runNodeTool(scriptPath, scriptArgs, extraOpts = {}) {
+  // process.execPath is Electron.exe — without ELECTRON_RUN_AS_NODE it launches
+  // another GUI instance and the updater hangs on the progress bar forever.
+  const env = {
+    ...process.env,
+    ...(extraOpts.env || {}),
+    ELECTRON_RUN_AS_NODE: "1",
+  };
+  return runCommand(process.execPath, [scriptPath, ...scriptArgs], {
+    timeoutMs: 300000,
+    ...extraOpts,
+    env,
+  });
+}
+
+function startUpdateHeartbeat(phase, basePercent, message) {
+  let tick = 0;
+  const timer = setInterval(() => {
+    tick += 1;
+    const wobble = Math.min(9, tick);
+    setUpdateStatus({
+      phase,
+      percent: Math.min(basePercent + wobble, basePercent + 9),
+      message: `${message} (${tick}s)`,
+    });
+  }, 1000);
+  return () => clearInterval(timer);
 }
 
 async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
@@ -954,26 +1000,45 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
   const extractorPy = nodeToolPath("extract_redgalaxy_web.py");
   const patcherPy = nodeToolPath("apply_bastion_patches.py");
 
+  // Never patch/rm the live user web root here — Windows locks open assets while
+  // the HTTP server / Chromium serve them. Callers must pass a staging dir, then
+  // publishUserWebRoot() after closing the server.
   const hasNodePipeline = fs.existsSync(extractorJs) && fs.existsSync(patcherJs);
   if (hasNodePipeline) {
     setUpdateStatus({ phase: "extract", percent: 82, message: "Estrazione asset web (Node)…" });
-    await runNodeTool(extractorJs, [clientExe, rawOut]);
+    const stopExtractBeat = startUpdateHeartbeat("extract", 82, "Estrazione asset web (Node)…");
+    try {
+      await runNodeTool(extractorJs, [clientExe, rawOut]);
+    } finally {
+      stopExtractBeat();
+    }
+    if (!gameWebIsComplete(rawOut)) {
+      throw new Error(
+        "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedGalaxy."
+      );
+    }
     fs.rmSync(finalOut, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(finalOut), { recursive: true });
     setUpdateStatus({ phase: "patch", percent: 92, message: "Applico patch Bastion (Node)…" });
-    await runNodeTool(patcherJs, [
-      "--game-src",
-      rawOut,
-      "--story-src",
-      storySrc,
-      "--out",
-      finalOut,
-    ]);
+    const stopPatchBeat = startUpdateHeartbeat("patch", 92, "Applico patch Bastion (Node)…");
+    try {
+      await runNodeTool(patcherJs, [
+        "--game-src",
+        rawOut,
+        "--story-src",
+        storySrc,
+        "--out",
+        finalOut,
+      ]);
+    } finally {
+      stopPatchBeat();
+    }
     return { engine: "node" };
   }
 
   if (!fs.existsSync(extractorPy) || !fs.existsSync(patcherPy)) {
     throw new Error(
-      "Updater scripts missing from app resources (extract/patch). Rebuild the Windows package."
+      "Script di aggiornamento mancanti nel pacchetto (extract/patch). Ricostruisci il pacchetto Windows Bastion."
     );
   }
 
@@ -981,20 +1046,158 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
   const runPy = async (scriptArgs) =>
     runCommand(py.cmd, [...py.prefix, ...scriptArgs], { timeoutMs: 300000 });
 
-  setUpdateStatus({ phase: "extract", percent: 82, message: `Estrazione asset web (${py.label})…` });
-  await runPy([extractorPy, clientExe, rawOut]);
+  setUpdateStatus({
+    phase: "extract",
+    percent: 82,
+    message: `Estrazione asset web (${py.label})…`,
+  });
+  const stopExtractBeat = startUpdateHeartbeat(
+    "extract",
+    82,
+    `Estrazione asset web (${py.label})…`
+  );
+  try {
+    await runPy([extractorPy, clientExe, rawOut]);
+  } finally {
+    stopExtractBeat();
+  }
+  if (!gameWebIsComplete(rawOut)) {
+    throw new Error(
+      "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedGalaxy."
+    );
+  }
   fs.rmSync(finalOut, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(finalOut), { recursive: true });
   setUpdateStatus({ phase: "patch", percent: 92, message: "Applico patch Bastion…" });
-  await runPy([
-    patcherPy,
-    "--game-src",
-    rawOut,
-    "--story-src",
-    storySrc,
-    "--out",
-    finalOut,
-  ]);
+  const stopPatchBeat = startUpdateHeartbeat("patch", 92, "Applico patch Bastion…");
+  try {
+    await runPy([
+      patcherPy,
+      "--game-src",
+      rawOut,
+      "--story-src",
+      storySrc,
+      "--out",
+      finalOut,
+    ]);
+  } finally {
+    stopPatchBeat();
+  }
   return { engine: "python", python: py.label };
+}
+
+function closeStaticServer() {
+  if (!server) return Promise.resolve();
+  const s = server;
+  server = null;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    try {
+      s.close(() => finish());
+    } catch {
+      finish();
+      return;
+    }
+    // Windows can keep sockets briefly; don't hang the updater.
+    setTimeout(finish, 1500);
+  });
+}
+
+/**
+ * Atomically publish a validated staging web tree over the live user cache.
+ * Mirrors Mac publish_web_root: never wipe live until staging is ready, and
+ * release file locks by closing the local HTTP server first (Windows EBUSY).
+ */
+async function publishUserWebRoot(stagingOut, liveOut) {
+  if (!gameWebIsComplete(stagingOut)) {
+    throw new Error(
+      "Aggiornamento preparato ma incompleto (lang/woff2/index). Non applico la cache live."
+    );
+  }
+  if (!bastionWebRootIsIntact(stagingOut)) {
+    throw new Error(
+      "Patch Bastion incompleta (story/autopilot o hook mancanti). Riprova Aggiorna gioco."
+    );
+  }
+  const embedded = readEmbeddedWebVersion(stagingOut);
+  if (!embedded) {
+    throw new Error(
+      "Aggiornamento senza versione redgalaxy-client@ nell'embed. Estrazione o patch non valida."
+    );
+  }
+
+  await closeStaticServer();
+  // Brief settle so Windows releases ReadStream handles from the old root.
+  await new Promise((r) => setTimeout(r, 250));
+
+  const previous = path.join(supportDir(), `web-previous-${process.pid}-${Date.now()}`);
+  fs.rmSync(previous, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(liveOut), { recursive: true });
+
+  const liveExists = fs.existsSync(liveOut);
+  try {
+    if (liveExists) {
+      fs.renameSync(liveOut, previous);
+    }
+  } catch (err) {
+    // Fallback when rename fails (rare locks): copy-over after close.
+    console.warn("rename live→previous failed, trying rm:", err.message || err);
+    try {
+      fs.rmSync(liveOut, { recursive: true, force: true });
+    } catch (rmErr) {
+      throw new Error(
+        `Impossibile sostituire la cache di gioco (file in uso o permessi AppData): ${rmErr.message || rmErr}`
+      );
+    }
+  }
+
+  try {
+    fs.renameSync(stagingOut, liveOut);
+  } catch (err) {
+    // Restore previous live tree if swap failed.
+    if (fs.existsSync(previous) && !fs.existsSync(liveOut)) {
+      try {
+        fs.renameSync(previous, liveOut);
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new Error(
+      `Impossibile pubblicare gli asset aggiornati (permessi o file bloccati): ${err.message || err}`
+    );
+  }
+
+  fs.rmSync(previous, { recursive: true, force: true });
+  return embedded;
+}
+
+function humanizeUpdateError(err) {
+  const raw = String(err && err.message ? err.message : err || "");
+  const lower = raw.toLowerCase();
+  if (/timeout after/i.test(raw) && /extract|patch|node|electron/i.test(lower)) {
+    return "Tempo scaduto durante estrazione/patch. Riprova con la rete stabile; se persiste, chiudi Bastion e riprova.";
+  }
+  if (/ebusy|eperm|eacces|resource busy|being used by another process/i.test(lower)) {
+    return `File di gioco in uso o permessi AppData insufficienti. Chiudi altre copie di Bastion e riprova.\n${raw}`;
+  }
+  if (/redgalaxy-client\.exe non trovato/i.test(raw)) {
+    return raw;
+  }
+  if (/updater scripts missing|script di aggiornamento mancanti/i.test(lower)) {
+    return "Pacchetto Bastion incompleto (mancano extract/patch). Scarica di nuovo RedGalaxy-Bastion.exe.";
+  }
+  if (/enonet|enoent/i.test(lower) && /brotli|extract/i.test(lower)) {
+    return `Estrazione fallita (brotli/asset): ${raw}`;
+  }
+  if (/python/i.test(lower) && /store|stub|not found/i.test(lower)) {
+    return "Python non disponibile. Usa il pacchetto Bastion aggiornato (estrazione Node inclusa) oppure installa Python da python.org.";
+  }
+  return raw || "Aggiornamento non riuscito per un errore sconosciuto.";
 }
 
 function findInstalledClientExe() {
@@ -1070,15 +1273,14 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const installerUrl = String(win.url || "https://updates.redgalaxygame.space/RedGalaxy-Setup.exe").trim();
 
     let clientExe = findInstalledClientExe();
-    const needFreshInstall =
-      force ||
-      !clientExe ||
-      !installed ||
-      compareVersion(installed, remote) < 0 ||
-      !liveOk;
+    const behindOfficial =
+      !installed || compareVersion(installed, remote) < 0 || !liveOk;
 
-    // Prefer extracting from an already-installed official client (no silent-install hang),
-    // but reinstall from the official server when live web is behind/corrupt.
+    // Prefer extracting from an already-installed official client.
+    // force:true used to always re-download + silent-install → progress bar hung for minutes
+    // even when the client was already present. Download only when missing or behind.
+    const needFreshInstall = !clientExe || behindOfficial;
+
     if (needFreshInstall) {
       setUpdateStatus({
         phase: "download",
@@ -1097,12 +1299,25 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
         percent: 75,
         message: "Installazione silenziosa (max 2 min)…",
       });
+      const stopInstallBeat = startUpdateHeartbeat(
+        "install",
+        75,
+        "Installazione silenziosa…"
+      );
       try {
         await runCommand(installerPath, ["/S"], { shell: false, timeoutMs: 120000 });
       } catch (err) {
         console.warn("Installer failed/timeout (may still have installed):", err.message || err);
+      } finally {
+        stopInstallBeat();
       }
       clientExe = findInstalledClientExe() || clientExe;
+    } else {
+      setUpdateStatus({
+        phase: "extract",
+        percent: 78,
+        message: "Client ufficiale trovato — estraggo senza reinstallare…",
+      });
     }
 
     if (!clientExe) {
@@ -1123,23 +1338,33 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     }
 
     const rawOut = path.join(supportDir(), "extract-raw");
+    const stagingOut = path.join(supportDir(), "staging-web");
     const finalOut = userWebRoot();
     fs.rmSync(rawOut, { recursive: true, force: true });
+    fs.rmSync(stagingOut, { recursive: true, force: true });
     fs.mkdirSync(rawOut, { recursive: true });
 
+    setUpdateStatus({
+      phase: "extract",
+      percent: 80,
+      message: "Preparazione asset (staging, senza toccare la cache live)…",
+    });
     await runExtractAndPatch({
       clientExe,
       rawOut,
-      finalOut,
+      finalOut: stagingOut,
       storySrc: storySrcRoot(),
     });
 
-    const embeddedAfter = readEmbeddedWebVersion(finalOut);
-    if (!embeddedAfter) {
-      throw new Error("Update finished but live game web has no redgalaxy-client@version embed.");
-    }
+    setUpdateStatus({
+      phase: "publish",
+      percent: 96,
+      message: "Pubblicazione cache di gioco…",
+    });
+    const embeddedAfter = await publishUserWebRoot(stagingOut, finalOut);
     writeInstalledVersion(embeddedAfter);
     fs.rmSync(rawOut, { recursive: true, force: true });
+    fs.rmSync(stagingOut, { recursive: true, force: true });
 
     setUpdateStatus({
       running: false,
@@ -1149,9 +1374,9 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     });
     return { updated: true, installed, remote, webRoot: finalOut, embedded: embeddedAfter };
   } catch (err) {
-    const message = String(err && err.message ? err.message : err);
+    const message = humanizeUpdateError(err);
     setUpdateStatus({ running: false, phase: "error", percent: 100, message, error: message });
-    throw err;
+    throw new Error(message);
   } finally {
     updateRunning = false;
   }
@@ -1159,14 +1384,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
 
 async function reloadWithWebRoot(webRoot) {
   activeWebRoot = webRoot;
-  if (server) {
-    try {
-      server.close();
-    } catch {
-      /* ignore */
-    }
-    server = null;
-  }
+  await closeStaticServer();
   server = createStaticServer(webRoot);
   const port = await listenNearPort(server, PREFERRED_PORT);
   const startUrl = `http://127.0.0.1:${port}/`;
@@ -1212,7 +1430,15 @@ async function triggerGameUpdate() {
     }
     return result;
   } catch (err) {
-    const detail = String(err && err.message ? err.message : err);
+    const detail = humanizeUpdateError(err);
+    // publishUserWebRoot closes the HTTP server before swapping — restore serving on failure.
+    if (!server) {
+      try {
+        await reloadWithWebRoot(resolveWebRoot());
+      } catch (reloadErr) {
+        console.error("Failed to restore web server after update error:", reloadErr);
+      }
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       dialog.showMessageBox(mainWindow, {
         type: "error",
@@ -1221,7 +1447,7 @@ async function triggerGameUpdate() {
         detail,
       });
     }
-    throw err;
+    throw new Error(detail);
   }
 }
 
@@ -1498,7 +1724,7 @@ async function checkUpdatesOnLaunch() {
 async function createWindow(startUrl) {
   mainWindow = new BrowserWindow({
     width: 1280,
-    height: 820,
+    height: 900,
     minWidth: 960,
     minHeight: 540,
     title: WINDOW_TITLE,

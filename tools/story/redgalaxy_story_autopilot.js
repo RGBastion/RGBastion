@@ -36,7 +36,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.2";
+  const BASTION_APP_VERSION = "1.0.4";
 
   const NPC_TYPES = {
     ALIEN10: "-={{Kryll}}=-",
@@ -3415,7 +3415,10 @@
 
   function handleEntityKill(payload) {
     if (!payload) return;
-    if (payload.targetHp != null && payload.targetHp > 0) return;
+    // hit/rocketHit often omit targetHp on normal damage — that is NOT a kill.
+    // Only explicit HP<=0 may arm cargo / count; missing HP must wait for
+    // entityRemove / clearTaskIfDone confirmed-gone (prevents mid-fight abandon).
+    if (payload.targetHp == null || Number(payload.targetHp) > 0) return;
 
     const K = getGameState();
     if (!K?.mySessionId) return;
@@ -3426,18 +3429,14 @@
     const isOurShot = payload.shooterId === K.mySessionId;
     if (!isOurShot) return;
 
-    // Schema still shows living HP — do not arm post-kill cargo yet (finish the kill).
-    // Retarget/clearTask also wait for confirmed-gone; this blocks mid-fight pause.
-    const st = K.npcs?.get?.(targetId);
-    const stillFighting =
-      st && st.alive !== false && st.hp != null && Number(st.hp) > 0;
-    if (stillFighting) return;
+    // Schema/sprite still living (incl. alive=false HP-sync flicker) — finish the kill.
+    // A premature countedNpcKillIds.add made isCombatTargetConfirmedGone true on the
+    // next not-fightable frame and cleared combat → wander/retarget for 1–2s.
+    if (isNpcStillFightable(targetId) || getNpcSprite(targetId)?.alive) return;
 
     // Arm once here; noteNpcKill uses trackCargo:false to avoid double-write noise.
     // notePendingCombatCargo preempts combat on standard maps when arm succeeds.
-    if (payload.targetHp == null || payload.targetHp <= 0) {
-      notePendingCombatCargo(targetId, getNpcLastPosition(targetId));
-    }
+    notePendingCombatCargo(targetId, getNpcLastPosition(targetId));
 
     if (AUTO.countedNpcKillIds.has(targetId)) return;
 
@@ -3454,6 +3453,8 @@
     for (const id of ids) {
       if (AUTO.countedNpcKillIds.has(id) || !isNpcEntity(id)) continue;
       if (!isOurCombatTarget(id) && !AUTO.watchedNpcIds.has(id)) continue;
+      // AOI / schema flicker can remove a living NPC briefly — do not count a kill yet.
+      if (isNpcStillFightable(id) || getNpcSprite(id)?.alive) continue;
 
       const typeKey = resolveNpcType(id) || AUTO.trackedNpcTypes.get(id);
       if (!typeKey) continue;
@@ -4231,7 +4232,10 @@
   function shouldHoldOrbitDistance(npc) {
     if (!AUTO.modeOrbit) return false;
     if (isInRaidMap()) return true;
-    return isCombatOrbitEngaged(npc?.id);
+    // Standard: hold/orbit from first engage. NPCs chase the attacker — no
+    // "first hit" dive into the body (that only closed range and took damage).
+    void npc;
+    return true;
   }
 
   function shouldRaidKeepMoving(npc) {
@@ -4438,16 +4442,102 @@
   }
 
   /** Gentle orbit bias toward nearest friendly portal (opt-in). Does not hard-charge. */
-  function applyPortalDriftBias(tx, ty, ship) {
-    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship) return { x: tx, y: ty };
+  /**
+   * Standard-map portal drift: bias orbit *angle* toward the allied portal at
+   * constant NPC stand-off radius. Never linearly blend the waypoint toward the
+   * portal (that squashes the circle into an oval). Once within stand-off of the
+   * portal → freeze: pure π/2 circular orbit.
+   */
+  function applyPortalDriftBias(tx, ty, ship, npc, radius) {
+    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship || !npc) return { x: tx, y: ty };
     const portal = findNearestFriendlyPortal({ preferSafeBase: false });
-    if (!portal || portal.dist < 180) return { x: tx, y: ty };
-    // Soft blend (~12%) so combat orbit stays primary.
+    if (!portal) return { x: tx, y: ty };
+
+    // Freeze inside stand-off of the portal — keep pure circular combat orbit.
+    // (applyCombatOrbit only calls us while already in the fire/orbit band.)
+    const PORTAL_DRIFT_FREEZE_DIST = 560;
+    if (portal.dist <= PORTAL_DRIFT_FREEZE_DIST) return { x: tx, y: ty };
+
+    const r = radius > 1 ? radius : Math.hypot(tx - npc.x, ty - npc.y);
+    if (!(r > 1)) return { x: tx, y: ty };
+    const ang = Math.atan2(ty - npc.y, tx - npc.x);
+    const portalAng = Math.atan2(portal.y - npc.y, portal.x - npc.x);
+    let dAng = portalAng - ang;
+    while (dAng > Math.PI) dAng -= Math.PI * 2;
+    while (dAng < -Math.PI) dAng += Math.PI * 2;
+    // Soft angular blend only (constant radius → circle preserved).
     const blend = 0.12;
+    const newAng = ang + dAng * blend;
     return {
-      x: tx + (portal.x - tx) * blend,
-      y: ty + (portal.y - ty) * blend,
+      x: npc.x + Math.cos(newAng) * r,
+      y: npc.y + Math.sin(newAng) * r,
     };
+  }
+
+  /**
+   * Soft play-area clamp that preserves NPC-centered orbit radius.
+   * Axis clamp alone turns the stand-off circle into an oval near map edges /
+   * portals; reproject onto the ring and slide angle if needed.
+   */
+  function softClampStdOrbitCircle(x, y, npc, radius) {
+    if (!npc || !(radius > 1)) return clampToPlayArea(x, y);
+    const { w, h } = getMapBounds();
+    const margin = AUTO.mapSafeMargin || 100;
+    if (!w || !h) return { x, y };
+
+    const inBounds = (px, py) =>
+      px >= margin && px <= w - margin && py >= margin && py <= h - margin;
+
+    const place = (ang, r) => ({
+      x: npc.x + Math.cos(ang) * r,
+      y: npc.y + Math.sin(ang) * r,
+    });
+
+    let ang = Math.atan2(y - npc.y, x - npc.x);
+    let pt = place(ang, radius);
+    if (inBounds(pt.x, pt.y)) return pt;
+
+    // Slide along the circle toward map center — keep radius, change angle.
+    const centerAng = Math.atan2(h * 0.5 - npc.y, w * 0.5 - npc.x);
+    let dToCenter = centerAng - ang;
+    while (dToCenter > Math.PI) dToCenter -= Math.PI * 2;
+    while (dToCenter < -Math.PI) dToCenter += Math.PI * 2;
+    let best = null;
+    let bestAbs = Infinity;
+    for (let i = 0; i <= 28; i++) {
+      const t = i / 28;
+      const candidates = [
+        ang + dToCenter * t,
+        ang - Math.sign(dToCenter || 1) * (Math.PI * 2 - Math.abs(dToCenter)) * t,
+      ];
+      for (const a of candidates) {
+        const cand = place(a, radius);
+        if (!inBounds(cand.x, cand.y)) continue;
+        let da = a - ang;
+        while (da > Math.PI) da -= Math.PI * 2;
+        while (da < -Math.PI) da += Math.PI * 2;
+        const abs = Math.abs(da);
+        if (abs < bestAbs) {
+          bestAbs = abs;
+          best = cand;
+        }
+      }
+    }
+    if (best) return best;
+
+    // Last resort: gently shrink radius (never squash only one axis).
+    for (let scale = 0.96; scale >= 0.72; scale -= 0.04) {
+      const cand = place(ang, radius * scale);
+      if (inBounds(cand.x, cand.y)) return cand;
+      const clamped = clampToPlayArea(cand.x, cand.y);
+      const r2 = Math.hypot(clamped.x - npc.x, clamped.y - npc.y);
+      if (r2 >= radius * 0.7) {
+        const a2 = Math.atan2(clamped.y - npc.y, clamped.x - npc.x);
+        const reproj = place(a2, Math.max(r2, radius * 0.72));
+        if (inBounds(reproj.x, reproj.y)) return reproj;
+      }
+    }
+    return clampToPlayArea(pt.x, pt.y);
   }
 
   function resetRaidDangerState() {
@@ -4931,8 +5021,9 @@
   function shouldChaseCombatTarget(npc, fireRange) {
     if (!npc) return false;
     if (isInRaidMap()) return npc.dist > fireRange;
-    if (npc.dist > fireRange) return true;
-    return isNpcMovingAwayFromPlayer(npc.id);
+    // Standard: close only when outside laser range. Never chase a fleeing NPC
+    // while already in fire range — they come to you; diving causes needless hits.
+    return npc.dist > fireRange;
   }
 
   function clearCombatMoveTarget(input) {
@@ -5292,18 +5383,26 @@
   }
 
   /**
-   * After a retreat step + recent damage, suppress the immediate inward re-click
-   * that closes range (back-and-forth oscillation).
+   * Standard maps: suppress inward radial clicks that close distance while the
+   * ship can already shoot — plus the post-retreat re-dive after a hit.
    */
   function shouldSuppressStdInwardAfterHit(ship, npc, tx, ty) {
-    if (!isStdCombatRecentlyDamaged() || !ship || !npc) return false;
-    if (AUTO.stdOrbitLastRadialSign !== 1) return false;
+    if (isInRaidMap() || !ship || !npc || tx == null || ty == null) return false;
     const curD = distance(ship.x, ship.y, npc.x, npc.y);
     const newD = distance(tx, ty, npc.x, npc.y);
+    if (!(newD < curD - 10)) return false;
+
+    const fireRange = getPlayerFireRange();
+    // Already in laser range: never click inward toward the NPC body.
+    if (curD <= fireRange) return true;
+
+    // After retreat + recent damage: block the immediate inward re-click.
+    if (!isStdCombatRecentlyDamaged()) return false;
+    if (AUTO.stdOrbitLastRadialSign !== 1) return false;
     return newD < curD - 12;
   }
 
-  /** Rewrite an inward post-hit click to a slightly wider tangential hold. */
+  /** Rewrite an inward click to a slightly wider tangential hold / outer stand-off. */
   function softenStdOrbitPointAfterHit(ship, npc, tx, ty) {
     if (!ship || !npc) return { x: tx, y: ty };
     const { preferred, maxR } = getOrbitRadii(npc);
@@ -5393,6 +5492,22 @@
     // Still far from current waypoint — keep it unless the new heading diverges a lot.
     const remaining = distance(ship.x, ship.y, cur.x, cur.y);
     if (remaining < (AUTO.arriveDistance || 50) + 20) return false;
+
+    // Standard combat: never keep an inward click when the new one opens range
+    // (soft-move was letting post-retreat re-dives stick).
+    if (!isInRaidMap() && AUTO.currentTask === "combat" && AUTO.taskTargetId) {
+      const npc = getNpcEntry(AUTO.taskTargetId);
+      if (npc) {
+        const fireRange = getPlayerFireRange();
+        const shipD = distance(ship.x, ship.y, npc.x, npc.y);
+        if (shipD <= fireRange) {
+          const oldD = distance(cur.x, cur.y, npc.x, npc.y);
+          const newD = distance(x, y, npc.x, npc.y);
+          if (newD > shipD + 8 && oldD < shipD - 6) return false;
+          if (newD > oldD + 14) return false;
+        }
+      }
+    }
 
     const dot = (toCurDx / curLen) * (toNewDx / newLen) + (toCurDy / curLen) * (toNewDy / newLen);
     // ~cos(40°) ≈ 0.76 — same-ish direction
@@ -5525,7 +5640,7 @@
     const input = getInputSystem();
     if (!ship || !input) return false;
 
-    const { minR, maxR, fireRange } = getOrbitRadii(npc);
+    const { minR, maxR, fireRange, preferred } = getOrbitRadii(npc);
     // A: still approach-orbit when slightly outside fire band (Story 3 gate was fireRange+40)
     if (npc.dist > fireRange + 40) return false;
 
@@ -5584,10 +5699,19 @@
 
     if (dist < minR || dist > maxR + 10) {
       // Standard + recent hit: prefer slightly larger band (less inward settle).
-      let targetR = dist > maxR ? maxR : clamp(dist + AUTO.orbitNpcSafetyMargin, minR, maxR);
+      // Standard maps: ease toward preferred/maxR — never settle on minR.
+      let targetR = dist > maxR
+        ? maxR
+        : inRaid
+          ? clamp(dist + AUTO.orbitNpcSafetyMargin, minR, maxR)
+          : clamp(
+              Math.max(dist + AUTO.orbitNpcSafetyMargin, preferred),
+              minR,
+              maxR
+            );
       if (hitSoft && dist < minR) {
         targetR = clamp(
-          Math.max(targetR, minR * (1 + STD_HIT_ORBIT_OUTWARD), dist + AUTO.orbitNpcSafetyMargin),
+          Math.max(targetR, preferred, minR * (1 + STD_HIT_ORBIT_OUTWARD), dist + AUTO.orbitNpcSafetyMargin),
           minR,
           maxR * (1 + STD_HIT_ORBIT_OUTWARD)
         );
@@ -5611,6 +5735,18 @@
       }
     } else {
       let targetRadius = clamp(dist, minR, maxR);
+      if (!inRaid) {
+        // Prefer outer stand-off (preferred/maxR); don't settle near minR while in fire range.
+        if (dist < preferred) {
+          targetRadius = clamp(
+            Math.max(dist + (AUTO.orbitNpcSafetyMargin || 36) * 0.45, preferred),
+            minR,
+            maxR
+          );
+        } else {
+          targetRadius = clamp(Math.max(dist, preferred), minR, maxR);
+        }
+      }
       if (hitSoft) {
         targetRadius = Math.min(maxR * (1 + STD_HIT_ORBIT_OUTWARD), targetRadius * (1 + STD_HIT_ORBIT_OUTWARD));
       }
@@ -5624,18 +5760,24 @@
       tx = npc.x + Math.cos(targetAngle) * targetRadius;
       ty = npc.y + Math.sin(targetAngle) * targetRadius;
       if (!inRaid) {
-        // Light curve offset on approach chord (not a new FSM).
+        // Light curve offset on approach chord — reproject so radius stays circular.
         const curve = AUTO.orbitDirection * (18 + randBetween(0, 14));
         tx += Math.cos(targetAngle + Math.PI / 2) * curve * 0.35;
         ty += Math.sin(targetAngle + Math.PI / 2) * curve * 0.35;
+        const angCurve = Math.atan2(ty - npc.y, tx - npc.x);
+        tx = npc.x + Math.cos(angCurve) * targetRadius;
+        ty = npc.y + Math.sin(angCurve) * targetRadius;
       }
     }
 
+    // Intended stand-off radius around NPC (pre-clamp). Keep this circular on
+    // standard maps — portal drift / map-edge clamp must not squash into an oval.
+    const wantOrbitR = Math.hypot(tx - npc.x, ty - npc.y);
     const target = nudgeOrbitFromBoundary(tx, ty, ship, npc);
     // E: soft support attractor (Story 3 used hard clampToRaidSupportZone ~3802)
     let safeTarget = inRaid
       ? softClampToRaidSupportZone(target.x, target.y)
-      : clampToPlayArea(target.x, target.y);
+      : softClampStdOrbitCircle(target.x, target.y, npc, wantOrbitR > 1 ? wantOrbitR : preferred);
     if (inRaid) {
       // Light pack bias before radial check — still no direction flip
       const biased = biasRaidOrbitAwayFromForwardPack(ship, npc, safeTarget.x, safeTarget.y);
@@ -5646,11 +5788,21 @@
       safeTarget = recoverRaidOrbitTangential(ship, npc);
     }
     if (!inRaid) {
-      const drifted = applyPortalDriftBias(safeTarget.x, safeTarget.y, ship);
-      safeTarget = clampToPlayArea(drifted.x, drifted.y);
+      const orbitR =
+        wantOrbitR > 1
+          ? wantOrbitR
+          : Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || preferred;
+      const drifted = applyPortalDriftBias(safeTarget.x, safeTarget.y, ship, npc, orbitR);
+      safeTarget = softClampStdOrbitCircle(drifted.x, drifted.y, npc, orbitR);
       // Recent damage after a retreat: don't immediately click back inward toward the NPC.
       if (shouldSuppressStdInwardAfterHit(ship, npc, safeTarget.x, safeTarget.y)) {
         safeTarget = softenStdOrbitPointAfterHit(ship, npc, safeTarget.x, safeTarget.y);
+        safeTarget = softClampStdOrbitCircle(
+          safeTarget.x,
+          safeTarget.y,
+          npc,
+          Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || orbitR
+        );
       }
       noteStdOrbitRadialSign(ship, npc, safeTarget.x, safeTarget.y);
     }
@@ -5852,18 +6004,37 @@
    * Prefer K.npcs over sprite.alive — hit handlers set alive=false before HP sync,
    * and sprite.alive can flicker while a sliver of HP remains.
    * HP > 0 always wins over alive===false sync flicker.
+   * alive===false with unknown HP must NOT abandon while the sprite still lives.
    */
   function isNpcStillFightable(npcId) {
     if (!npcId) return false;
     const state = getGameState()?.npcs?.get?.(npcId);
+    const sprite = getNpcSprite(npcId);
     if (state) {
       if (state.hp != null && Number(state.hp) > 0) return true;
       if (state.hp != null && Number(state.hp) <= 0) return false;
-      if (state.alive === false) return false;
+      // hp unknown: alive=false is a common mid-hit flicker — trust living sprite.
+      if (state.alive === false) return Boolean(sprite?.alive);
       return true;
     }
-    const sprite = getNpcSprite(npcId);
     return Boolean(sprite?.alive);
+  }
+
+  /**
+   * Undo a premature kill count when the NPC is clearly still in the fight.
+   * False hit/rocketHit counts made confirmed-gone fire on the next flicker.
+   */
+  function reclaimFalselyCountedLivingNpc(npcId) {
+    if (!npcId || !AUTO.countedNpcKillIds.has(npcId)) return;
+    if (!isNpcStillFightable(npcId) && !getNpcSprite(npcId)?.alive) return;
+    AUTO.countedNpcKillIds.delete(npcId);
+    const typeKey = resolveNpcType(npcId) || AUTO.trackedNpcTypes.get(npcId);
+    if (typeKey) {
+      const n = Number(AUTO.npcKillsByType[typeKey]) || 0;
+      if (n > 0) AUTO.npcKillsByType[typeKey] = n - 1;
+      updateNpcKillCounter();
+    }
+    AUTO.watchedNpcIds.add(npcId);
   }
 
   /** Confirmed dead/gone: counted kill, or missing long enough (not a one-frame flicker). */
@@ -5871,12 +6042,19 @@
     if (!npcId) return true;
     if (isNpcStillFightable(npcId)) {
       AUTO.combatTargetGoneAt = 0;
+      reclaimFalselyCountedLivingNpc(npcId);
+      return false;
+    }
+    const sprite = getNpcSprite(npcId);
+    // Sprite still drawing → never treat a premature counted kill as confirmed gone.
+    if (sprite?.alive) {
+      AUTO.combatTargetGoneAt = 0;
+      reclaimFalselyCountedLivingNpc(npcId);
       return false;
     }
     if (AUTO.countedNpcKillIds.has(npcId)) return true;
 
     const state = getGameState()?.npcs?.get?.(npcId);
-    const sprite = getNpcSprite(npcId);
     // Fully removed from schema + sprites — still wait ≥2 mainTicks.
     if (!sprite && !state) {
       if (!AUTO.combatTargetGoneAt) AUTO.combatTargetGoneAt = Date.now();
@@ -5891,8 +6069,9 @@
   function clearFalsePendingCargoForLivingTarget(npcId) {
     if (!npcId || !AUTO.pendingCombatCargo) return;
     if (AUTO.pendingCombatCargo.npcId !== npcId) return;
-    if (!isNpcStillFightable(npcId)) return;
+    if (!isNpcStillFightable(npcId) && !getNpcSprite(npcId)?.alive) return;
     AUTO.pendingCombatCargo = null;
+    reclaimFalselyCountedLivingNpc(npcId);
   }
 
   /** Keep lock/fire on sticky id during brief invalid frames (finish the kill). */
@@ -5918,9 +6097,13 @@
     if (state) {
       if (state.hp != null && Number(state.hp) > 0) {
         // fightable despite alive flicker
-      } else if (state.alive === false || (state.hp != null && Number(state.hp) <= 0)) {
+      } else if (state.hp != null && Number(state.hp) <= 0) {
+        return null;
+      } else if (state.alive === false && !sprite?.alive) {
+        // alive=false with unknown HP and dead/missing sprite → gone
         return null;
       }
+      // alive=false + unknown HP + living sprite: keep fighting (hit-handler flicker)
     }
 
     const stateAlive = Boolean(state && state.alive !== false);
@@ -6236,15 +6419,36 @@
   function getFocusedCombatNpc() {
     if (!AUTO.combatActive || !AUTO.combatTargetTypes?.size) return null;
 
+    // Heal combatFocus ↔ taskTarget desync: prefer the active combat task id.
+    if (
+      !AUTO.combatFocusId &&
+      AUTO.currentTask === "combat" &&
+      AUTO.taskTargetId
+    ) {
+      AUTO.combatFocusId = AUTO.taskTargetId;
+    }
+
     if (AUTO.combatFocusId) {
       const focused =
         getNpcEntry(AUTO.combatFocusId) || getStickyCombatNpcEntry(AUTO.combatFocusId);
       if (focused && AUTO.combatTargetTypes.has(focused.type)) {
         AUTO.combatTargetGoneAt = 0;
+        clearFalsePendingCargoForLivingTarget(focused.id);
         return focused;
       }
       // Brief invalid frame — keep focus until confirmed gone (do not hop to nearest).
       if (!isCombatTargetConfirmedGone(AUTO.combatFocusId)) {
+        clearFalsePendingCargoForLivingTarget(AUTO.combatFocusId);
+        return (
+          getStickyCombatNpcEntry(AUTO.combatFocusId) ||
+          focused ||
+          null
+        );
+      }
+      // Standard maps: never drop a still-drawn sprite for a random nearest hop.
+      if (!isInRaidMap() && getNpcSprite(AUTO.combatFocusId)?.alive) {
+        AUTO.combatTargetGoneAt = 0;
+        clearFalsePendingCargoForLivingTarget(AUTO.combatFocusId);
         return getStickyCombatNpcEntry(AUTO.combatFocusId);
       }
       AUTO.combatFocusId = null;
@@ -6295,7 +6499,11 @@
         return;
       }
 
-      if (isNpcStillFightable(deadNpcId) || getStickyCombatNpcEntry(deadNpcId)) {
+      if (
+        isNpcStillFightable(deadNpcId) ||
+        getStickyCombatNpcEntry(deadNpcId) ||
+        getNpcSprite(deadNpcId)?.alive
+      ) {
         AUTO.combatTargetGoneAt = 0;
         clearFalsePendingCargoForLivingTarget(deadNpcId);
         return;
@@ -6407,6 +6615,7 @@
       if (isInRaidMap()) {
         if (startRaidCombatTask()) return true;
       } else {
+        // Sticky: re-lock same focus before hopping to a random nearest NPC.
         const npc = getFocusedCombatNpc();
         if (npc && startCombatTask(npc)) return true;
       }
@@ -6620,7 +6829,11 @@
     npc = getNpcEntry(focusId) || getStickyCombatNpcEntry(focusId);
     if (!npc) {
       // Brief invalid / alive flicker — keep firing until confirmed gone.
-      if (!isCombatTargetConfirmedGone(focusId)) {
+      if (
+        !isCombatTargetConfirmedGone(focusId) ||
+        getNpcSprite(focusId)?.alive
+      ) {
+        clearFalsePendingCargoForLivingTarget(focusId);
         sustainCombatOnStickyId(focusId);
         return true;
       }
@@ -6659,27 +6872,24 @@
 
     if (!isInRaidMap()) updateStdCombatHitTracker();
 
-    const { maxR, fireRange } = getOrbitRadii(npc);
+    const { maxR, preferred, fireRange } = getOrbitRadii(npc);
     const holdOrbit = shouldHoldOrbitDistance(npc);
+    // Orbit ON → approach to outer stand-off (maxR). Orbit OFF → only when out of laser.
     const approachLimit = holdOrbit ? maxR + 12 : fireRange;
 
     if (npc.dist > approachLimit) {
-      if (holdOrbit) {
-        const ap = getOrbitApproachPoint(npc);
-        // After retreat + hit: skip immediate inward approach click.
-        if (
-          ship &&
-          shouldSuppressStdInwardAfterHit(ship, npc, ap.x, ap.y)
-        ) {
-          const soft = softenStdOrbitPointAfterHit(ship, npc, ap.x, ap.y);
-          noteStdOrbitRadialSign(ship, npc, soft.x, soft.y);
-          moveViaMinimap(soft.x, soft.y);
-        } else {
-          if (ship) noteStdOrbitRadialSign(ship, npc, ap.x, ap.y);
-          moveViaMinimap(ap.x, ap.y);
-        }
-      } else if (shouldChaseCombatTarget(npc, fireRange)) {
-        setMoveTargetDirect(input, npc.x, npc.y);
+      // Standard: never dive into NPC body — approach outer stand-off (preferred/maxR).
+      const ap = getOrbitApproachPoint(npc);
+      if (
+        ship &&
+        shouldSuppressStdInwardAfterHit(ship, npc, ap.x, ap.y)
+      ) {
+        const soft = softenStdOrbitPointAfterHit(ship, npc, ap.x, ap.y);
+        noteStdOrbitRadialSign(ship, npc, soft.x, soft.y);
+        moveViaMinimap(soft.x, soft.y);
+      } else if (holdOrbit || shouldChaseCombatTarget(npc, fireRange)) {
+        if (ship) noteStdOrbitRadialSign(ship, npc, ap.x, ap.y);
+        moveViaMinimap(ap.x, ap.y);
       } else {
         clearCombatMoveTarget(input);
       }
@@ -6687,7 +6897,7 @@
       setStatus(
         holdOrbit
           ? `Orbita: mi posiziono a ~${Math.round(maxR)}m (laser ~${Math.round(fireRange)}m)`
-          : `Avvicino ${npc.name} (${Math.round(npc.dist)}m)`
+          : `Avvicino ${npc.name} (${Math.round(npc.dist)}m → ~${Math.round(preferred)}m)`
       );
       return true;
     }
@@ -6700,9 +6910,8 @@
       applyCombatOrbit(npc);
       engageNpc(npc.id);
       input.syncAttackSession?.();
-    } else if (shouldChaseCombatTarget(npc, fireRange)) {
-      setMoveTargetDirect(input, npc.x, npc.y);
     } else {
+      // In fire range, orbit off: hold / slight kite — never setMoveTargetDirect(npc).
       clearCombatMoveTarget(input);
     }
 
@@ -6717,10 +6926,6 @@
       setStatus(
         `Orbita ${npc.name}: ${Math.round(npc.dist)}m (band ${Math.round(orbit.minR)}-${Math.round(orbit.maxR)}m, laser ${Math.round(orbit.fireRange)}m)`
       );
-    } else if (shouldChaseCombatTarget(npc, fireRange)) {
-      setStatus(`Inseguo ${npc.name} (${Math.round(npc.dist)}m)`);
-    } else if (!isCombatOrbitEngaged(npc.id) && AUTO.modeOrbit) {
-      setStatus(`Avvicino ${npc.name} per il primo colpo (${Math.round(npc.dist)}m)`);
     } else {
       setStatus(`In combattimento: ${npc.name} (${Math.round(npc.dist)}m)`);
     }
@@ -7157,7 +7362,12 @@
       const npc =
         getNpcEntry(AUTO.taskTargetId) || getStickyCombatNpcEntry(AUTO.taskTargetId);
       if (!npc) {
-        if (AUTO.taskTargetId && !isCombatTargetConfirmedGone(AUTO.taskTargetId)) {
+        if (
+          AUTO.taskTargetId &&
+          (!isCombatTargetConfirmedGone(AUTO.taskTargetId) ||
+            getNpcSprite(AUTO.taskTargetId)?.alive)
+        ) {
+          clearFalsePendingCargoForLivingTarget(AUTO.taskTargetId);
           sustainCombatOnStickyId(AUTO.taskTargetId);
           return true;
         }
@@ -7460,12 +7670,18 @@
     const orbPause = document.getElementById("rg-orb-pause");
     if (orbPause) {
       orbPause.title = t("ui.pause");
-      orbPause.textContent = "⏸";
+      orbPause.setAttribute("aria-label", t("ui.pause"));
     }
     const orbPlay = document.getElementById("rg-orb-play");
-    if (orbPlay) orbPlay.title = t("ui.play");
+    if (orbPlay) {
+      orbPlay.title = t("ui.play");
+      orbPlay.setAttribute("aria-label", t("ui.play"));
+    }
     const orbStop = document.getElementById("rg-orb-stop");
-    if (orbStop) orbStop.title = t("ui.stop");
+    if (orbStop) {
+      orbStop.title = t("ui.stop");
+      orbStop.setAttribute("aria-label", t("ui.stop"));
+    }
 
     const lockEl = document.getElementById("rg-license-lock");
     if (lockEl) lockEl.textContent = t("ui.license.lock");
@@ -10220,6 +10436,9 @@
     const startPoll = () => {
       stopPoll();
       let ticks = 0;
+      let lastPhase = "";
+      let lastPercent = -1;
+      let stuckTicks = 0;
       pollId = window.setInterval(() => {
         ticks += 1;
         fetch("/__bastion__/update-status", { cache: "no-store" })
@@ -10238,11 +10457,25 @@
             }
             if (data.running || data.phase !== "idle") {
               const pct = Number(data.percent) || 0;
+              if (data.phase === lastPhase && pct === lastPercent) stuckTicks += 1;
+              else stuckTicks = 0;
+              lastPhase = data.phase;
+              lastPercent = pct;
               statusEl.textContent = `${data.message || t("ui.game_update_started")}${pct ? ` (${pct}%)` : ""}`;
+              // Host should fail with timeout; if status never advances, surface it.
+              if (stuckTicks >= 180) {
+                statusEl.textContent = `${t("ui.game_update_failed")}: timeout (nessun progresso per 3 min)`;
+                stopPoll();
+              }
             }
           })
           .catch(() => {});
-        if (ticks > 600) stopPoll(); // ~10 min safety
+        if (ticks > 600) {
+          if (statusEl) {
+            statusEl.textContent = `${t("ui.game_update_failed")}: timeout (10 min)`;
+          }
+          stopPoll();
+        }
       }, 1000);
     };
 
@@ -10730,6 +10963,8 @@
     if (AUTO.postDeathRecover || AUTO.healSafeTravel) return true;
     if (AUTO.fleeActive || AUTO.combatSuspendedForFlee) return true;
     if (AUTO.pendingCombatCargo && canCollectCargoNow()) return true;
+    // Never wander while a combat task is still open (gap before clearTaskIfDone).
+    if (AUTO.currentTask === "combat" && AUTO.taskTargetId) return true;
     if (
       AUTO.combatTargetGoneAt &&
       Date.now() - AUTO.combatTargetGoneAt < COMBAT_TARGET_GONE_CONFIRM_MS
@@ -10740,7 +10975,9 @@
     const focusId = AUTO.combatFocusId || AUTO.taskTargetId || AUTO.combatTargetId;
     if (
       focusId &&
-      (isNpcStillFightable(focusId) || !isCombatTargetConfirmedGone(focusId))
+      (isNpcStillFightable(focusId) ||
+        getNpcSprite(focusId)?.alive ||
+        !isCombatTargetConfirmedGone(focusId))
     ) {
       return true;
     }
@@ -10891,25 +11128,26 @@
     const showOrbPause = running;
     const showOrbStop = sessionBusy;
     if (orbPlay) {
+      const playLabel = paused ? t("ui.resume") : t("ui.play");
       orbPlay.disabled = running || !AUTO.licenseValid;
-      orbPlay.title = paused ? t("ui.resume") : t("ui.play");
-      orbPlay.textContent = "▶";
+      orbPlay.title = playLabel;
+      orbPlay.setAttribute("aria-label", playLabel);
       orbPlay.hidden = !showOrbPlay;
       orbPlay.style.display = showOrbPlay ? "" : "none";
       orbPlay.setAttribute("aria-hidden", showOrbPlay ? "false" : "true");
     }
     if (orbPause) {
       orbPause.disabled = !running;
-      orbPause.textContent = "⏸";
       orbPause.title = t("ui.pause");
+      orbPause.setAttribute("aria-label", t("ui.pause"));
       orbPause.hidden = !showOrbPause;
       orbPause.style.display = showOrbPause ? "" : "none";
       orbPause.setAttribute("aria-hidden", showOrbPause ? "false" : "true");
     }
     if (orbStop) {
       orbStop.disabled = !sessionBusy;
-      orbStop.textContent = "■";
       orbStop.title = t("ui.stop");
+      orbStop.setAttribute("aria-label", t("ui.stop"));
       orbStop.hidden = !showOrbStop;
       orbStop.style.display = showOrbStop ? "" : "none";
       orbStop.setAttribute("aria-hidden", showOrbStop ? "false" : "true");
@@ -11292,11 +11530,14 @@
     style.textContent = `
       #${PANEL_ID} {
         position: fixed;
-        top: 12px;
-        right: 12px;
+        top: 4px;
+        right: 8px;
+        bottom: 4px;
         z-index: 100000;
+        box-sizing: border-box;
         width: 380px;
-        max-height: calc(100vh - 24px);
+        height: calc(100vh - 8px);
+        max-height: calc(100vh - 8px);
         overflow: hidden;
         display: flex;
         flex-direction: column;
@@ -11304,7 +11545,9 @@
         border: 2px solid rgba(31, 157, 99, 0.8);
         border-radius: 10px;
         color: #e8f0ff;
-        font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        /* Avoid Segoe UI metrics inflation on Windows vs Mac system fonts */
+        font: 12px/1.4 Arial, "Helvetica Neue", Helvetica, sans-serif;
+        -webkit-font-smoothing: antialiased;
         box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
         transition: width 0.22s ease, height 0.22s ease, border-radius 0.22s ease, box-shadow 0.22s ease;
       }
@@ -11313,6 +11556,7 @@
         height: 32px !important;
         min-width: unset;
         max-height: 32px;
+        bottom: auto;
         overflow: hidden;
         border-radius: 16px;
         padding: 0;
@@ -11402,6 +11646,42 @@
       }
       #${PANEL_ID} #rg-orb-play {
         padding-left: 1px;
+      }
+      #${PANEL_ID} .rg-ico {
+        display: block;
+        flex: 0 0 auto;
+        pointer-events: none;
+      }
+      #${PANEL_ID} .rg-ico-play {
+        width: 0;
+        height: 0;
+        border-style: solid;
+        border-width: 5px 0 5px 8px;
+        border-color: transparent transparent transparent currentColor;
+        margin-left: 1px;
+      }
+      #${PANEL_ID} .rg-ico-pause {
+        position: relative;
+        width: 8px;
+        height: 10px;
+      }
+      #${PANEL_ID} .rg-ico-pause::before,
+      #${PANEL_ID} .rg-ico-pause::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        width: 2.5px;
+        height: 100%;
+        background: currentColor;
+        border-radius: 0.5px;
+      }
+      #${PANEL_ID} .rg-ico-pause::before { left: 0; }
+      #${PANEL_ID} .rg-ico-pause::after { right: 0; }
+      #${PANEL_ID} .rg-ico-stop {
+        width: 8px;
+        height: 8px;
+        background: currentColor;
+        border-radius: 1px;
       }
       #${PANEL_ID} .rg-orb-quick-btn:hover:not(:disabled) {
         background: rgba(31, 157, 99, 0.55);
@@ -11752,7 +12032,11 @@
         cursor: pointer;
         background: #2f5fd1;
         color: #fff;
+        font: inherit;
+        font-size: 11px;
         font-weight: 600;
+        line-height: 1.3;
+        letter-spacing: 0.01em;
       }
       #${PANEL_ID} button.secondary { background: #2a3348; }
       #${PANEL_ID} button.auto { background: #1f9d63; }
@@ -11905,9 +12189,9 @@
           <span class="rg-orb-dot"></span>
         </div>
         <div class="rg-orb-quick-actions">
-          <button id="rg-orb-play" type="button" class="rg-orb-quick-btn" title="Play">▶</button>
-          <button id="rg-orb-pause" type="button" class="rg-orb-quick-btn" title="Pause" disabled>⏸</button>
-          <button id="rg-orb-stop" type="button" class="rg-orb-quick-btn" title="Stop" disabled>■</button>
+          <button id="rg-orb-play" type="button" class="rg-orb-quick-btn" title="Play" aria-label="Play"><span class="rg-ico rg-ico-play" aria-hidden="true"></span></button>
+          <button id="rg-orb-pause" type="button" class="rg-orb-quick-btn" title="Pause" aria-label="Pause" disabled><span class="rg-ico rg-ico-pause" aria-hidden="true"></span></button>
+          <button id="rg-orb-stop" type="button" class="rg-orb-quick-btn" title="Stop" aria-label="Stop" disabled><span class="rg-ico rg-ico-stop" aria-hidden="true"></span></button>
         </div>
       </div>
       <div class="rg-panel-expanded">
