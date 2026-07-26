@@ -166,6 +166,8 @@
     minimapMoveMinDelta: 28,
     lastMinimapMoveAt: 0,
     lastMinimapTarget: null,
+    /** Sticky combat id that lastMinimapTarget / soft-move memory belongs to. */
+    lastMinimapStickyId: null,
     tickMs: 300,
     uiRefreshMs: 1000,
     bonusRadius: 2500,
@@ -349,6 +351,9 @@
     refineryEnhanceRotateIndex: 0,
     pendingCombatCargo: null,
     foreignNpcIds: new Set(),
+    /** Debounce false-positive foreign lock before clearing sticky mid-kill. */
+    foreignLockSuspectId: null,
+    foreignLockSuspectSince: 0,
     /** lootId → owner_id from lootAdd (null = unowned). Game discards owner_id from K.loots. */
     lootOwnerById: new Map(),
     securityEditing: null,
@@ -406,6 +411,11 @@
   const COMBAT_TARGET_GONE_CONFIRM_MS = 650;
   /** Full schema+sprite remove still needs ≥2 ticks — not a one-frame abandon. */
   const COMBAT_TARGET_GONE_FULL_REMOVE_MS = 600;
+  /**
+   * Honor lockInfo can flicker isOwnedByOther for a living sticky mid-kill.
+   * Require sustained foreign signal this long before markForeignNpc clears sticky.
+   */
+  const FOREIGN_LOCK_CONFIRM_MS = 450;
   /** Soft cap so long sessions cannot grow countedNpcKillIds unboundedly. */
   const COUNTED_NPC_KILL_IDS_MAX = 4000;
   const RAID_HEAL_ARRIVE_DIST = 140;
@@ -804,8 +814,49 @@
     return true;
   }
 
+  function isLivingStickyCombatId(npcId) {
+    if (!npcId) return false;
+    const sticky =
+      AUTO.combatFocusId === npcId ||
+      AUTO.combatTargetId === npcId ||
+      (AUTO.currentTask === "combat" && AUTO.taskTargetId === npcId);
+    if (!sticky) return false;
+    return (
+      isNpcStillFightable(npcId) ||
+      Boolean(getNpcSprite(npcId)?.alive) ||
+      !isCombatTargetConfirmedGone(npcId)
+    );
+  }
+
+  function clearForeignLockSuspect() {
+    AUTO.foreignLockSuspectId = null;
+    AUTO.foreignLockSuspectSince = 0;
+  }
+
+  /**
+   * Returns true when markForeignNpc should proceed.
+   * Living sticky mid-kill requires sustained foreign lock signal (debounce flicker).
+   */
+  function shouldCommitForeignLock(npcId) {
+    if (!npcId) return false;
+    if (!isLivingStickyCombatId(npcId)) {
+      clearForeignLockSuspect();
+      return true;
+    }
+    const now = Date.now();
+    if (AUTO.foreignLockSuspectId !== npcId) {
+      AUTO.foreignLockSuspectId = npcId;
+      AUTO.foreignLockSuspectSince = now;
+      return false;
+    }
+    if (now - AUTO.foreignLockSuspectSince < FOREIGN_LOCK_CONFIRM_MS) return false;
+    clearForeignLockSuspect();
+    return true;
+  }
+
   function markForeignNpc(npcId) {
     if (!npcId) return;
+    if (!shouldCommitForeignLock(npcId)) return;
     AUTO.foreignNpcIds.add(npcId);
     AUTO.watchedNpcIds.delete(npcId);
     const wasCombatTarget =
@@ -832,6 +883,8 @@
     if (!K.lockTargetOwnedByOther) return false;
     const id = K.lockedTargetId;
     markForeignNpc(id);
+    // Still debouncing a living sticky — keep fighting until foreign signal holds.
+    if (!AUTO.foreignNpcIds.has(id)) return false;
     clearLockedTarget();
     const input = getInputSystem();
     if (input) {
@@ -3192,7 +3245,7 @@
         failCount: 0,
         lateArm: true,
       };
-      if (!isInRaidMap()) pauseCombatForPostKillCargo();
+      if (!isInRaidMap()) pauseCombatForPostKillCargo(site.npcId);
       if (tryStartPostKillCargoCollect()) return true;
       // Visible but start failed — leave pending for drivePending tick.
       return Boolean(AUTO.pendingCombatCargo);
@@ -3225,7 +3278,16 @@
    * keepAlive syncAttackSession + living combat task were chasing the next NPC
    * while pendingCombatCargo was still open (standard maps).
    */
-  function pauseCombatForPostKillCargo() {
+  function pauseCombatForPostKillCargo(npcId) {
+    // Never disarm a living sticky for phantom cargo — only after confirmed gone.
+    if (
+      npcId &&
+      (isNpcStillFightable(npcId) ||
+        getNpcSprite(npcId)?.alive ||
+        !isCombatTargetConfirmedGone(npcId))
+    ) {
+      return;
+    }
     const input = getInputSystem();
     if (input) {
       input.attackMode = false;
@@ -3290,7 +3352,7 @@
       // Do NOT require visible cargo first — that let combat walk away while APPEAR_MS
       // expired, then late lootAdd found no pending. Still no soft-chase of empty air.
       if (!isInRaidMap() && pendingKillReady) {
-        pauseCombatForPostKillCargo();
+        pauseCombatForPostKillCargo(pendingId || combatId);
       } else {
         // Raid / unconfirmed: only preempt when real allowed cargo is already visible.
         const visibleCargo = findCargoForPendingKill(AUTO.pendingCombatCargo);
@@ -3306,16 +3368,16 @@
         }
 
         if (pendingKillReady && !isInRaidMap()) {
-          pauseCombatForPostKillCargo();
+          pauseCombatForPostKillCargo(pendingId || combatId);
         } else if (
           combatId &&
           (isNpcStillFightable(combatId) || !isCombatTargetConfirmedGone(combatId))
         ) {
           return false;
         } else if (!getNpcEntry(combatId) && isCombatTargetConfirmedGone(combatId)) {
-          pauseCombatForPostKillCargo();
+          pauseCombatForPostKillCargo(combatId);
         } else if (!isInRaidMap() && isCombatTargetConfirmedGone(combatId)) {
-          pauseCombatForPostKillCargo();
+          pauseCombatForPostKillCargo(combatId);
         } else {
           return false;
         }
@@ -3686,11 +3748,13 @@
       if (!payload.isOwnedByOther) {
         // Confirmed our lock (red circle) — clear any stale foreign mark.
         AUTO.foreignNpcIds.delete(payload.targetId);
+        clearForeignLockSuspect();
         return;
       }
       // Truly someone else's lock — abandon only if that is our current lock.
       if (K?.lockedTargetId === payload.targetId && !isOwnLockOnNpc(payload.targetId)) {
         markForeignNpc(payload.targetId);
+        if (!AUTO.foreignNpcIds.has(payload.targetId)) return; // debounce sticky flicker
         clearLockedTarget();
         const input = getInputSystem();
         if (input) {
@@ -4045,12 +4109,15 @@
     } else {
       AUTO.selectedNpcTypes.add(typeKey);
     }
+    // Keep acquisition filter in sync; never clear living sticky mid-kill.
+    if (AUTO.combatActive) refreshCombatTargetTypesFromSelection();
     updateNpcListVisuals();
     updateStatisticsPanel();
   }
 
   function clearNpcTypeSelection() {
     AUTO.selectedNpcTypes.clear();
+    if (AUTO.combatActive) refreshCombatTargetTypesFromSelection();
     updateNpcListVisuals();
     updateStatisticsPanel();
   }
@@ -4063,6 +4130,7 @@
     for (const key of Object.keys(NPC_TYPES)) {
       AUTO.selectedNpcTypes.add(key);
     }
+    if (AUTO.combatActive) refreshCombatTargetTypesFromSelection();
     updateNpcListVisuals();
     updateStatisticsPanel();
   }
@@ -5479,6 +5547,17 @@
    * True when rewriting the move target would only add robotic micro-jerks.
    * Raid / Approach A path is untouched (caller gates with !isInRaidMap).
    */
+  /**
+   * Soft-move memory must not keep a waypoint aimed at a previous sticky's geometry.
+   * Call whenever the living combat sticky id changes.
+   */
+  function syncMinimapSoftMoveSticky(stickyId) {
+    const id = stickyId || null;
+    if (AUTO.lastMinimapStickyId === id) return;
+    AUTO.lastMinimapStickyId = id;
+    AUTO.lastMinimapTarget = null;
+  }
+
   function shouldKeepExistingMoveTarget(input, x, y) {
     const ship = getShipPosition();
     const cur = input?.moveTarget;
@@ -5866,7 +5945,10 @@
     }
     if (mode === "attack") {
       AUTO.modeAttack = !AUTO.modeAttack;
-      if (!AUTO.modeAttack) clearNpcTypeSelection();
+      if (!AUTO.modeAttack) {
+        clearNpcTypeSelection();
+        stopCombat();
+      }
     }
     updateModeButtons();
     updateNpcListVisuals();
@@ -6540,7 +6622,7 @@
       // Raid: only hold when drop is already visible+allowed (mid-fight pressure).
       if (AUTO.pendingCombatCargo && canCollectCargoNow()) {
         if (!isInRaidMap() || findCargoForPendingKill(AUTO.pendingCombatCargo)) {
-          pauseCombatForPostKillCargo();
+          pauseCombatForPostKillCargo(deadNpcId);
         }
         return;
       }
@@ -6769,6 +6851,7 @@
     AUTO.taskTargetId = npc.id;
     AUTO.combatTargetId = npc.id;
     AUTO.combatFocusId = npc.id;
+    syncMinimapSoftMoveSticky(npc.id);
 
     if (getGameState()?.lockedTargetId !== npc.id) {
       setLockedTarget(npc.id);
@@ -6871,6 +6954,7 @@
 
     AUTO.combatTargetId = npc.id;
     AUTO.combatFocusId = npc.id;
+    syncMinimapSoftMoveSticky(npc.id);
     trackNpcPosition(npc);
     updateCombatOrbitEngagement(npc);
     applySmartCombatAmmo(npc.id);
@@ -7369,7 +7453,7 @@
           !combatId ||
           (!isNpcStillFightable(combatId) && isCombatTargetConfirmedGone(combatId))
         ) {
-          pauseCombatForPostKillCargo();
+          pauseCombatForPostKillCargo(combatId || AUTO.pendingCombatCargo?.npcId);
           return false;
         }
       }
@@ -8203,26 +8287,45 @@
     if (!input || !ship) return false;
     // Keep shooting edge targets while evading — never dive into the pack for a shot
     if (isRaidShipEncircled(ship)) return false;
-    const npc = resolveRaidCombatTarget(AUTO.taskTargetId || AUTO.combatFocusId);
-    if (!npc) return false;
+    const stickyId =
+      AUTO.combatFocusId || AUTO.taskTargetId || AUTO.combatTargetId || null;
     const fireRange = getPlayerFireRange();
-    if (npc.dist > fireRange + 50) return false;
+    const stickyNpc =
+      stickyId && isNpcAllowedForCombat(stickyId)
+        ? getStickyCombatNpcEntry(stickyId) || getNpcEntry(stickyId)
+        : null;
+
+    // Prefer sticky if still in fire band; otherwise temporary nearest for heal shots only.
+    let shootNpc =
+      stickyNpc && stickyNpc.dist <= fireRange + 50 ? stickyNpc : null;
+    if (!shootNpc) {
+      shootNpc = resolveRaidCombatTarget(null);
+      if (!shootNpc || shootNpc.dist > fireRange + 50) return false;
+    }
+
     // Skip if the target is deep inside the swarm relative to us
     const all = listNpcs(0);
     if (all.length >= 3) {
       const swarm = getRaidSwarmCentroid(all);
       const shipFromSwarm = distance(ship.x, ship.y, swarm.x, swarm.y);
-      const npcFromSwarm = distance(npc.x, npc.y, swarm.x, swarm.y);
-      if (npcFromSwarm + 80 < shipFromSwarm && npc.dist < fireRange * 0.55) return false;
+      const npcFromSwarm = distance(shootNpc.x, shootNpc.y, swarm.x, swarm.y);
+      if (npcFromSwarm + 80 < shipFromSwarm && shootNpc.dist < fireRange * 0.55) {
+        return false;
+      }
     }
-    AUTO.taskTargetId = npc.id;
-    AUTO.combatTargetId = npc.id;
-    AUTO.combatFocusId = npc.id;
-    if (getGameState()?.lockedTargetId !== npc.id) {
-      setLockedTarget(npc.id);
-      input.notifyPlayerLocked?.(npc.id);
+
+    // Never overwrite living sticky with a temporary heal shoot id.
+    if (!(stickyId && isLivingStickyCombatId(stickyId))) {
+      AUTO.taskTargetId = shootNpc.id;
+      AUTO.combatTargetId = shootNpc.id;
+      AUTO.combatFocusId = shootNpc.id;
     }
-    engageNpc(npc.id);
+
+    if (getGameState()?.lockedTargetId !== shootNpc.id) {
+      setLockedTarget(shootNpc.id);
+      input.notifyPlayerLocked?.(shootNpc.id);
+    }
+    engageNpc(shootNpc.id);
     sustainRaidAttack(input);
     return true;
   }

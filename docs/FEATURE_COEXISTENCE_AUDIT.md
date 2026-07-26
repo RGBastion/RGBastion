@@ -576,19 +576,23 @@ Nessuna per lo sticky. Opzionale harden: `isInRaidMap()` richieda solo `K.inRaid
 ## Top 5 candidati di correzione chirurgica (priorità)
 
 1. **FATTO — Abbandono sticky a metà kill (type sync + resolve raid).**  
-   File/righe: `refreshCombatTargetTypesFromSelection` 4089–4106, `resolveRaidCombatTarget` 6201–6254, `getFocusedCombatNpc` 6426–6475. Sincronizzato su App Support autopilot.js.
+   File/righe: `refreshCombatTargetTypesFromSelection`, `resolveRaidCombatTarget`, `getFocusedCombatNpc`.
 
-2. **Debounce false foreign lock → `markForeignNpc`.**  
-   Evitare che un false-positive honor azzeri lo sticky a metà kill (`markForeignNpc` 807–825, `abandonForeignLockedTarget` 827–843).
+2. **FATTO — Debounce false foreign lock → `markForeignNpc`.**  
+   `FOREIGN_LOCK_CONFIRM_MS` (450) + `shouldCommitForeignLock` / `isLivingStickyCombatId`; lockInfo e `abandonForeignLockedTarget` non azzerano sticky su flicker.
 
-3. **Separare heal “shoot id” dal focus sticky durante `sustainRaidHealAttack`.**  
-   Evitare di sovrascrivere lo sticky mentre HP-flee spara al nearest (~8202–8227) — solo se i playtest mostrano abbandono sul percorso heal.
+3. **FATTO — Separare heal “shoot id” dal focus sticky in `sustainRaidHealAttack`.**  
+   Spara al nearest se sticky fuori range, senza sovrascrivere `combatFocusId` / `taskTargetId` vivi.
 
-4. **Resettare la memoria soft-move minimappa al cambio id sticky.**  
-   Pulire `AUTO.lastMinimapTarget` quando cambia `taskTargetId` per evitare un waypoint soft-kept verso geometria vecchia (`moveViaMinimap` / `shouldKeepExistingMoveTarget`).
+4. **FATTO — Reset memoria soft-move minimappa al cambio sticky.**  
+   `syncMinimapSoftMoveSticky` azzera `lastMinimapTarget` quando cambia l’id sticky (raid + standard engage).
 
-5. **`toggleNpcTypeSelection` dovrebbe sincronizzare `combatTargetTypes` senza azzerare lo sticky.**  
-   Stesso pattern di preserve del refresh — evita desync tra selezione UI e filtro di acquisizione.
+5. **FATTO — `toggleNpcTypeSelection` sincronizza `combatTargetTypes` senza azzerare sticky.**  
+   Anche `selectAllNpcTypes` / `clearNpcTypeSelection` → `refreshCombatTargetTypesFromSelection`.
+
+**Extra applicati (raccomandazioni audit):**
+- `pauseCombatForPostKillCargo(npcId)` solo se il bersaglio è confirmed-gone (niente disarm mid-fight).
+- Spegnere Attacco → `stopCombat()` pulito.
 
 ---
 
@@ -599,5 +603,10 @@ Nessuna per lo sticky. Opzionale harden: `isInRaidMap()` richieda solo `K.inRaid
 | Preserve sticky in `refreshCombatTargetTypesFromSelection` | **Sì** |
 | `resolveRaidCombatTarget` sticky-first | **Sì** |
 | Keep living-focus in `getFocusedCombatNpc` | **Sì** |
-| Sync App Support `~/Library/Application Support/RedGalaxy Bastion/web/story/autopilot.js` | **Sì** (`cmp` OK) |
-| Version bump / commit / push | **No** (secondo istruzioni) |
+| Debounce foreign lock mid-sticky | **Sì** |
+| Heal shoot-id separato dallo sticky | **Sì** |
+| Reset soft-move su cambio sticky | **Sì** |
+| Sync tipi UI senza clear sticky | **Sì** |
+| Guard cargo post-kill + stopCombat su Attacco off | **Sì** |
+| Sync App Support `…/web/story/autopilot.js` | **Sì** (dopo correzioni mirate) |
+| Version bump / commit / push | **No** (in attesa di test utente) |
