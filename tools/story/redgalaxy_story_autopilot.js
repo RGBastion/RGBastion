@@ -4089,6 +4089,18 @@
   function refreshCombatTargetTypesFromSelection() {
     if (!AUTO.combatActive) return;
     AUTO.combatTargetTypes = new Set(AUTO.selectedNpcTypes);
+    // New NPC types appearing (raid sync / preset merge) must NOT abandon a living sticky
+    // mid-kill — that looked like type-priority retarget when a different type spawned.
+    const stickyId =
+      AUTO.combatFocusId || AUTO.combatTargetId || AUTO.taskTargetId || null;
+    if (
+      stickyId &&
+      (isNpcStillFightable(stickyId) ||
+        getNpcSprite(stickyId)?.alive ||
+        !isCombatTargetConfirmedGone(stickyId))
+    ) {
+      return;
+    }
     AUTO.combatFocusId = null;
     AUTO.combatTargetId = null;
   }
@@ -4443,34 +4455,25 @@
 
   /** Gentle orbit bias toward nearest friendly portal (opt-in). Does not hard-charge. */
   /**
-   * Standard-map portal drift: bias orbit *angle* toward the allied portal at
-   * constant NPC stand-off radius. Never linearly blend the waypoint toward the
-   * portal (that squashes the circle into an oval). Once within stand-off of the
-   * portal → freeze: pure π/2 circular orbit.
+   * Standard-map portal drift: soft-blend the orbit waypoint toward the allied
+   * portal so the fight gradually migrates there. Freeze within stand-off of the
+   * portal (no linear pull) so near-portal combat stays a pure circle via
+   * softClampStdOrbitCircle — linear blend near the portal was the oval bug.
    */
   function applyPortalDriftBias(tx, ty, ship, npc, radius) {
-    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship || !npc) return { x: tx, y: ty };
+    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship) return { x: tx, y: ty };
     const portal = findNearestFriendlyPortal({ preferSafeBase: false });
     if (!portal) return { x: tx, y: ty };
 
-    // Freeze inside stand-off of the portal — keep pure circular combat orbit.
-    // (applyCombatOrbit only calls us while already in the fire/orbit band.)
+    // Freeze near portal — keep pure circular combat orbit (no linear pull → no oval).
     const PORTAL_DRIFT_FREEZE_DIST = 560;
     if (portal.dist <= PORTAL_DRIFT_FREEZE_DIST) return { x: tx, y: ty };
 
-    const r = radius > 1 ? radius : Math.hypot(tx - npc.x, ty - npc.y);
-    if (!(r > 1)) return { x: tx, y: ty };
-    const ang = Math.atan2(ty - npc.y, tx - npc.x);
-    const portalAng = Math.atan2(portal.y - npc.y, portal.x - npc.x);
-    let dAng = portalAng - ang;
-    while (dAng > Math.PI) dAng -= Math.PI * 2;
-    while (dAng < -Math.PI) dAng += Math.PI * 2;
-    // Soft angular blend only (constant radius → circle preserved).
+    // Soft blend (~12%) so combat orbit stays primary but fight drifts toward portal.
     const blend = 0.12;
-    const newAng = ang + dAng * blend;
     return {
-      x: npc.x + Math.cos(newAng) * r,
-      y: npc.y + Math.sin(newAng) * r,
+      x: tx + (portal.x - tx) * blend,
+      y: ty + (portal.y - ty) * blend,
     };
   }
 
@@ -5792,17 +5795,40 @@
         wantOrbitR > 1
           ? wantOrbitR
           : Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || preferred;
+      const preDrift = safeTarget;
       const drifted = applyPortalDriftBias(safeTarget.x, safeTarget.y, ship, npc, orbitR);
-      safeTarget = softClampStdOrbitCircle(drifted.x, drifted.y, npc, orbitR);
-      // Recent damage after a retreat: don't immediately click back inward toward the NPC.
+      const driftActive = drifted.x !== preDrift.x || drifted.y !== preDrift.y;
+      // Active drift must not be reprojected onto the NPC ring (that kills attraction).
+      // Frozen / no-op drift keeps softClamp so near-portal orbit stays circular.
+      if (driftActive) {
+        safeTarget = clampToPlayArea(drifted.x, drifted.y);
+      } else {
+        safeTarget = softClampStdOrbitCircle(drifted.x, drifted.y, npc, orbitR);
+      }
+      // Recent damage / in-range stand-off: don't click inward toward the NPC body.
+      // When portal drift just moved the point, never softClamp-erase attraction —
+      // keep the portal-ward angle and restore stand-off radius only.
       if (shouldSuppressStdInwardAfterHit(ship, npc, safeTarget.x, safeTarget.y)) {
-        safeTarget = softenStdOrbitPointAfterHit(ship, npc, safeTarget.x, safeTarget.y);
-        safeTarget = softClampStdOrbitCircle(
-          safeTarget.x,
-          safeTarget.y,
-          npc,
-          Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || orbitR
-        );
+        if (driftActive) {
+          const ang = Math.atan2(safeTarget.y - npc.y, safeTarget.x - npc.x);
+          const holdR = Math.max(
+            orbitR,
+            preferred,
+            Math.hypot(ship.x - npc.x, ship.y - npc.y) || 0
+          );
+          safeTarget = clampToPlayArea(
+            npc.x + Math.cos(ang) * holdR,
+            npc.y + Math.sin(ang) * holdR
+          );
+        } else {
+          safeTarget = softenStdOrbitPointAfterHit(ship, npc, safeTarget.x, safeTarget.y);
+          safeTarget = softClampStdOrbitCircle(
+            safeTarget.x,
+            safeTarget.y,
+            npc,
+            Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || orbitR
+          );
+        }
       }
       noteStdOrbitRadialSign(ship, npc, safeTarget.x, safeTarget.y);
     }
@@ -6173,20 +6199,20 @@
   }
 
   function resolveRaidCombatTarget(preferredId) {
-    // Story 3 (~2540): nearest enemy. Delta D: never abandon local threats for a distant pick.
+    // Sticky-first: finish the current kill before hopping to another NPC (any type).
+    // Acquisition (no living sticky) still uses nearest / local-threat below.
     const fireRange = getPlayerFireRange();
 
-    // Finish a low-HP sticky preferred before hopping to a full-HP nearer NPC.
     if (preferredId && isNpcAllowedForCombat(preferredId)) {
-      const preferred = getStickyCombatNpcEntry(preferredId) || getNpcEntry(preferredId);
-      if (preferred) {
-        const st = getGameState()?.npcs?.get?.(preferredId);
-        const maxHp = Number(st?.max_hp) || 0;
-        const hp = st?.hp != null ? Number(st.hp) : null;
-        const lowHp =
-          (hp != null && maxHp > 0 && hp <= maxHp * 0.4) ||
-          (hp != null && maxHp > 0 && hp < maxHp - 0.5 && preferred.dist <= fireRange + 120);
-        if (lowHp) return preferred;
+      const preferred =
+        getStickyCombatNpcEntry(preferredId) || getNpcEntry(preferredId);
+      if (
+        preferred &&
+        (isNpcStillFightable(preferredId) ||
+          getNpcSprite(preferredId)?.alive ||
+          !isCombatTargetConfirmedGone(preferredId))
+      ) {
+        return preferred;
       }
     }
 
@@ -6216,31 +6242,12 @@
 
     const preferred =
       preferredId && isNpcAllowedForCombat(preferredId) ? getNpcEntry(preferredId) : null;
-    if (preferred) {
-      // D: sticky preferred only if still reachable / not ignoring a closer attacker
-      if (
-        localThreat &&
-        preferred.id !== localThreat.id &&
-        preferred.dist > localThreat.dist + 160
-      ) {
-        return localThreat;
-      }
-      return preferred;
-    }
+    if (preferred) return preferred;
 
     const lockedId = getGameState()?.lockedTargetId;
     if (lockedId && isNpcAllowedForCombat(lockedId)) {
       const locked = getNpcEntry(lockedId);
-      if (locked) {
-        if (
-          localThreat &&
-          locked.id !== localThreat.id &&
-          locked.dist > localThreat.dist + 160
-        ) {
-          return localThreat;
-        }
-        return locked;
-      }
+      if (locked) return locked;
     }
 
     return listNpcs(0)[0] || null;
@@ -6431,7 +6438,14 @@
     if (AUTO.combatFocusId) {
       const focused =
         getNpcEntry(AUTO.combatFocusId) || getStickyCombatNpcEntry(AUTO.combatFocusId);
-      if (focused && AUTO.combatTargetTypes.has(focused.type)) {
+      // Sticky finish-kill: keep living focus even if type set briefly diverged
+      // (raid sync adding other types must not hop mid-fight).
+      if (
+        focused &&
+        (AUTO.combatTargetTypes.has(focused.type) ||
+          isNpcStillFightable(focused.id) ||
+          getNpcSprite(focused.id)?.alive)
+      ) {
         AUTO.combatTargetGoneAt = 0;
         clearFalsePendingCargoForLivingTarget(focused.id);
         return focused;
