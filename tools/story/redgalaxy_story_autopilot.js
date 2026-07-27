@@ -37,7 +37,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.6-mac45";
+  const BASTION_APP_VERSION = "1.0.6-mac46";
 
   const NPC_TYPES = {
     ALIEN10: "-={{Kryll}}=-",
@@ -599,12 +599,12 @@
   const RAID_SAFE_RETURN_STEP = 380;
   /** After each wave spawn: force breakout/edge kite before diving the pack. */
   const RAID_WAVE_REPOSITION_MS = 5500;
-  /** Detect pack surround a bit earlier (was 520 / 3 / π·0.85). */
-  const RAID_ENCIRCLE_CLOSE_R = 580;
+  /** Detect pack surround early enough to escape before the ring closes. */
+  const RAID_ENCIRCLE_CLOSE_R = 620;
   const RAID_ENCIRCLE_MIN_NPCS = 2;
   const RAID_SWARM_NEIGHBOR_R = 420;
-  /** Decisive lateral escape when encircled (was 620). */
-  const RAID_BREAKOUT_STEP = 860;
+  /** Decisive lateral escape when encircled (minimap — bypass soft hold). */
+  const RAID_BREAKOUT_STEP = 980;
   /** Absolute soft turret tether (hard ceiling / safety only — do not cruise here). */
   const RAID_ORBIT_TURRET_SOFT = 0.98;
   /**
@@ -6447,7 +6447,10 @@
       noteRaidProgressFromWave(payload);
       // Soft wave arm: short breakout window only — never clear combat/orbit (that caused freeze).
       armRaidWaveReposition("wave");
-      if (mustHealBeforeRaidAdvance()) {
+      // mac46: do NOT force heal just because HP/shield < 100% on a new wave.
+      // That ignored Flee HP % and looked like random early flee. Heal flee is owned
+      // by shouldFleeByHp / processSecurityGates; full heal stays for stage advance.
+      if (shouldFleeByHp()) {
         AUTO.raidHealMode = true;
         AUTO.raidFleeTarget = null;
         AUTO.raidHealSide = -1;
@@ -6460,7 +6463,7 @@
       }
       if (!AUTO.raidGateId) return;
       window.setTimeout(() => {
-        if (mustHealBeforeRaidAdvance()) {
+        if (shouldFleeByHp()) {
           AUTO.raidHealMode = true;
           AUTO.raidHealPhase = "evade";
           if (AUTO.modeAttack) AUTO.combatSuspendedForFlee = true;
@@ -7041,8 +7044,8 @@
     // 4+ close = packed (was MIN+2 with MIN=3 → 5).
     if (close.length >= RAID_ENCIRCLE_MIN_NPCS + 2) return true;
     const spread = getRaidAngularSpread(ship, close);
-    // Partial surround / flanking: fire sooner (was π·0.85). MIN=2 allows 2-flank detect.
-    return spread >= Math.PI * 0.72;
+    // Partial surround / flanking: fire sooner so breakout is decisive (mac46).
+    return spread >= Math.PI * 0.65;
   }
 
   function needsRaidWaveBreakout(ship = getShipPosition()) {
@@ -7648,7 +7651,7 @@
     const fireRange = getPlayerFireRange();
     const encircled = isShipEncircledByNpcs(ship);
     // Decisive step when packed; normal step otherwise.
-    const breakStep = encircled ? RAID_BREAKOUT_STEP * 1.15 : RAID_BREAKOUT_STEP;
+    const breakStep = encircled ? RAID_BREAKOUT_STEP * 1.25 : RAID_BREAKOUT_STEP;
 
     let away = Math.atan2(ship.y - swarm.y, ship.x - swarm.x);
     if (!Number.isFinite(away)) {
@@ -7677,8 +7680,36 @@
             gapMid = a + gap * 0.5;
           }
         }
-        if (maxGap >= 0.5) away = gapMid;
+        if (maxGap >= 0.45) away = gapMid;
       }
+    }
+
+    // mac46: when encircled, escape is ship-relative + decisive — do not ring-clamp
+    // first (that caused thrash / "crisis" before leaving the pack).
+    if (encircled) {
+      const candidates = [];
+      for (const bias of [0, 0.35, -0.35, 0.75, -0.75, 1.15, -1.15]) {
+        const ang = away + bias;
+        const raw = clampToPlayArea(
+          ship.x + Math.cos(ang) * breakStep,
+          ship.y + Math.sin(ang) * breakStep
+        );
+        const threat = getNearestNpcDistance(raw.x, raw.y);
+        const towardSwarm =
+          (raw.x - ship.x) * (swarm.x - ship.x) + (raw.y - ship.y) * (swarm.y - ship.y);
+        const r = distance(raw.x, raw.y, center.x, center.y);
+        // Prefer open space + staying inside support zone when possible.
+        const support = getRaidOrbitSupportMax();
+        const supportBonus = r <= support ? 40 : r <= support * 1.08 ? 0 : -80;
+        const score = threat + supportBonus - (towardSwarm > 0 ? 160 : 0);
+        candidates.push({ x: raw.x, y: raw.y, score });
+      }
+      candidates.sort((a, b) => b.score - a.score);
+      if (candidates[0]) return { x: candidates[0].x, y: candidates[0].y };
+      return clampToPlayArea(
+        ship.x + Math.cos(away) * breakStep,
+        ship.y + Math.sin(away) * breakStep
+      );
     }
 
     const shipR = Math.hypot(ship.x - center.x, ship.y - center.y) || turretR;
@@ -7882,6 +7913,8 @@
   function driveRaidWaveBreakout(input, ship, npc) {
     if (!input || !ship || !needsRaidWaveBreakout(ship)) return false;
 
+    if (!AUTO.raidWaveEscapeDir) AUTO.raidWaveEscapeDir = Math.random() < 0.5 ? 1 : -1;
+
     const encircled = isRaidShipEncircled(ship);
     const closeThreat = getNearestNpcDistance(ship.x, ship.y);
     // Already clear enough during wave grace → resume Story 3 orbit
@@ -7896,11 +7929,10 @@
     }
 
     const breakout = getRaidBreakoutPoint(ship);
-    // Packed: force a fresh escape click (bypass soft interval/delta dither).
-    if (encircled) {
-      AUTO.lastMinimapMoveAt = 0;
-      AUTO.lastMinimapTarget = null;
-    }
+    // Escape = minimap only. Packed: force a fresh click (bypass soft interval/delta).
+    AUTO.lastMinimapMoveAt = 0;
+    AUTO.lastMinimapTarget = null;
+    AUTO.orbitHumanHoldUntil = 0;
     moveViaMinimap(breakout.x, breakout.y);
 
     if (npc) {
@@ -9056,38 +9088,39 @@
       }
       noteStdOrbitRadialSign(ship, npc, safeTarget.x, safeTarget.y);
     }
-    // Portal-safe / Executioner / standard combat: irregular human hold before retarget.
+    // Portal-safe / Executioner / standard / raid combat: irregular human hold before retarget.
     // Not every mainTick — prolonged mouse-hold feel on the orbit chord.
-    if (!inRaid) {
-      if (!AUTO.orbitHumanHoldUntil || now >= AUTO.orbitHumanHoldUntil) {
-        // Refresh next hold window irregularly (380–900ms).
-        AUTO.orbitHumanHoldUntil =
-          now +
-          (portalSafeOrbit
-            ? randBetween(520, 920)
-            : hitSoft
-              ? randBetween(420, 780)
+    // Escape breakout never reaches here (needsRaidWaveBreakout returns early above).
+    if (!AUTO.orbitHumanHoldUntil || now >= AUTO.orbitHumanHoldUntil) {
+      // Refresh next hold window irregularly (380–900ms).
+      AUTO.orbitHumanHoldUntil =
+        now +
+        (portalSafeOrbit
+          ? randBetween(520, 920)
+          : hitSoft
+            ? randBetween(420, 780)
+            : inRaid
+              ? randBetween(400, 820)
               : randBetween(380, 860));
-      } else if (
-        AUTO.lastMinimapTarget &&
-        shouldKeepExistingMoveTarget(
-          { moveTarget: AUTO.lastMinimapTarget },
-          safeTarget.x,
-          safeTarget.y
-        )
+    } else if (
+      AUTO.lastMinimapTarget &&
+      shouldKeepExistingMoveTarget(
+        { moveTarget: AUTO.lastMinimapTarget },
+        safeTarget.x,
+        safeTarget.y
+      )
+    ) {
+      // Re-assert soft hold if engine dropped moveTarget — no new click.
+      const mt = input.moveTarget;
+      const held = AUTO.lastMinimapTarget;
+      if (
+        !mt ||
+        mt.x == null ||
+        distance(mt.x, mt.y, held.x, held.y) > 120
       ) {
-        // Re-assert soft hold if engine dropped moveTarget — no new click.
-        const mt = input.moveTarget;
-        const held = AUTO.lastMinimapTarget;
-        if (
-          !mt ||
-          mt.x == null ||
-          distance(mt.x, mt.y, held.x, held.y) > 120
-        ) {
-          setMoveTargetDirect(input, held.x, held.y);
-        }
-        return true;
+        setMoveTargetDirect(input, held.x, held.y);
       }
+      return true;
     }
     const holdMs = portalSafeOrbit
       ? 620
@@ -9095,7 +9128,7 @@
         ? Math.max((AUTO.raidOrbitMoveMinIntervalMs || 260) * 2.25, 580)
         : !inRaid
           ? 480
-          : 0;
+          : 420;
     if (
       holdMs > 0 &&
       AUTO.lastMinimapTarget &&
@@ -9108,15 +9141,12 @@
     ) {
       return true;
     }
-    // Standard maps: prefer continuous setMoveTarget (mouse-hold) over minimap click spam.
-    if (!inRaid) {
-      setMoveTargetDirect(input, safeTarget.x, safeTarget.y);
-      AUTO.lastMinimapTarget = { x: safeTarget.x, y: safeTarget.y };
-      AUTO.lastMinimapMoveAt = now;
-    } else {
-      moveViaMinimap(safeTarget.x, safeTarget.y);
-      AUTO.lastRaidOrbitMoveAt = now;
-    }
+    // mac46: raid combat orbit = prolonged gameplay click (human hold).
+    // Escape / encircle breakout stays on minimap via driveRaidWaveBreakout.
+    setMoveTargetDirect(input, safeTarget.x, safeTarget.y);
+    AUTO.lastMinimapTarget = { x: safeTarget.x, y: safeTarget.y };
+    AUTO.lastMinimapMoveAt = now;
+    if (inRaid) AUTO.lastRaidOrbitMoveAt = now;
     return true;
   }
 
@@ -10340,6 +10370,9 @@
       // Never stand still on Executioner round — keep kiting until a lock exists.
       if (needsRaidWaveBreakout(ship) || isRaidExecutionerRound()) {
         const breakout = getRaidBreakoutPoint(ship);
+        AUTO.lastMinimapMoveAt = 0;
+        AUTO.lastMinimapTarget = null;
+        AUTO.orbitHumanHoldUntil = 0;
         moveViaMinimap(breakout.x, breakout.y);
         setStatus(
           isRaidExecutionerRound()
@@ -10375,9 +10408,12 @@
 
     if (npc.dist > approachLimit) {
       // A: move every tick from first engage — NPC-radial approach (Story 3 getOrbitApproachPoint)
+      // mac46: approach = gameplay hold click; escape breakout stays on minimap.
       if (AUTO.modeOrbit || execFluid) {
         const ap = getOrbitApproachPoint(npc);
-        moveViaMinimap(ap.x, ap.y);
+        setMoveTargetDirect(input, ap.x, ap.y);
+        AUTO.lastMinimapTarget = { x: ap.x, y: ap.y };
+        AUTO.lastMinimapMoveAt = Date.now();
         AUTO.lastRaidOrbitMoveAt = Date.now();
       } else if (shouldChaseCombatTarget(npc, fireRange)) {
         setMoveTargetDirect(input, npc.x, npc.y);
@@ -12065,24 +12101,32 @@
     const hp = getPlayerHpSnapshot().percent;
     const thr = AUTO.fleeHpPercent;
     const tol = getFleeHpTolerance();
-    // Soft band: finish sticky kill down to thr−tol; between targets heal early at thr+tol.
+    // mac46: Raid must respect the Flee HP % setting exactly (no early +tol band).
+    // Soft ±tol is standard-map only (finish sticky / early between targets).
+    if (isInRaidMap()) {
+      if (hasLivingStickyCombat()) return hp <= Math.max(1, thr - tol);
+      return hp <= thr;
+    }
+    // Soft band (standard): finish sticky kill down to thr−tol; between targets heal early at thr+tol.
     if (hasLivingStickyCombat()) {
       return hp <= thr - tol;
     }
     return hp <= thr + tol;
   }
 
-  /** Fixed soft-band half-width around Flee HP % (default 5). */
+  /** Fixed soft-band half-width around Flee HP % (default 5). Standard maps only. */
   function getFleeHpTolerance() {
     const raw = Number(AUTO.fleeHpTolerance);
     return Number.isFinite(raw) && raw >= 0 ? raw : 5;
   }
 
   /**
-   * Between targets: already in early-heal soft band → do not start a fresh NPC.
+   * Between targets (standard maps): already in early-heal soft band → do not start a fresh NPC.
    * Mid-sticky fights are allowed so we can finish the kill down to thr−tol.
+   * mac46: never apply on raid — that looked like fleeing with plenty of HP left.
    */
   function shouldBlockNewEngageForHealBand() {
+    if (isInRaidMap()) return false;
     if (AUTO.fleeHpPercent <= 0) return false;
     if (hasLivingStickyCombat()) return false;
     return getPlayerHpSnapshot().percent <= AUTO.fleeHpPercent + getFleeHpTolerance();
@@ -14338,7 +14382,10 @@
       ) {
         const evade = getRaidHealEvasionWaypoint(ship);
         AUTO.raidHealPhase = "evade";
-        setMoveTargetDirect(input, evade.x, evade.y);
+        // Escape skirt: minimap (decisive), not soft gameplay hold.
+        AUTO.lastMinimapMoveAt = 0;
+        AUTO.lastMinimapTarget = null;
+        moveViaMinimap(evade.x, evade.y);
         setStatus(
           `Raid: NPC vicino, resto sul lato (${Math.round(threatNearShip)}m)`
         );
@@ -14356,7 +14403,9 @@
     if (target && raidHealPathCrossesSwarm(ship, target)) {
       const evade = getRaidHealEvasionWaypoint(ship);
       AUTO.raidHealPhase = "evade";
-      setMoveTargetDirect(input, evade.x, evade.y);
+      AUTO.lastMinimapMoveAt = 0;
+      AUTO.lastMinimapTarget = null;
+      moveViaMinimap(evade.x, evade.y);
       setStatus(
         `Raid: scarto l'orda verso lato sicuro (${Math.round(distToTarget)}m)`
       );
@@ -14374,7 +14423,8 @@
       distance(mt.x, mt.y, target.x, target.y) > 50 ||
       distToTarget > RAID_HEAL_ARRIVE_DIST;
     if (needsMove && target) {
-      setMoveTargetDirect(input, target.x, target.y);
+      // HP flee travel: minimap escape path.
+      moveViaMinimap(target.x, target.y);
     }
 
     setStatus(`Raid: verso lato sicuro (${Math.round(distToTarget)}m)`);
