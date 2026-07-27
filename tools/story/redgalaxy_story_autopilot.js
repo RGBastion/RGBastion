@@ -31,12 +31,13 @@
   const LOCALE_STORAGE_KEY = "rg_story_locale_v1";
   const DEVICE_ID_STORAGE_KEY = "rg_story_device_id_v1";
   const UI_ZOOM_STORAGE_KEY = "rg_story_ui_zoom_v1";
+  const DISCORD_WEBHOOK_STORAGE_KEY = "rg_story_discord_webhook_v1";
   /** Effectively unlimited: any hostile the client can see. */
   const FLEE_ENEMY_DETECT_RADIUS = Number.POSITIVE_INFINITY;
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.5";
+  const BASTION_APP_VERSION = "1.0.6-mac45";
 
   const NPC_TYPES = {
     ALIEN10: "-={{Kryll}}=-",
@@ -199,6 +200,10 @@
     combatTargetGoneAt: 0,
     combatActive: false,
     combatOrbitEngagedIds: new Set(),
+    /** Sticky id we started engaging (for first-hit / portal-drift gate). */
+    combatEngageNpcId: null,
+    /** Timestamp when combatEngageNpcId was first engaged this fight. */
+    combatEngageStartedAt: 0,
     selectedCombatAmmoTypes: new Set(),
     combatAmmoBuyQty: 0,
     combatAmmoBuyPending: false,
@@ -217,8 +222,17 @@
     npcScanRadius: 0,
     uiLoopId: null,
     workingMapId: "",
+    /**
+     * Map id when cold Play started. Used so Stop→Play stays in place unless the
+     * user changed workingMapId while stopped (intentional objective change).
+     */
+    coldPlayStayMapId: "",
     raidGateId: "",
     pendingRaidGate: null,
+    /** Raid progress tracked from raidInfo / raidWave / raidStageClear (game state does not persist these). */
+    raidCurrentStage: 0,
+    raidTotalStages: 0,
+    raidCurrentWave: 0,
     attackConfig: 1,
     roamConfig: 2,
     runConfig: 2,
@@ -233,9 +247,18 @@
     orbDragMoved: false,
     portalWaitSec: 3,
     baseWaitSec: 5,
+    /** Last rolled portal/base wait duration (sec) for status display. */
+    lastRolledWaitSec: 0,
     deathLimit: 0,
     fleeHpPercent: 30,
+    /** Soft band ±% around fleeHpPercent (finish kill / early heal). Fixed 5 for now. */
+    fleeHpTolerance: 5,
     fleeEnemyPlayers: false,
+    /**
+     * Opt-in: if an admin/staff ship appears in AOI (same list as enemy detect),
+     * go to nearest portal and hold still for coffee-break duration.
+     */
+    pauseOnAdmin: false,
     /** Opt-in: sendUseCloak while fleeing hostile players. */
     fleeUseCloak: false,
     /** Opt-in: fire SAP shield ammo at chasing PvP enemy while fleeing (movement unchanged). */
@@ -246,6 +269,8 @@
     pvpFleeLastCombatEffective: null,
     /** Timestamp of last local HP/shield drop while in PvP flee. */
     pvpFleeHitAt: 0,
+    /** Throttle status notices for nearby cloaked hostiles. */
+    lastCloakHostileNoticeAt: 0,
     /** Login username captured at Play (for coffee-pause re-login). Memory only. */
     playSessionUsername: "",
     /** Short-lived coffee re-login poll (until / deadline). */
@@ -253,8 +278,24 @@
     coffeeReloginAttemptedAt: 0,
     /** Opt-in: buy one booty key in safe zone when keys==0. */
     autoBuyBootyKeys: false,
-    /** Opt-in: while orbiting NPCs on standard maps, gently bias toward nearest friendly portal. */
+    /** Opt-in: migrate combat toward nearest friendly portal (independent from Orbit). */
     orbitPortalDrift: false,
+    /** Hysteresis: true once ship is inside allied portal safe/center (not the old ~560m ring). */
+    portalDriftArrived: false,
+    /** Portal-drift human wobble: irregular amp/side stretch (not periodic L/R). */
+    portalDriftWobbleAmp: 0,
+    portalDriftWobbleSide: 1,
+    portalDriftWobbleUntil: 0,
+    /** Long-path human wobble (map/flee mid/coffee mid) — irregular stretches. */
+    pathHumanAmp: 0,
+    pathHumanSide: 1,
+    pathHumanUntil: 0,
+    /** Combat orbit: next allowed retarget time (irregular hold, not every tick). */
+    orbitHumanHoldUntil: 0,
+    /** Post-heal safe-zone micro-fidget (only while HP/shield already full). */
+    safeFidgetNextAt: 0,
+    safeFidgetHoldUntil: 0,
+    safeFidgetTarget: null,
     /** Standard-map combat: last local HP+shield sum for incoming-damage detection. */
     stdCombatLastEffective: null,
     /** Timestamp of last local HP/shield drop while fighting on standard maps. */
@@ -263,6 +304,19 @@
     stdOrbitLastRadialSign: 0,
     /** Bastion panel UI zoom only (75–125). Does not scale the game canvas. */
     uiZoomPercent: 100,
+    /** Discord webhook: opt-in status + session stats to a channel. */
+    discordWebhookEnabled: false,
+    discordWebhookUrl: "",
+    /** Minutes between stats embeds while Play is active (0 = stats only on Test/manual). */
+    discordWebhookIntervalMin: 5,
+    /** Also push notable status line changes (throttled). */
+    discordNotifyStatus: true,
+    discordLastStatusText: "",
+    discordLastStatusSentAt: 0,
+    discordLastStatsSentAt: 0,
+    /** Throttle for portal-hold (admin/coffee) Discord remaining-time refreshes. */
+    discordLastHoldSentAt: 0,
+    discordWebhookBusy: false,
     bootyKeyBuyPending: false,
     lastBootyKeyBuyAt: 0,
     bootyKeyBuysThisSession: 0,
@@ -281,6 +335,11 @@
      * Heal must complete in a safe zone (travel there first when needed).
      */
     postDeathRecover: false,
+    /**
+     * "cold" = Play button (verify Attack config only — do not hub-travel just to
+     * check Roam). "death" = post-death / flee recover (Attack+Roam, may travel to hub).
+     */
+    preObjectiveHealKind: null,
     /** Config nums (1/2) already verified full during postDeathRecover. */
     postDeathRecoverVerified: null,
     postDeathRecoverSince: 0,
@@ -301,9 +360,32 @@
     sessionStartedAt: 0,
     coffeeBreakIntervalMin: 0,
     coffeeBreakDurationMin: 5,
+    /** ± minutes jitter for coffee/admin hold duration (and interval when >0). Default 2. */
+    coffeeBreakToleranceMin: 2,
     coffeeBreakActive: false,
     coffeeBreakUntil: 0,
     nextCoffeeBreakAt: 0,
+    /** Last rolled hold duration (minutes, fractional) shown in status. */
+    coffeeHoldRolledMin: 0,
+    /** "coffee" | "admin" — shared portal-hold path (NAV.kind coffee + coffeeBreakUntil). */
+    portalHoldReason: null,
+    /** Latched while admin pause nav/hold runs — prevents per-tick re-trigger. */
+    adminPauseLatched: false,
+    /** Short backoff after a failed admin→portal start (no portal, busy, …). */
+    adminPauseCooldownUntil: 0,
+    /** Nickname of admin that triggered the current pause (status only). */
+    adminPauseName: "",
+    /** Sector Z (JAIL): objectives frozen — hold/safe mode. */
+    sectorZHoldActive: false,
+    /** Throttle map for Discord admin alerts: `${type}:${identity}` → lastSentAt. */
+    adminAlertLastAt: Object.create(null),
+    /** Nicknames of admins seen this session (alerts / kill attribution). */
+    adminKnownNames: new Set(),
+    /** Group-invite accept in flight / last inviter nick. */
+    groupInviteAcceptBusy: false,
+    lastGroupInviteNick: "",
+    /** Social chat WebSocket hook installed. */
+    socialChatHookInstalled: false,
     fleeActive: false,
     fleeMode: null,
     combatSuspendedForFlee: false,
@@ -319,6 +401,15 @@
     raidOrbitExpandUntil: 0,
     /** Deadline for scooping post-kill cargo before next-stage portal (0 = inactive). */
     raidStageClearCargoUntil: 0,
+    /** When the current stage-clear cargo window started (soft-extend / hard-cap). */
+    raidStageClearCargoStartedAt: 0,
+    /**
+     * Raid-Gate cargo clear→scoop FSM (null when idle).
+     * { cargoId, x, y, phase: "BREAKOUT"|"CLEARING"|"APPROACH"|"SCOOP",
+     *   startedAt, clearingEnteredAt, cargoClearSince, scoopCooldownUntil,
+     *   approachR, angle, dir, holdUntil }
+     */
+    raidCargoClear: null,
     /** Raid danger FSM: cruise | cautious | breakout (gate combat only). */
     raidDangerMode: "cruise",
     raidDangerModeSince: 0,
@@ -348,8 +439,19 @@
     lastRefineryAt: 0,
     refineryScheduledAt: 0,
     refineryLastPremiumOre: null,
-    refineryEnhanceRotateIndex: 0,
+    /** Planned human enrich sends: [{ ore, category, amount }, ...] — depletes to 0 stock. */
+    refineryEnhanceQueue: [],
     pendingCombatCargo: null,
+    /**
+     * mac41: mandatory post-kill cargo phase. Entered on confirmed own kill when
+     * collectCargo ON. Survives pending phantom-clears / sprite.alive flicker.
+     * Heal (portal-drift cold) cannot arm until scoop done OR WAIT_MS expired
+     * with no visible allowed cargo near the kill site.
+     * Shape: { npcId, x, y, at } | null
+     */
+    mandatoryPostKillCargo: null,
+    /** npcId → first tick fightable+alive again (debounce false-kill recovery). */
+    npcRecoverySince: new Map(),
     foreignNpcIds: new Set(),
     /** Debounce false-positive foreign lock before clearing sticky mid-kill. */
     foreignLockSuspectId: null,
@@ -375,15 +477,24 @@
     SPEED: ["ANTIMATTER", "TRITIUM", "URANIUM"],
   };
   const ENHANCE_CATEGORIES = ["LASER", "ROCKET", "SHIELD", "SPEED"];
-  const ENRICH_BATCH = 10;
-  /** Hard cap: abandon post-kill cargo wait and resume combat. */
-  const POST_KILL_CARGO_WAIT_MS = 4500;
-  /** Max time to keep blocking on a visible but uncollectable post-kill cargo. */
-  const POST_KILL_CARGO_STUCK_MS = 2500;
+  /** Game: 1 ore → 10 laser/rocket shots (dE). */
+  const ENRICH_SHOTS_PER_ORE = 10;
+  /** Game: 1 ore → 1 shield/speed minute (uE). UI "all" allows full stock per call. */
+  const ENRICH_MINUTES_PER_ORE = 1;
   /**
-   * Once cargo was expected but never appeared (no soft-chase): clear pending.
-   * Shorter than WAIT_MS so phantom death-spots do not stall combat.
-   * Late lootAdd after this still scoops via recentCargoKillSites (not soft-chase).
+   * Hard cap: abandon post-kill cargo wait and resume combat.
+   * Soft-extended while visible allowed cargo remains near the kill site
+   * (golden rule: never abandon own drop just because the clock ran out).
+   */
+  const POST_KILL_CARGO_WAIT_MS = 6500;
+  /** Sustained fightable+alive before clearing a counted kill cargo phase (HP flicker). */
+  const POST_KILL_FALSE_RECOVERY_MS = 900;
+  /** Max time to keep blocking on a visible but uncollectable post-kill cargo. */
+  const POST_KILL_CARGO_STUCK_MS = 4200;
+  /**
+   * Legacy appear-grace label (kept for docs). Pending now stays open until
+   * WAIT_MS so late lootAdd cannot lose to bonus / next-NPC mid-window.
+   * Late scoop after settle still uses recentCargoKillSites (not soft-chase).
    */
   const POST_KILL_CARGO_APPEAR_MS = 2200;
   /**
@@ -399,8 +510,69 @@
   const CLOAK_COOLDOWN_MS = 30000;
   const BOOTY_KEY_BUY_COOLDOWN_MS = 8000;
   const BOOTY_KEY_BUY_SESSION_MAX = 20;
-  /** After stage clear: scoop leftover cargo before portal (time-boxed). */
-  const RAID_STAGE_CLEAR_CARGO_MS = 8000;
+  /** After stage clear: scoop leftover cargo before portal (soft-extend while cargo remains). */
+  const RAID_STAGE_CLEAR_CARGO_MS = 12000;
+  /** Soft-extend stage-clear scoop while visible allowed cargo still remains. */
+  const RAID_STAGE_CLEAR_CARGO_EXTEND_MS = 8000;
+  /** Hard cap so a permanently stuck loot cannot block the gate forever. */
+  const RAID_STAGE_CLEAR_CARGO_MAX_MS = 90000;
+  /** Raid Gate: NPCs this close to cargo make a direct scoop unsafe. */
+  const RAID_CARGO_DANGER_R = 420;
+  /** Raid Gate: NPCs near the ship→cargo midpoint also block a linear dive. */
+  const RAID_CARGO_PATH_R = 260;
+  /** Raid Gate: NPCs this close to the ship while scooping force breakout first. */
+  const RAID_CARGO_SHIP_DANGER_R = 520;
+  /** Raid Gate: this many close NPCs (or encircle) abort scoop → breakout. */
+  const RAID_CARGO_SHIP_DANGER_MIN = 2;
+  /** Raid Gate: escape step away from pack centroid before clear-orbit. */
+  const RAID_CARGO_BREAKOUT_STEP = 1450;
+  /** Raid Gate: wide orbit radius while flanking cargo (outside damage packs). */
+  const RAID_CARGO_CLEAR_ORBIT_R = 1380;
+  /**
+   * mac33: CLEARING waypoint must keep this floor vs any living NPC
+   * (laser outer stand-off — never circle through the loot pile at melee).
+   * Derived at runtime from getOrbitRadii().preferred when available.
+   */
+  const RAID_CARGO_CLEAR_NPC_FLOOR = 620;
+  /** Reject clear chords that pass this close to the NPC pack centroid. */
+  const RAID_CARGO_CLEAR_CHORD_R = 520;
+  /** Sustained cargo-local clear before APPROACH/SCOOP is allowed (not a single tick). */
+  const RAID_CARGO_CLEAR_STABLE_MS = 2000;
+  /** Minimum CLEARING dwell after enter / blocked scoop before any scoop attempt. */
+  const RAID_CARGO_CLEAR_MIN_DWELL_MS = 2500;
+  /** After failed/blocked scoop: forbid re-scoop this long (no half-second retry loop). */
+  const RAID_CARGO_SCOOP_COOLDOWN_MS = 2200;
+  /** Raid Gate: angular step per clear/approach tick (smaller = smoother wide arc). */
+  const RAID_CARGO_CLEAR_ARC = 0.22;
+  /** Hold the same clear waypoint this long before a new minimap click. */
+  const RAID_CARGO_CLEAR_HOLD_MS = 580;
+  /** Spiral-in step while APPROACH orbits toward cargo. */
+  const RAID_CARGO_APPROACH_SPIRAL = 110;
+  /** Enter native SCOOP once this close on the approach arc. */
+  const RAID_CARGO_APPROACH_SCOOP_R = 240;
+  /**
+   * While CLEARING/BREAKOUT/APPROACH a blocked cargo: divert to scoop a FREE cargo
+   * we pass within this range (patient latch on blocked target stays).
+   * Well beyond CLEAR_ORBIT_R so wide clear prefers free drops over continuing orbit.
+   */
+  const RAID_CARGO_OPP_SCOOP_R = 2100;
+  /** Hold an in-progress free-cargo divert this long before CLEARING may retarget. */
+  const RAID_CARGO_OPP_SCOOP_LOCK_MS = 2200;
+  /**
+   * Ship-to-cargo entity distance treated as "sitting on loot".
+   * Instant scoop even during CLEARING/BREAKOUT/APPROACH / NPC-blocked patient latch.
+   * (Native trigger uses approach-point y-95 + 15m — on-entity is a separate contact band.)
+   */
+  const RAID_CARGO_CONTACT_R = 160;
+  /** Slightly wider contact band for proven-free cargo only (faster arm, not blocked). */
+  const RAID_CARGO_FREE_CONTACT_R = 210;
+  /** Critical NPC distance that may interrupt heal hold (milder threats do not thrash). */
+  /** @deprecated mac34: hold uses RAID_HEAL_HOLD_THREAT (Bastion 19), not this lower floor. */
+  const RAID_HEAL_CRITICAL_THREAT = 420;
+  /** Keep the same heal-evade / return waypoint at least this long (anti-thrash on return only). */
+  const RAID_HEAL_EVADE_HOLD_MS = 750;
+  /** Standard maps: wait for first sticky hit before portal-drift retreat (timeout fallback). */
+  const PORTAL_DRIFT_FIRST_HIT_TIMEOUT_MS = 2800;
   /** Remember settled kills so late killReward / entityKill / clearTask cannot re-arm. */
   const CARGO_SETTLED_NPC_TTL_MS = 90000;
   /**
@@ -427,10 +599,12 @@
   const RAID_SAFE_RETURN_STEP = 380;
   /** After each wave spawn: force breakout/edge kite before diving the pack. */
   const RAID_WAVE_REPOSITION_MS = 5500;
-  const RAID_ENCIRCLE_CLOSE_R = 520;
-  const RAID_ENCIRCLE_MIN_NPCS = 3;
+  /** Detect pack surround a bit earlier (was 520 / 3 / π·0.85). */
+  const RAID_ENCIRCLE_CLOSE_R = 580;
+  const RAID_ENCIRCLE_MIN_NPCS = 2;
   const RAID_SWARM_NEIGHBOR_R = 420;
-  const RAID_BREAKOUT_STEP = 480;
+  /** Decisive lateral escape when encircled (was 620). */
+  const RAID_BREAKOUT_STEP = 860;
   /** Absolute soft turret tether (hard ceiling / safety only — do not cruise here). */
   const RAID_ORBIT_TURRET_SOFT = 0.98;
   /**
@@ -467,13 +641,13 @@
   /** Recent-hit window for CAUTIOUS while on wide orbit. */
   const RAID_DANGER_HIT_COOLDOWN_MS = 1200;
   /** PvP flee SAP: treat recent HP/shield drop as under fire. */
-  const PVP_FLEE_HIT_WINDOW_MS = 2500;
-  /** Standard maps: brief window after local HP/shield drop → softer approach / wider orbit. */
-  const STD_COMBAT_HIT_WINDOW_MS = 1600;
-  /** Standard maps: outward radius scale while recently damaged (~6%). */
-  const STD_HIT_ORBIT_OUTWARD = 0.06;
-  /** Standard maps: extra approach stand-off while recently damaged (~8%). */
-  const STD_HIT_APPROACH_SOFT = 0.08;
+  const PVP_FLEE_HIT_WINDOW_MS = 3500;
+  /** Standard maps: window after local HP/shield drop → stable kite (no approach↔retreat thrash). */
+  const STD_COMBAT_HIT_WINDOW_MS = 2800;
+  /** Standard maps: outward radius scale while recently damaged (~10%). */
+  const STD_HIT_ORBIT_OUTWARD = 0.1;
+  /** Standard maps: extra approach stand-off while recently damaged (~10%). */
+  const STD_HIT_APPROACH_SOFT = 0.1;
   /** Coffee logout → auto-login poll window. */
   const COFFEE_RELOGIN_WINDOW_MS = 20000;
   const COFFEE_RELOGIN_RETRY_MS = 1500;
@@ -484,6 +658,10 @@
   const DEATH_SIGNAL_DEBOUNCE_MS = 900;
   /** If sendRepairShip got no success/fail, retry while still dead. */
   const REPAIR_RETRY_MS = 3500;
+  /** Portal jump: a few presses OK, then latch — never spam after confirm / portal gone. */
+  const JUMP_ATTEMPT_MAX = 5;
+  const JUMP_ATTEMPT_BASE_MS = 420;
+  const JUMP_ATTEMPT_BACKOFF_MS = 220;
 
   const NAV = {
     active: false,
@@ -506,6 +684,13 @@
     raidWaitSince: 0,
     /** Recent map ids during flee/heal — used to abort Sector X oscillations. */
     recentMaps: [],
+    /** True after jump confirmed (log/net/portal gone/map change) — stop tryJump until next hop. */
+    jumpLatched: false,
+    jumpAttemptCount: 0,
+    jumpLastAttemptAt: 0,
+    jumpConfirmReason: null,
+    /** Snapshot of portal we intended to jump — detect disappear after press. */
+    jumpPortalKey: null,
   };
 
   /** Fallback safe-zone bases when K.bases is not yet synced (X-1 / X-7 hubs). */
@@ -521,8 +706,16 @@
   /**
    * Neutral hubs that create O-5↔Sector X oscillations when used for flee/heal.
    * Play travel to working maps may still use them when no other path exists.
+   * JAIL = Sector Z (admin map; often no portals).
    */
   const NAV_HUB_MAP_IDS = new Set(["SECTOR_X", "SECTOR_Y", "PYRO", "JAIL"]);
+  /** Sector Z admin map id (map_graph name "Sector Z"). */
+  const SECTOR_Z_MAP_ID = "JAIL";
+  /** Known RedGalaxy HTTP API bases (localStorage rg_selected_server). */
+  const GAME_API_BY_SERVER = {
+    global: "https://aws-prod-api.redgalaxygame.space",
+    aws: "https://aws-api.redgalaxygame.space",
+  };
 
   let MAP_GRAPH = null;
 
@@ -581,6 +774,14 @@
 
   function getInputSystem() {
     return getGameScene()?.inputSystem ?? null;
+  }
+
+  /**
+   * Play running and not paused. Stop/Pause must never mutate lock/attack/move —
+   * net hooks stay installed for UI, but must not steal manual gameplay.
+   */
+  function isBotLive() {
+    return Boolean(AUTO.active && !AUTO.paused);
   }
 
   function getMinimap() {
@@ -673,6 +874,73 @@
   function isCargoNearPendingKill(sprite, pending = AUTO.pendingCombatCargo) {
     if (!sprite || !pending || sprite.x == null || sprite.y == null) return false;
     return distance(sprite.x, sprite.y, pending.x, pending.y) <= POST_KILL_CARGO_RADIUS;
+  }
+
+  function isCargoNearMandatoryPhase(sprite) {
+    const phase = AUTO.mandatoryPostKillCargo;
+    if (!sprite || !phase || sprite.x == null || sprite.y == null) return false;
+    if (phase.x == null || phase.y == null) return false;
+    return distance(sprite.x, sprite.y, phase.x, phase.y) <= POST_KILL_CARGO_RADIUS;
+  }
+
+  /**
+   * mac41 ownership: after own kill with collectCargo ON, enter a mandatory cargo
+   * phase that heal/search cannot interrupt until scoop or empty WAIT_MS expiry.
+   */
+  function enterMandatoryPostKillCargoPhase(npcId, x, y, at = Date.now()) {
+    if (!AUTO.collectCargo || !npcId || x == null || y == null) return false;
+    const prev = AUTO.mandatoryPostKillCargo;
+    // Keep original clock when re-entering the same kill (phantom wipe recovery).
+    const startedAt =
+      prev?.npcId === npcId && Number.isFinite(prev.at) ? prev.at : at;
+    AUTO.mandatoryPostKillCargo = { npcId, x, y, at: startedAt };
+    rememberRecentCargoKillSite(npcId, x, y);
+    return true;
+  }
+
+  function endMandatoryPostKillCargoPhase(npcId = null) {
+    if (!AUTO.mandatoryPostKillCargo) return;
+    if (npcId && AUTO.mandatoryPostKillCargo.npcId !== npcId) return;
+    AUTO.mandatoryPostKillCargo = null;
+  }
+
+  /**
+   * True while the mandatory post-kill cargo phase still owns the tick.
+   * Soft-extends past WAIT_MS while visible allowed cargo remains near the site.
+   */
+  function isMandatoryPostKillCargoPhaseOpen() {
+    if (!AUTO.collectCargo) return false;
+    const phase = AUTO.mandatoryPostKillCargo;
+    if (!phase || phase.x == null || phase.y == null) return false;
+    if (phase.npcId && isGenuineNpcRecovery(phase.npcId)) {
+      // Sustained false-kill recovery only — not one-frame HP sync flicker.
+      endMandatoryPostKillCargoPhase(phase.npcId);
+      return false;
+    }
+    if (phase.npcId && isNpcStillFightable(phase.npcId)) {
+      tickNpcRecoveryDebounce(phase.npcId);
+    }
+    if (AUTO.pendingCombatCargo) return true;
+    if (AUTO.cargoCollectInFlightId) return true;
+    if (
+      AUTO.currentTask === "collect" &&
+      AUTO.taskTargetId &&
+      isCargoLoot(getLootSprite(AUTO.taskTargetId), AUTO.taskTargetId)
+    ) {
+      return true;
+    }
+    const visible = listCargoNearPoint(phase.x, phase.y, POST_KILL_CARGO_RADIUS);
+    if (visible.length) {
+      // Soft-extend clock while own drop is still visible (mirror pending WAIT extend).
+      if (Date.now() - phase.at > POST_KILL_CARGO_WAIT_MS) {
+        phase.at = Date.now() - Math.floor(POST_KILL_CARGO_WAIT_MS * 0.55);
+      }
+      return true;
+    }
+    if (Date.now() - phase.at <= POST_KILL_CARGO_WAIT_MS) return true;
+    // Empty wait fully expired — release so portal-drift heal may arm.
+    endMandatoryPostKillCargoPhase(phase.npcId);
+    return false;
   }
 
   function pruneRecentCargoKillSites() {
@@ -871,11 +1139,14 @@
       else if (AUTO.taskTargetId === npcId) AUTO.taskTargetId = null;
     }
     AUTO.combatTargetGoneAt = 0;
+    // mac45: never unlock the player's target while Stop/Pause.
+    if (!isBotLive()) return;
     const K = getGameState();
     if (K?.lockedTargetId === npcId) clearLockedTarget();
   }
 
   function abandonForeignLockedTarget() {
+    if (!isBotLive()) return false;
     const K = getGameState();
     if (!K?.lockedTargetId) return false;
     // Never abandon our own red lock — helpers may also be shooting.
@@ -961,7 +1232,8 @@
    */
   function finishCombatCargoCollect(lootId, opts = {}) {
     const pending = AUTO.pendingCombatCargo;
-    const settledNpcId = pending?.npcId ?? null;
+    const phase = AUTO.mandatoryPostKillCargo;
+    const settledNpcId = pending?.npcId ?? phase?.npcId ?? null;
     const alreadyDone = lootId ? isCargoCollectAlreadyDone(lootId) : false;
     if (lootId) {
       AUTO.cargoCollectDoneIds.set(lootId, Date.now() + 12000);
@@ -975,8 +1247,12 @@
       forgetRecentCargoKillSite(settledNpcId);
     } else if (pending && pending.x != null && pending.y != null) {
       rememberRecentCargoKillSite(settledNpcId, pending.x, pending.y);
+    } else if (phase && phase.x != null && phase.y != null) {
+      rememberRecentCargoKillSite(settledNpcId, phase.x, phase.y);
     }
     AUTO.pendingCombatCargo = null;
+    // mac41: only end mandatory phase when finishing lifecycle (scoop or empty wait).
+    endMandatoryPostKillCargoPhase(settledNpcId);
     AUTO.collectArriveAt = 0;
     AUTO.lastCargoCollectAttempt = null;
     clearCollectMovement(lootId);
@@ -989,6 +1265,12 @@
     if (AUTO.pendingCollectId === lootId) AUTO.pendingCollectId = null;
     if (AUTO.chasingBonusId === lootId) AUTO.chasingBonusId = null;
     if (settledNpcId) markCargoSettledForNpc(settledNpcId);
+    if (
+      AUTO.raidCargoClear &&
+      (!lootId || AUTO.raidCargoClear.cargoId === lootId)
+    ) {
+      clearRaidCargoClearState();
+    }
     if (opts.count && lootId && !alreadyDone) {
       AUTO.cargoCollected += 1;
       updateStatisticsPanel();
@@ -1001,8 +1283,12 @@
     if (!isCargoLoot(sprite, id)) return false;
     if (isCargoCollectAlreadyDone(id)) return false;
     if (isForeignOwnedLoot(id, sprite)) return false;
+    // Raid Gate: scoop every visible non-foreign cargo (not only post-kill sticky).
+    if (isInRaidMap()) return true;
     // Own kill drop near death spot (texture "cargo", never cargo1)
     if (isCargoNearPendingKill(sprite)) return true;
+    // mac41: mandatory phase site survives pending phantom-clear
+    if (isCargoNearMandatoryPhase(sprite)) return true;
     // Late lootAdd after pending expire — still own-kill, never soft-chase empty air
     if (isCargoNearRecentKillSite(sprite)) return true;
     // Fine stage: scoop leftover non-foreign cargo before portal (time-boxed window)
@@ -1166,6 +1452,8 @@
   }
 
   function canCollectCargoNow() {
+    // mac45: cargo scoop must never run while Stop/Pause (manual play).
+    if (!isBotLive()) return false;
     if (!AUTO.collectCargo) return false;
     refreshCargoSkipGate();
     if (isCargoHoldFull()) return false;
@@ -1249,8 +1537,30 @@
     return null;
   }
 
+  /**
+   * Strongest selected primary with stock (LAP4 > LAP3 > LAP2 > LAP1).
+   * COMBAT_PRIMARY_AMMO_TYPES is ordered weak→strong; reverse for boss tiers.
+   */
+  function pickStrongestCombatAmmoType(excludeType) {
+    const selected = listSelectedPrimaryAmmoTypes();
+    for (let i = selected.length - 1; i >= 0; i--) {
+      const type = selected[i];
+      if (type === excludeType) continue;
+      if (getPlayerAmmoCount(type) > 0) return type;
+    }
+    return null;
+  }
+
   function pickPrimaryCombatAmmo(excludeType) {
     return pickBestCombatAmmoType(excludeType) || listSelectedPrimaryAmmoTypes()[0] || null;
+  }
+
+  /** True when ammo should prefer strongest selected primary (Executioner / last wave). */
+  function shouldPreferStrongestCombatAmmo(npcId) {
+    if (isRaidExecutionerRound()) return true;
+    const npc = npcId ? getNpcEntry(npcId) || getStickyCombatNpcEntry(npcId) : null;
+    const type = npc?.type;
+    return type === "EXECUTIONER" || type === "EXECUTIONER1";
   }
 
   function shouldUseSapForNpc(npcId) {
@@ -1275,10 +1585,15 @@
 
     const active = getActiveAmmoType();
     const now = Date.now();
+    const preferStrong = shouldPreferStrongestCombatAmmo(npcId);
+    const pickPrimary = (excludeType) =>
+      preferStrong
+        ? pickStrongestCombatAmmoType(excludeType) || pickPrimaryCombatAmmo(excludeType)
+        : pickPrimaryCombatAmmo(excludeType);
 
     if (shouldUseSapForNpc(npcId)) {
       if (active !== "SAP") {
-        AUTO.combatPrimaryAmmoType = primary.includes(active) ? active : pickPrimaryCombatAmmo();
+        AUTO.combatPrimaryAmmoType = primary.includes(active) ? active : pickPrimary();
         switchCombatAmmo("SAP");
         return true;
       }
@@ -1286,14 +1601,14 @@
     }
 
     if (active === "SAP") {
-      const next = AUTO.combatPrimaryAmmoType || pickPrimaryCombatAmmo("SAP");
+      const next = AUTO.combatPrimaryAmmoType || pickPrimary("SAP");
       if (next) switchCombatAmmo(next);
       return true;
     }
 
     if (active === "RSAP") {
       if (now >= AUTO.combatRsapBurstUntil) {
-        const next = AUTO.combatPrimaryAmmoType || pickPrimaryCombatAmmo("RSAP");
+        const next = AUTO.combatPrimaryAmmoType || pickPrimary("RSAP");
         if (next) switchCombatAmmo(next);
         AUTO.combatRsapNextAt = now + COMBAT_RSAP_COOLDOWN_MS;
         return true;
@@ -1302,16 +1617,26 @@
     }
 
     if (shouldFireRsapBurst()) {
-      AUTO.combatPrimaryAmmoType = primary.includes(active) ? active : pickPrimaryCombatAmmo();
+      AUTO.combatPrimaryAmmoType = primary.includes(active) ? active : pickPrimary();
       switchCombatAmmo("RSAP");
       AUTO.combatRsapBurstUntil = now + COMBAT_RSAP_BURST_MS;
       return true;
     }
 
     if (!primary.includes(active)) {
-      const next = pickPrimaryCombatAmmo();
+      const next = pickPrimary();
       if (next && next !== active) switchCombatAmmo(next);
       return Boolean(next && next !== active);
+    }
+
+    // Executioner / last wave: among selected primaries, always use the strongest in stock.
+    if (preferStrong) {
+      const best = pickStrongestCombatAmmoType();
+      if (best && best !== active) {
+        AUTO.combatPrimaryAmmoType = best;
+        switchCombatAmmo(best);
+        return true;
+      }
     }
 
     return false;
@@ -1596,60 +1921,288 @@
     return true;
   }
 
-  function getPendingEnrichStepForCategory(category, ores) {
-    const selected = AUTO.refineryOres[category];
-    if (!selected?.size) return null;
-    for (const ore of ENHANCE_ORES[category]) {
-      if (!selected.has(ore)) continue;
-      const amount = ores[ore] ?? 0;
-      if (amount < ENRICH_BATCH) continue;
-      return { category, ore, amount };
-    }
-    return null;
+  function enrichRandInt(min, max) {
+    const lo = Math.ceil(min);
+    const hi = Math.floor(max);
+    if (hi <= lo) return lo;
+    return lo + Math.floor(Math.random() * (hi - lo + 1));
   }
 
-  function listPendingEnrichSteps() {
-    const ores = getPlayerOres();
-    const steps = [];
-    for (const category of ENHANCE_CATEGORIES) {
-      const step = getPendingEnrichStepForCategory(category, ores);
-      if (step) steps.push(step);
+  function enrichShuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
     }
-    return steps;
+    return arr;
   }
 
-  function pickNextEnrichStep(steps) {
-    if (!steps.length) return null;
-
-    const byOre = new Map();
-    for (const step of steps) {
-      if (!byOre.has(step.ore)) byOre.set(step.ore, []);
-      byOre.get(step.ore).push(step);
+  /**
+   * Comparable boost leftover in "ore-units":
+   * SHIELD/SPEED → remaining minutes; LASER/ROCKET → shots / 10.
+   */
+  function getEnrichRemainingScore(category) {
+    const enrich = getLocalPlayer()?.enrich || {};
+    const now = Date.now();
+    if (category === "LASER") {
+      return Math.max(0, Number(enrich.laserShots) || 0) / ENRICH_SHOTS_PER_ORE;
     }
+    if (category === "ROCKET") {
+      return Math.max(0, Number(enrich.rocketShots) || 0) / ENRICH_SHOTS_PER_ORE;
+    }
+    if (category === "SHIELD") {
+      const exp = Number(enrich.shieldExpiresAt) || 0;
+      return exp > now ? (exp - now) / 6e4 : 0;
+    }
+    if (category === "SPEED") {
+      const exp = Number(enrich.speedExpiresAt) || 0;
+      return exp > now ? (exp - now) / 6e4 : 0;
+    }
+    return 0;
+  }
 
-    let pool = steps;
-    for (const group of byOre.values()) {
-      if (group.length > 1) {
-        pool = group;
-        break;
+  function applyLocalEnrichOptimistic(category, amount) {
+    const player = getLocalPlayer();
+    if (!player || amount <= 0) return;
+    if (!player.enrich) player.enrich = {};
+    const e = player.enrich;
+    const qty = Math.floor(amount);
+    if (category === "LASER") {
+      e.laserShots = (Number(e.laserShots) || 0) + qty * ENRICH_SHOTS_PER_ORE;
+    } else if (category === "ROCKET") {
+      e.rocketShots = (Number(e.rocketShots) || 0) + qty * ENRICH_SHOTS_PER_ORE;
+    } else if (category === "SHIELD") {
+      const now = Date.now();
+      const base = Math.max(now, Number(e.shieldExpiresAt) || 0);
+      e.shieldExpiresAt = base + qty * ENRICH_MINUTES_PER_ORE * 6e4;
+    } else if (category === "SPEED") {
+      const now = Date.now();
+      const base = Math.max(now, Number(e.speedExpiresAt) || 0);
+      e.speedExpiresAt = base + qty * ENRICH_MINUTES_PER_ORE * 6e4;
+    }
+  }
+
+  function applyEnrichPayloadLocal(payload) {
+    const player = getLocalPlayer();
+    if (!player || !payload) return;
+    if (payload.enrich && typeof payload.enrich === "object") {
+      player.enrich = { ...(player.enrich || {}), ...payload.enrich };
+    }
+  }
+
+  function clearRefineryEnhanceQueue() {
+    AUTO.refineryEnhanceQueue = [];
+  }
+
+  function categoriesAssignedForOre(ore) {
+    return ENHANCE_CATEGORIES.filter((cat) => AUTO.refineryOres[cat]?.has(ore));
+  }
+
+  /**
+   * Split full stock across assigned systems with human-like randomness,
+   * weighted toward the least-boosted (biggest remaining deficit).
+   * Always sums exactly to stock (zero leftover).
+   */
+  function planHumanOreAllocation(stock, categories) {
+    if (stock <= 0 || !categories.length) return [];
+    if (categories.length === 1) return [{ category: categories[0], amount: stock }];
+
+    const scored = categories.map((category) => ({
+      category,
+      remaining: getEnrichRemainingScore(category),
+    }));
+    scored.sort((a, b) => a.remaining - b.remaining || Math.random() - 0.5);
+
+    const maxRem = Math.max(...scored.map((s) => s.remaining));
+    const minRem = Math.min(...scored.map((s) => s.remaining));
+    const gap = maxRem - minRem;
+    const dumpBias = gap > 200 ? 0.58 : gap > 50 ? 0.42 : 0.28;
+
+    const alloc = Object.fromEntries(categories.map((c) => [c, 0]));
+    const roll = Math.random();
+
+    if (roll < dumpBias) {
+      // Dump most/all on the weakest system.
+      const primary = scored[0].category;
+      if (Math.random() < 0.62 || stock < 15) {
+        alloc[primary] = stock;
+      } else {
+        let crumb = Math.max(1, Math.floor(stock * (0.05 + Math.random() * 0.25)));
+        crumb = Math.min(crumb, stock - 1);
+        const others = scored.slice(1);
+        if (others.length === 1 || Math.random() < 0.55) {
+          alloc[others[0].category] = crumb;
+        } else {
+          let left = crumb;
+          for (let i = 0; i < others.length; i++) {
+            if (i === others.length - 1) {
+              alloc[others[i].category] = left;
+            } else {
+              const take = enrichRandInt(0, left);
+              alloc[others[i].category] = take;
+              left -= take;
+            }
+          }
+        }
+        alloc[primary] = stock - crumb;
+      }
+    } else if (roll < dumpBias + 0.38) {
+      // Deficit-weighted rough split (noisy proportions).
+      const weights = scored.map((s) => {
+        const deficit = Math.max(1, maxRem - s.remaining + Math.max(20, gap * 0.15));
+        return {
+          category: s.category,
+          weight: deficit * (0.75 + Math.random() * 0.55),
+        };
+      });
+      const totalW = weights.reduce((sum, w) => sum + w.weight, 0) || 1;
+      let assigned = 0;
+      for (let i = 0; i < weights.length - 1; i++) {
+        const ideal = (stock * weights[i].weight) / totalW;
+        const slotsLeft = weights.length - 1 - i;
+        const amt = Math.max(
+          0,
+          Math.min(stock - assigned - slotsLeft, Math.round(ideal))
+        );
+        alloc[weights[i].category] = amt;
+        assigned += amt;
+      }
+      alloc[weights[weights.length - 1].category] = stock - assigned;
+    } else {
+      // Near-equal human split (e.g. 117 → 58+59), with light jitter.
+      const n = categories.length;
+      const base = Math.floor(stock / n);
+      let rem = stock - base * n;
+      const order = enrichShuffle([...categories]);
+      for (const c of order) alloc[c] = base;
+      for (let i = 0; i < rem; i++) alloc[order[i % n]] += 1;
+      if (stock >= 20 && n >= 2 && Math.random() < 0.45) {
+        const move = enrichRandInt(1, Math.max(1, Math.floor(stock * 0.08)));
+        const a = order[0];
+        const b = order[1];
+        if (alloc[a] > move) {
+          alloc[a] -= move;
+          alloc[b] += move;
+        }
       }
     }
 
-    const idx = AUTO.refineryEnhanceRotateIndex % pool.length;
-    AUTO.refineryEnhanceRotateIndex = (AUTO.refineryEnhanceRotateIndex + 1) % 1000000;
-    return pool[idx];
+    const parts = Object.entries(alloc)
+      .filter(([, amount]) => amount > 0)
+      .map(([category, amount]) => ({ category, amount }));
+    const sum = parts.reduce((s, p) => s + p.amount, 0);
+    if (sum !== stock && parts.length) {
+      parts[0].amount += stock - sum;
+    }
+    return parts.filter((p) => p.amount > 0);
+  }
+
+  /** Turn per-category totals into a few large API sends (not 10-at-a-time). */
+  function chunkHumanEnrichSends(ore, parts) {
+    const ordered = [...parts].sort(
+      (a, b) =>
+        getEnrichRemainingScore(a.category) - getEnrichRemainingScore(b.category) ||
+        Math.random() - 0.5
+    );
+    const queue = [];
+    for (const part of ordered) {
+      let left = part.amount;
+      if (left <= 0) continue;
+      const split =
+        left >= 40 && Math.random() < 0.35
+          ? 2
+          : left >= 90 && Math.random() < 0.2
+            ? 3
+            : 1;
+      if (split === 1) {
+        queue.push({ ore, category: part.category, amount: left });
+        continue;
+      }
+      for (let i = 0; i < split; i++) {
+        if (left <= 0) break;
+        if (i === split - 1) {
+          queue.push({ ore, category: part.category, amount: left });
+          left = 0;
+        } else {
+          const share = Math.max(
+            1,
+            Math.floor(left * (0.45 + Math.random() * 0.3))
+          );
+          const take = Math.min(left - 1, share);
+          queue.push({ ore, category: part.category, amount: take });
+          left -= take;
+        }
+      }
+    }
+    return queue;
+  }
+
+  function listOresWithEnhanceStock() {
+    const ores = getPlayerOres();
+    const found = new Set();
+    for (const cat of ENHANCE_CATEGORIES) {
+      const selected = AUTO.refineryOres[cat];
+      if (!selected?.size) continue;
+      for (const ore of selected) {
+        if ((ores[ore] ?? 0) > 0) found.add(ore);
+      }
+    }
+    return [...found];
+  }
+
+  function ensureEnhanceQueue() {
+    if (!Array.isArray(AUTO.refineryEnhanceQueue)) AUTO.refineryEnhanceQueue = [];
+    if (AUTO.refineryEnhanceQueue.length) return true;
+
+    const ores = getPlayerOres();
+    const oreList = listOresWithEnhanceStock();
+    if (!oreList.length) return false;
+
+    // Prefer ores assigned to multiple systems (balance matters), then largest stock.
+    oreList.sort((a, b) => {
+      const ca = categoriesAssignedForOre(a).length;
+      const cb = categoriesAssignedForOre(b).length;
+      if (cb !== ca) return cb - ca;
+      return (ores[b] ?? 0) - (ores[a] ?? 0);
+    });
+
+    const ore = oreList[0];
+    const stock = Math.floor(ores[ore] ?? 0);
+    const categories = categoriesAssignedForOre(ore);
+    if (stock <= 0 || !categories.length) return false;
+
+    const parts = planHumanOreAllocation(stock, categories);
+    AUTO.refineryEnhanceQueue = chunkHumanEnrichSends(ore, parts);
+    return AUTO.refineryEnhanceQueue.length > 0;
   }
 
   function enrichOneStep() {
     const net = window.__RG_NET__;
     if (!net?.sendEnrichOre) return false;
+    if (!ensureEnhanceQueue()) return false;
 
-    const pick = pickNextEnrichStep(listPendingEnrichSteps());
-    if (!pick) return false;
+    while (AUTO.refineryEnhanceQueue.length) {
+      const pick = AUTO.refineryEnhanceQueue.shift();
+      if (!pick) continue;
+      const have = Math.floor(getPlayerOres()[pick.ore] ?? 0);
+      const amount = Math.min(Math.floor(pick.amount) || 0, have);
+      if (amount <= 0) {
+        // Drop leftover planned sends for this ore if stock vanished.
+        AUTO.refineryEnhanceQueue = AUTO.refineryEnhanceQueue.filter((q) => q.ore !== pick.ore);
+        continue;
+      }
 
-    const batch = Math.min(ENRICH_BATCH, pick.amount);
-    net.sendEnrichOre(pick.ore, pick.category, batch);
-    return true;
+      net.sendEnrichOre(pick.ore, pick.category, amount);
+
+      const player = getLocalPlayer();
+      if (player?.ores) {
+        player.ores[pick.ore] = Math.max(0, (Number(player.ores[pick.ore]) || 0) - amount);
+      }
+      applyLocalEnrichOptimistic(pick.category, amount);
+      return true;
+    }
+    return false;
   }
 
   function hasRefineryEnhanceWork() {
@@ -1754,6 +2307,7 @@
     if (option === "enhance") {
       AUTO.refineryAutoEnhance = !AUTO.refineryAutoEnhance;
       if (!AUTO.refineryAutoEnhance) {
+        clearRefineryEnhanceQueue();
         for (const key of ENHANCE_CATEGORIES) {
           AUTO.refineryOres[key]?.clear();
         }
@@ -1769,6 +2323,7 @@
       if (!set) return;
       if (set.has(extra.ore)) set.delete(extra.ore);
       else set.add(extra.ore);
+      clearRefineryEnhanceQueue();
       const label = extra.ore.charAt(0) + extra.ore.slice(1).toLowerCase();
       setStatus(
         set.has(extra.ore)
@@ -2118,8 +2673,8 @@
   }
 
   /**
-   * Raid portals spawn only on faction X-1 and X-7 (HELIOS-1/7, NOVA-1/7, ORION-1/7).
-   * Being on either hub with the portal missing means the raid is unavailable — do not hop.
+   * Raid portals spawn only on faction X-7 (HELIOS-7 / NOVA-7 / ORION-7).
+   * Being on own-faction X-7 with the portal missing means the raid is unavailable — do not hop to X-1.
    */
   function isFactionRaidHubMap(mapId) {
     const node = getMapNode(mapId);
@@ -2128,12 +2683,49 @@
     const match = name.match(/^([A-Za-z]+)-(\d+)$/);
     if (!match) return false;
     const ring = Number(match[2]);
-    if (ring !== 1 && ring !== 7) return false;
+    if (ring !== 7) return false;
     const mapFaction = String(node.faction || match[1] || "").toUpperCase();
     if (mapFaction !== "HELIOS" && mapFaction !== "NOVA" && mapFaction !== "ORION") return false;
     const raidFaction = getRaidFactionId();
     if (raidFaction && mapFaction !== raidFaction) return false;
     return true;
+  }
+
+  /** Ring number from map name (HELIOS-3 → 3), or 0 if unknown. */
+  function getFactionMapRing(mapId) {
+    const node = getMapNode(mapId);
+    const name = String(node?.name || "");
+    const match = name.match(/^([A-Za-z]+)-(\d+)$/);
+    return match ? Number(match[2]) || 0 : 0;
+  }
+
+  /** Faction hub map id for ring 1 or 7 (e.g. HELIOS → MAP1 / MAP19). */
+  function getFactionHubMapId(ring) {
+    const want = Number(ring) === 7 ? 7 : 1;
+    const faction = getRaidFactionId() || String(getLocalPlayer()?.faction || "").toUpperCase();
+    const nodes = MAP_GRAPH?.nodes || {};
+    for (const node of Object.values(nodes)) {
+      if (!node?.id || !String(node.id).startsWith("MAP")) continue;
+      const mapFaction = String(node.faction || "").toUpperCase();
+      if (faction && mapFaction !== faction) continue;
+      const m = String(node.name || "").match(/^([A-Za-z]+)-(\d+)$/);
+      if (m && Number(m[2]) === want) return node.id;
+    }
+    // Fallbacks if graph not loaded yet.
+    if (want === 7) {
+      if (faction === "HELIOS") return "MAP19";
+      if (faction === "NOVA") return "MAP20";
+      if (faction === "ORION") return "MAP21";
+    }
+    return getFactionHomeMapId();
+  }
+
+  /**
+   * Raid-gate search hub: always own-faction X-7 (from any map, including X-1…X-6).
+   * Already on X-7 → callers keep current map (hub === current).
+   */
+  function pickRaidGateSearchHubMapId(_fromMapId = getCurrentMapId()) {
+    return getFactionHubMapId(7);
   }
 
   function portalRaidGate(portal) {
@@ -2239,18 +2831,20 @@
     }
 
     const currentId = getCurrentMapId();
-    // Already on faction X-1 or X-7 and portal missing → unavailable (do not hop to the other hub).
+    // Already on faction X-7 and portal missing → unavailable (do not hop to X-1).
     if (isFactionRaidHubMap(currentId)) {
       return failRaidGateUnavailable(gateId);
     }
 
-    const homeMap = getFactionHomeMapId();
-    // Away from raid hubs: travel to faction X-1 once, then re-check portal (never X-7↔X-1 loops).
-    if (homeMap && currentId && currentId !== homeMap) {
+    // From any map (incl. X-1…X-6) → own-faction X-7.
+    const hubMap = pickRaidGateSearchHubMapId(currentId);
+    if (hubMap && currentId && currentId !== hubMap) {
       NAV.pendingRaidGate = gateId;
       AUTO.pendingRaidGate = gateId;
-      setStatus(`Verso base ${formatMapLabel(homeMap)} per gate ${gateId.toUpperCase()}...`);
-      return startMapNavigation(homeMap, { fromPlay: true });
+      setStatus(
+        `Verso ${formatMapLabel(hubMap)} per gate ${gateId.toUpperCase()}...`
+      );
+      return startMapNavigation(hubMap, { fromPlay: true });
     }
 
     return failRaidGateUnavailable(gateId);
@@ -2269,16 +2863,16 @@
     }
 
     const currentId = getCurrentMapId();
-    // On X-1 or X-7 with portal still missing → stop; never try the other hub.
+    // On X-7 with portal still missing → stop; never try X-1.
     if (isFactionRaidHubMap(currentId)) {
       failRaidGateUnavailable(gateId);
       if (AUTO.active) stopPlay();
       return false;
     }
 
-    const homeMap = getFactionHomeMapId();
-    if (homeMap && currentId !== homeMap) {
-      return startMapNavigation(homeMap, { fromPlay: NAV.playAfterArrival });
+    const hubMap = pickRaidGateSearchHubMapId(currentId);
+    if (hubMap && currentId !== hubMap) {
+      return startMapNavigation(hubMap, { fromPlay: NAV.playAfterArrival });
     }
 
     failRaidGateUnavailable(gateId);
@@ -2298,11 +2892,132 @@
     NAV.playAfterArrival = false;
     NAV.forHeal = false;
     NAV.raidWaitSince = 0;
+    clearPortalJumpState();
     if (NAV.timerId) {
       clearInterval(NAV.timerId);
       NAV.timerId = null;
     }
     updatePlayControls();
+  }
+
+  function portalJumpKey(portal) {
+    if (!portal) return null;
+    const id = portal.id ?? portal.portalId ?? portal.portal_id;
+    if (id != null && id !== "") return `id:${id}`;
+    const tm = String(portal.targetId || portal.target_map || portal.targetMap || "");
+    const x = Number.isFinite(portal.x) ? Math.round(portal.x) : "?";
+    const y = Number.isFinite(portal.y) ? Math.round(portal.y) : "?";
+    return `xy:${x},${y}:${tm}`;
+  }
+
+  function clearPortalJumpState() {
+    NAV.jumpLatched = false;
+    NAV.jumpAttemptCount = 0;
+    NAV.jumpLastAttemptAt = 0;
+    NAV.jumpConfirmReason = null;
+    NAV.jumpPortalKey = null;
+  }
+
+  /** Enter jump phase for a portal hop — reset latch so a few presses are allowed again. */
+  function beginPortalJumpPhase(portal) {
+    NAV.phase = "jump";
+    NAV.jumpStartedAt = Date.now();
+    clearPortalJumpState();
+    NAV.jumpPortalKey = portalJumpKey(portal);
+  }
+
+  function latchPortalJump(reason) {
+    if (NAV.jumpLatched) return false;
+    NAV.jumpLatched = true;
+    NAV.jumpConfirmReason = reason || "confirmed";
+    return true;
+  }
+
+  function findPortalInJumpRange(ship, maxDist) {
+    if (!ship) return null;
+    const portals = getGameState()?.portals || [];
+    const limit = Number.isFinite(maxDist) ? maxDist : NAV.portalRange + 80;
+    let best = null;
+    let bestDist = Infinity;
+    for (const p of portals) {
+      if (!Number.isFinite(p?.x) || !Number.isFinite(p?.y)) continue;
+      const d = distance(ship.x, ship.y, p.x, p.y);
+      if (d <= limit && d < bestDist) {
+        best = p;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * After at least one jump press: portal gone / out of range means jump started
+   * (or stage portal despawned). Calling tryJump then floods "nessun portale vicino".
+   */
+  function shouldLatchPortalJumpFromWorld() {
+    if (NAV.jumpAttemptCount < 1) return false;
+    const ship = getShipPosition();
+    if (!ship) return false;
+    if (NAV.jumpPortalKey) {
+      const portals = getGameState()?.portals || [];
+      const stillThere = portals.some((p) => portalJumpKey(p) === NAV.jumpPortalKey);
+      if (!stillThere) return true;
+    }
+    if (!findPortalInJumpRange(ship, NAV.portalRange + 120)) return true;
+    return false;
+  }
+
+  /**
+   * Human-like portal jump: a few spaced presses, then stop once confirmed.
+   * Never call tryJump after latch — game shows "nessun portale vicino" when portal is gone.
+   */
+  function requestPortalJump(input) {
+    if (NAV.jumpLatched) return false;
+    if (shouldLatchPortalJumpFromWorld()) {
+      latchPortalJump("portal_gone");
+      return false;
+    }
+    if (NAV.jumpAttemptCount >= JUMP_ATTEMPT_MAX) {
+      latchPortalJump("max_attempts");
+      return false;
+    }
+    const now = Date.now();
+    const needMs = JUMP_ATTEMPT_BASE_MS + NAV.jumpAttemptCount * JUMP_ATTEMPT_BACKOFF_MS;
+    if (NAV.jumpLastAttemptAt && now - NAV.jumpLastAttemptAt < needMs) return false;
+    NAV.jumpLastAttemptAt = now;
+    NAV.jumpAttemptCount += 1;
+    input?.tryJump?.();
+    // Immediate re-check: stage portals often despawn on first successful send.
+    if (shouldLatchPortalJumpFromWorld()) latchPortalJump("portal_gone");
+    return true;
+  }
+
+  /** Shared jump-phase wait: latched → idle; else press with backoff. Handles stuck timeout. */
+  function drivePortalJumpWait(input, statusText) {
+    if (!NAV.jumpLatched && shouldLatchPortalJumpFromWorld()) {
+      latchPortalJump("portal_gone");
+    }
+    if (NAV.jumpLatched) {
+      setStatus(statusText);
+    } else {
+      requestPortalJump(input);
+      setStatus(statusText);
+    }
+    if (Date.now() - NAV.jumpStartedAt > NAV.jumpTimeoutMs) {
+      if (NAV.jumpLatched) {
+        // Transfer seemed stuck — allow one careful retry cycle.
+        clearPortalJumpState();
+        NAV.jumpPortalKey = portalJumpKey(NAV.path?.[0]);
+        NAV.jumpStartedAt = Date.now();
+        setStatus("Salto in attesa, riprovo...");
+        return "retry";
+      }
+      NAV.phase = "move";
+      NAV.moveStartedAt = Date.now();
+      clearPortalJumpState();
+      return "move";
+    }
+    return "wait";
   }
 
   function navigationTick() {
@@ -2390,7 +3105,13 @@
     updatePlayControls();
 
     const labels = finalPath.map((id) => getMapNode(id)?.short || id).join(" → ");
-    setStatus(`Verso ${formatMapLabel(finalDest)}: ${labels}`);
+    if (options.fromPlay) {
+      setStatus(`Play travel startMapNavigation→${formatMapLabel(finalDest)}: ${labels}`);
+    } else if (options.forHeal) {
+      setStatus(`heal startMapNavigation→${formatMapLabel(finalDest)}: ${labels}`);
+    } else {
+      setStatus(`Verso ${formatMapLabel(finalDest)}: ${labels}`);
+    }
     return true;
   }
 
@@ -2438,18 +3159,38 @@
     }
 
     if (NAV.kind === "coffee") {
-      const portal = NAV.path[0];
-      if (!portal) {
+      // Prefer live allied portal center (same as heal). NAV.portalRange (~640m) is the
+      // combat/drift ring — outside safe regen; NPCs can still hurt there.
+      let portal = findNearestFriendlyPortal({ preferSafeBase: false });
+      if (!portal || !Number.isFinite(portal.x) || !Number.isFinite(portal.y)) {
+        portal = NAV.path[0];
+      }
+      if (!portal || !Number.isFinite(portal.x) || !Number.isFinite(portal.y)) {
         stopNavigation();
         finishCoffeeBreak();
         return false;
       }
+      NAV.path = [portal];
 
       const dist = distance(ship.x, ship.y, portal.x, portal.y);
-      if (dist > NAV.portalRange) {
+      const adminHold = AUTO.portalHoldReason === "admin";
+      const atSafe =
+        isInSafeZone() || isAtFriendlyPortalHealCenter(ship);
+
+      if (!atSafe) {
         ensureActiveConfig(AUTO.roamConfig);
-        setMoveTargetDirect(input, portal.x, portal.y);
-        setStatus(`Pausa caffè: verso portale (${Math.round(dist)}m)`);
+        softLongMoveToward(input, ship, portal.x, portal.y, {
+          midPath: true,
+          finalRange: 180,
+        });
+        if (adminHold) {
+          setStatus("status.admin_to_safe", {
+            name: AUTO.adminPauseName || "?",
+            dist: Math.round(dist),
+          });
+        } else {
+          setStatus("status.coffee_to_safe", { dist: Math.round(dist) });
+        }
         return true;
       }
 
@@ -2459,68 +3200,155 @@
       input.pendingAttackOnLock = null;
       clearLockedTarget();
       AUTO.coffeeBreakActive = true;
-      AUTO.coffeeBreakUntil = Date.now() + AUTO.coffeeBreakDurationMin * 60000;
-      setStatus("status.coffee_start", { min: AUTO.coffeeBreakDurationMin });
+      const holdMin = rollCoffeeHoldDurationMin();
+      AUTO.coffeeHoldRolledMin = holdMin;
+      AUTO.coffeeBreakUntil = Date.now() + holdMin * 60000;
+      const holdLabel = formatHoldDurationLabel(holdMin);
+      if (adminHold) {
+        setStatus("status.admin_pause_start", { min: holdLabel }, { skipDiscord: true });
+        forceDiscordNotifyStatus(
+          t("discord.admin_pause_start", {
+            name: AUTO.adminPauseName || "?",
+            min: holdLabel,
+            time: formatCountdownSec(holdMin * 60),
+          })
+        );
+        sendDiscordAdminAlert(
+          "admin_pause",
+          t("discord.admin_alert.pause", {
+            name: AUTO.adminPauseName || "?",
+            min: holdLabel,
+          }),
+          { name: AUTO.adminPauseName || "" }
+        );
+      } else {
+        setStatus("status.coffee_start", { min: holdLabel }, { skipDiscord: true });
+        forceDiscordNotifyStatus(
+          t("discord.coffee_pause_start", {
+            min: holdLabel,
+            time: formatCountdownSec(holdMin * 60),
+          })
+        );
+      }
       return true;
     }
 
     if (NAV.kind === "flee") {
-      const portal = NAV.path[0];
+      let portal = NAV.path[0];
       if (!portal) {
         stopNavigation();
         AUTO.fleeActive = false;
         return false;
       }
 
+      // mac42: map/HP/heal flee sits at portal on the CURRENT map — NEVER tryJump.
+      // NAV.forHeal is sticky (survives SAP promoting fleeMode→enemy). Only pure
+      // enemy/PvP flee may enter the jump phase toward an adjacent map.
+      const localPortalHeal =
+        NAV.forHeal === true ||
+        AUTO.fleeMode === "map" ||
+        AUTO.fleeMode === "heal";
+
+      if (localPortalHeal) {
+        // Unintended teleport during portal-heal flee → abort farm, return to working map.
+        if (mapId !== NAV.lastMapId && NAV.lastMapId) {
+          noteNavMapVisit(mapId);
+          clearPortalJumpState();
+          stopNavigation();
+          AUTO.fleeActive = false;
+          AUTO.fleeMode = null;
+          if (ensureReturnToWorkingMap("flee_unintended_jump")) {
+            return true;
+          }
+          if (AUTO.active && AUTO.combatSuspendedForFlee) {
+            beginPreObjectiveHeal({ armBaseWait: false });
+          }
+          return true;
+        }
+
+        // Prefer live allied portal center (same as coffee / cold heal).
+        const live = findNearestFriendlyPortal({ preferSafeBase: false });
+        if (live && Number.isFinite(live.x) && Number.isFinite(live.y)) {
+          portal = live;
+          NAV.path = [portal];
+        }
+
+        trySapShieldDuringPvpFlee();
+        const dist = distance(ship.x, ship.y, portal.x, portal.y);
+        const atSafe =
+          isInSafeZone() ||
+          isAtFriendlyPortalHealCenter(ship) ||
+          dist <= 120;
+
+        if (!atSafe) {
+          // Force move phase — never linger in a stale jump phase from a prior hop.
+          if (NAV.phase === "jump") {
+            NAV.phase = "move";
+            clearPortalJumpState();
+          }
+          ensureActiveConfig(AUTO.runConfig);
+          softLongMoveToward(input, ship, portal.x, portal.y, {
+            midPath: true,
+            finalRange: 200,
+          });
+          setStatus("status.flee_heal_portal", {
+            dist: Math.round(dist),
+            map: formatMapLabel(mapId),
+          });
+          return true;
+        }
+
+        // Arrived at portal/safe: hold still and regen — clear any jump intent.
+        clearPortalJumpState();
+        clearRaidHealMovement(input);
+        input.attackMode = false;
+        input.pendingAttackOnLock = null;
+        clearLockedTarget();
+        input.clearMoveTarget?.();
+        input.moveTarget = null;
+        AUTO.lastMinimapTarget = null;
+        stopNavigation();
+        AUTO.fleeActive = false;
+        AUTO.fleeMode = null;
+        if (AUTO.active) {
+          beginPreObjectiveHeal({ armBaseWait: false });
+        }
+        setStatus("status.heal_local_arm");
+        return true;
+      }
+
+      // Enemy / PvP flee: approach portal then jump (escape to adjacent map).
       const dist = distance(ship.x, ship.y, portal.x, portal.y);
       if (NAV.phase === "move") {
         ensureActiveConfig(AUTO.runConfig);
         if (dist > NAV.portalRange) {
-          setMoveTargetDirect(input, portal.x, portal.y);
+          softLongMoveToward(input, ship, portal.x, portal.y, {
+            midPath: true,
+            finalRange: NAV.portalRange + 180,
+          });
           // SAP shield during PvP flee: ammo/lock only — never redirect movement.
           trySapShieldDuringPvpFlee();
           setStatus(`Fuga (${Math.round(dist)}m) → ${formatMapLabel(portal.targetId || portal.target_map)}`);
           return true;
         }
-        NAV.phase = "jump";
-        NAV.jumpStartedAt = Date.now();
+        beginPortalJumpPhase(portal);
       }
 
       if (NAV.phase === "jump") {
         // Keep firing SAP while waiting for jump; movement still owned by flee portal.
         trySapShieldDuringPvpFlee();
-        input.tryJump?.();
-        setStatus("Fuga: teletrasporto...");
-        if (Date.now() - NAV.jumpStartedAt > NAV.jumpTimeoutMs) {
-          NAV.phase = "move";
-          NAV.moveStartedAt = Date.now();
-        } else if (mapId !== NAV.lastMapId && NAV.lastMapId) {
+        if (mapId !== NAV.lastMapId && NAV.lastMapId) {
+          latchPortalJump("map_change");
           noteNavMapVisit(mapId);
-          if (isNavMapOscillating() && (AUTO.fleeMode === "map" || AUTO.fleeMode === "heal" || NAV.forHeal)) {
-            const dest = pickHealSafeDestination();
-            clearNavMapHistory();
-            stopNavigation();
-            AUTO.fleeActive = false;
-            AUTO.fleeMode = null;
-            if (dest && mapId !== dest && startMapNavigation(dest, { forHeal: true, _healRerouted: true })) {
-              AUTO.healSafeTravel = true;
-              setStatus("status.heal_safe_travel", { map: formatMapLabel(dest) });
-              return true;
-            }
-            if (AUTO.active && AUTO.combatSuspendedForFlee) {
-              beginPreObjectiveHeal({ armBaseWait: false });
-            }
-            return true;
-          }
-          const wasHealFlee = AUTO.fleeMode === "map" || AUTO.fleeMode === "heal" || NAV.forHeal;
           AUTO.fleeActive = false;
           AUTO.fleeMode = null;
           finishTravelArrival();
-          // HP / heal flee: hold until full HP+shield (safe-zone recover) before combat.
-          if (wasHealFlee && AUTO.active && AUTO.combatSuspendedForFlee) {
+          // After PvP escape jump: if off working map, return once healed.
+          if (AUTO.active && AUTO.combatSuspendedForFlee) {
             beginPreObjectiveHeal({ armBaseWait: false });
           }
-          // Defer combat resume until portal wait / full heal elapses (processSecurityGates).
+        } else {
+          drivePortalJumpWait(input, "Fuga: teletrasporto...");
         }
         NAV.lastMapId = mapId;
         return true;
@@ -2553,18 +3381,13 @@
           setStatus(`Raid: verso stage successivo (${Math.round(dist)}m)`);
           return true;
         }
-        NAV.phase = "jump";
-        NAV.jumpStartedAt = Date.now();
+        beginPortalJumpPhase(portal);
       }
 
       if (NAV.phase === "jump") {
-        input.tryJump?.();
-        window.__RG_NET__?.sendRaidPortal?.("next");
-        setStatus("Raid: salto allo stage successivo...");
-        if (Date.now() - NAV.jumpStartedAt > NAV.jumpTimeoutMs) {
-          NAV.phase = "move";
-          NAV.moveStartedAt = Date.now();
-        } else if (!getGameState()?.raidStageClear) {
+        // tryJump alone sends sendRaidPortal when portal exists — do not also spam net.
+        if (!getGameState()?.raidStageClear) {
+          latchPortalJump("stage_advanced");
           if (mustHealBeforeRaidAdvance()) {
             stopNavigation();
             AUTO.raidHealMode = true;
@@ -2575,6 +3398,8 @@
             clearRaidFleeStateIfRecovered();
           }
           finishTravelArrival();
+        } else {
+          drivePortalJumpWait(input, "Raid: salto allo stage successivo...");
         }
         return true;
       }
@@ -2616,6 +3441,7 @@
         NAV.phase = "move";
         NAV.moveStartedAt = Date.now();
         NAV.jumpStartedAt = 0;
+        clearPortalJumpState();
         // Intermediate hop: apply post-portal wait before walking to the next portal.
         armPortalWait();
         if (holdForPortalWait()) return true;
@@ -2639,7 +3465,11 @@
       if (NAV.phase === "move") {
         ensureActiveConfig(AUTO.roamConfig);
         if (dist > NAV.portalRange) {
-          setMoveTargetDirect(input, portal.x, portal.y);
+          // Final approach to portal: straight to center. Mid-path: light human wobble.
+          softLongMoveToward(input, ship, portal.x, portal.y, {
+            midPath: true,
+            finalRange: NAV.portalRange + 220,
+          });
           setStatus(`Verso ${formatMapLabel(nextMapId)} (${Math.round(dist)}m)`);
           if (Date.now() - NAV.moveStartedAt > NAV.moveTimeoutMs) {
             setStatus("Timeout movimento verso portale");
@@ -2647,16 +3477,18 @@
           }
           return true;
         }
-        NAV.phase = "jump";
-        NAV.jumpStartedAt = Date.now();
+        beginPortalJumpPhase(portal);
       }
 
       if (NAV.phase === "jump") {
-        input.tryJump?.();
-        setStatus(`Salto verso ${formatMapLabel(nextMapId)}...`);
-        if (Date.now() - NAV.jumpStartedAt > NAV.jumpTimeoutMs) {
-          NAV.phase = "move";
-          NAV.moveStartedAt = Date.now();
+        if (mapId !== NAV.lastMapId && NAV.lastMapId) {
+          latchPortalJump("map_change");
+        }
+        const jumpWait = drivePortalJumpWait(
+          input,
+          `Salto verso ${formatMapLabel(nextMapId)}...`
+        );
+        if (jumpWait === "move") {
           setStatus("Salto fallito, riprovo...");
         }
         return true;
@@ -2676,7 +3508,10 @@
       if (NAV.phase === "move") {
         ensureActiveConfig(AUTO.roamConfig);
         if (dist > NAV.portalRange) {
-          setMoveTargetDirect(input, portal.x, portal.y);
+          softLongMoveToward(input, ship, portal.x, portal.y, {
+            midPath: true,
+            finalRange: NAV.portalRange + 220,
+          });
           setStatus(`Verso gate raid (${Math.round(dist)}m)`);
           if (Date.now() - NAV.moveStartedAt > NAV.moveTimeoutMs) {
             setStatus("Timeout movimento verso gate raid");
@@ -2684,20 +3519,16 @@
           }
           return true;
         }
-        NAV.phase = "jump";
-        NAV.jumpStartedAt = Date.now();
+        beginPortalJumpPhase(portal);
       }
 
       if (NAV.phase === "jump") {
-        input.tryJump?.();
-        const net = window.__RG_NET__;
-        if (net?.sendRaidJump) net.sendRaidJump(gateId);
-        setStatus(`Teletrasporto raid ${gateId.toUpperCase()}...`);
-        if (Date.now() - NAV.jumpStartedAt > NAV.jumpTimeoutMs) {
-          NAV.phase = "move";
-          NAV.moveStartedAt = Date.now();
-        } else if (getGameState()?.inRaid || mapId.startsWith("RAID_")) {
+        // tryJump sends sendRaidJump when portal exists — do not also spam net every tick.
+        if (getGameState()?.inRaid || String(mapId || "").startsWith("RAID_")) {
+          latchPortalJump("raid_entered");
           finishTravelArrival();
+        } else {
+          drivePortalJumpWait(input, `Teletrasporto raid ${gateId.toUpperCase()}...`);
         }
         return true;
       }
@@ -2820,6 +3651,122 @@
     return false;
   }
 
+  function hasPlayObjective() {
+    return Boolean(AUTO.raidGateId || AUTO.workingMapId);
+  }
+
+  function isSectorZMap(mapId = getCurrentMapId()) {
+    const id = String(mapId || "").toUpperCase();
+    if (id === SECTOR_Z_MAP_ID || id === "SECTOR_Z" || id === "SECTORZ") return true;
+    const label = String(formatMapLabel(mapId) || "").toLowerCase();
+    if (label.includes("sector z")) return true;
+    const node = MAP_GRAPH?.nodes?.[id];
+    if (node && /sector\s*z/i.test(String(node.name || node.short || ""))) return true;
+    return false;
+  }
+
+  /**
+   * Farm/kill NPCs only on the selected working map, or on raid maps when a
+   * Raid Gate is selected and the ship is in that raid. Nav/heal/flee/admin OK elsewhere.
+   */
+  function canEngageFarmCombat() {
+    if (!AUTO.active || AUTO.paused) return false;
+    if (isSectorZMap()) return false;
+    if (AUTO.sectorZHoldActive) return false;
+    if (AUTO.raidGateId) {
+      return isInRaidMap() && isAtRaidWorkMap(AUTO.raidGateId);
+    }
+    if (AUTO.workingMapId) {
+      return getCurrentMapId() === AUTO.workingMapId;
+    }
+    return false;
+  }
+
+  /**
+   * mac42: if somehow off the selected working map (e.g. unintended flee jump),
+   * abort farm and travel back. Never farm the wrong map.
+   * Skips when raid selected, Sector Z hold, or already navigating to working map.
+   */
+  function ensureReturnToWorkingMap(reason = "") {
+    if (!AUTO.active || AUTO.paused) return false;
+    if (AUTO.raidGateId) return false;
+    if (isInRaidMap()) return false;
+    if (isSectorZMap() || AUTO.sectorZHoldActive) return false;
+    const want = AUTO.workingMapId;
+    if (!want) return false;
+    const current = getCurrentMapId();
+    if (!current || current === want) return false;
+
+    // Already traveling to the working map — let nav own the tick.
+    if (
+      NAV.active &&
+      NAV.kind === "map" &&
+      (NAV.destinationId === want || NAV.playAfterArrival)
+    ) {
+      return true;
+    }
+    // Heal/flee/coffee/admin own movement — don't yank mid-hold unless unintended jump.
+    if (
+      reason !== "flee_unintended_jump" &&
+      reason !== "after_flee" &&
+      reason !== "after_heal" &&
+      reason !== "farm_gate" &&
+      (AUTO.fleeActive ||
+        AUTO.postDeathRecover ||
+        AUTO.coffeeBreakActive ||
+        (NAV.active && (NAV.kind === "flee" || NAV.kind === "coffee")))
+    ) {
+      return false;
+    }
+
+    pauseCombatForFlee();
+    AUTO.combatSuspendedForFlee = false;
+    clearCurrentTask();
+    const ok = beginPlayTravel();
+    if (ok && NAV.active) {
+      setStatus("status.wrong_map_return", {
+        map: formatMapLabel(want) || want,
+      });
+      return true;
+    }
+    if (ok && getCurrentMapId() === want) {
+      return false;
+    }
+    setStatus("status.wrong_map_no_farm", {
+      map: formatMapLabel(want) || want,
+    });
+    return false;
+  }
+
+  /**
+   * Pin working map to where the ship actually is (non-raid).
+   * Stop→Play must resume in place: a stale dropdown (often X-1) must not yank
+   * the ship after cold heal via beginPlayTravel.
+   */
+  function syncWorkingMapToCurrentMap(reason = "") {
+    if (AUTO.raidGateId) return false;
+    if (isInRaidMap()) return false;
+    const currentId = getCurrentMapId();
+    if (!currentId) return false;
+    if (String(currentId).toUpperCase().startsWith("RAID_")) return false;
+    // Never pin Sector Z (admin jail) as a farm working map.
+    if (isSectorZMap(currentId)) return false;
+    const changed = AUTO.workingMapId !== currentId;
+    AUTO.workingMapId = currentId;
+    const sel = document.getElementById("rg-working-map");
+    if (sel && sel.value !== currentId) {
+      try {
+        sel.value = currentId;
+      } catch (_) {
+        /* ignore missing option */
+      }
+    }
+    if (changed && reason) {
+      /* reason kept for call-site diagnostics; status set by callers when useful */
+    }
+    return changed;
+  }
+
   function finishTravelArrival() {
     const wasPlayTravel = NAV.playAfterArrival;
     const wasHealTravel = NAV.forHeal || AUTO.healSafeTravel;
@@ -2839,10 +3786,16 @@
     }
 
     if (pendingRaid && AUTO.active && !isAtRaidWorkMap(pendingRaid)) {
-      NAV.playAfterArrival = wasPlayTravel;
-      NAV.pendingRaidGate = pendingRaid;
-      AUTO.pendingRaidGate = pendingRaid;
-      if (continuePendingRaidTravel()) return;
+      // Stale pending without a selected raid gate must not force hub travel.
+      if (!AUTO.raidGateId) {
+        NAV.pendingRaidGate = null;
+        AUTO.pendingRaidGate = null;
+      } else {
+        NAV.playAfterArrival = wasPlayTravel;
+        NAV.pendingRaidGate = pendingRaid;
+        AUTO.pendingRaidGate = pendingRaid;
+        if (continuePendingRaidTravel()) return;
+      }
     }
 
     if (wasPlayTravel && AUTO.active) {
@@ -2853,6 +3806,7 @@
       if (isInRaidMap()) {
         AUTO.portalWaitUntil = 0;
     AUTO.pendingCombatCargo = null;
+    AUTO.mandatoryPostKillCargo = null;
     AUTO.cargoCollectInFlightId = null;
     AUTO.lastCargoCollectAttempt = null;
     AUTO.cargoCollectDoneIds.clear();
@@ -2877,18 +3831,137 @@
   function beginPlayTravel() {
     NAV.playAfterArrival = true;
     ensureNavigationLoop();
+    // Only raid-selected Play may start raid-hub travel. Stale pending without a
+    // selected gate must not yank the ship to X-1 during normal attack Play.
+    if (!AUTO.raidGateId) {
+      NAV.pendingRaidGate = null;
+      AUTO.pendingRaidGate = null;
+    }
     if (AUTO.raidGateId) {
+      setStatus(
+        `Play travel beginRaidPlayTravel gate→${getRaidGateDisplayName(AUTO.raidGateId) || AUTO.raidGateId}`
+      );
       return beginRaidPlayTravel();
     }
     if (!AUTO.workingMapId || getCurrentMapId() === AUTO.workingMapId) {
       NAV.playAfterArrival = false;
       return true;
     }
-    return startMapNavigation(AUTO.workingMapId, { fromPlay: true });
+    const dest = AUTO.workingMapId;
+    setStatus(`Play travel beginPlayTravel workingMapId→${formatMapLabel(dest)}`);
+    return startMapNavigation(dest, { fromPlay: true });
   }
 
   function getNpcTypeLabel(typeKey) {
     return NPC_TYPES[typeKey] || typeKey;
+  }
+
+  /** Strip game markup `-={{Name}}=-` → `Name` for Discord / status text. */
+  function getNpcTypeShortLabel(typeKey) {
+    const raw = String(getNpcTypeLabel(typeKey) || typeKey || "").trim();
+    const m = raw.match(/=\{\{\s*(.+?)\s*\}\}=/);
+    return m ? m[1] : raw;
+  }
+
+  function getRaidGateDisplayName(gateRef) {
+    const gate = resolveRaidGate(gateRef || AUTO.raidGateId || getGameState()?.raidGateId || "");
+    if (!gate) return "";
+    return gate.charAt(0).toUpperCase() + gate.slice(1);
+  }
+
+  function clearRaidProgressTracking() {
+    AUTO.raidCurrentStage = 0;
+    AUTO.raidTotalStages = 0;
+    AUTO.raidCurrentWave = 0;
+  }
+
+  function noteRaidProgressFromInfo(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const stage = Number(payload.currentStage ?? payload.stage ?? payload.wave);
+    const total = Number(payload.totalStages ?? payload.totalWaves ?? payload.maxStage);
+    if (Number.isFinite(stage) && stage > 0) AUTO.raidCurrentStage = Math.floor(stage);
+    if (Number.isFinite(total) && total > 0) AUTO.raidTotalStages = Math.floor(total);
+    if (payload.gateId && !AUTO.raidGateId) {
+      AUTO.raidGateId = resolveRaidGate(payload.gateId) || AUTO.raidGateId;
+    }
+  }
+
+  function noteRaidProgressFromWave(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const wave = Number(payload.wave ?? payload.currentWave ?? payload.stage ?? payload.currentStage);
+    if (!Number.isFinite(wave) || wave <= 0) return;
+    AUTO.raidCurrentWave = Math.floor(wave);
+    // If raidInfo has not arrived yet, use wave as best-effort stage index.
+    if (!AUTO.raidCurrentStage) AUTO.raidCurrentStage = AUTO.raidCurrentWave;
+  }
+
+  function noteRaidProgressFromStageClear(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const stage = Number(payload.stage ?? payload.currentStage ?? payload.wave);
+    if (payload.isLastStage && AUTO.raidTotalStages > 0) {
+      AUTO.raidCurrentStage = AUTO.raidTotalStages;
+      return;
+    }
+    if (Number.isFinite(stage) && stage > 0) {
+      // Cleared stage N → now on / about to enter N+1 until next raidInfo.
+      AUTO.raidCurrentStage = Math.floor(stage) + 1;
+    }
+  }
+
+  /** Best-effort focus / gate label for Discord raid line. */
+  function resolveRaidDiscordFocusName() {
+    const focusId =
+      AUTO.combatFocusId || AUTO.taskTargetId || AUTO.orbitNpcId || getGameState()?.lockedTargetId;
+    if (focusId) {
+      const typeKey = resolveNpcType(focusId);
+      if (typeKey) {
+        const short = getNpcTypeShortLabel(typeKey);
+        if (short) return short;
+      }
+      const sprite = getNpcSprite(focusId);
+      const rawName = String(sprite?.name || sprite?.displayName || "").trim();
+      if (rawName) {
+        const m = rawName.match(/=\{\{\s*(.+?)\s*\}\}=/);
+        return m ? m[1] : rawName.replace(/^-\s*=\{\{|\}\}=-\s*$/g, "").trim() || rawName;
+      }
+    }
+    // Parse live status: "Raid: attacco Froston (123m)" / "In combattimento: Elite Brakon"
+    const statusEl = document.getElementById("rg-story-status");
+    const status = statusEl?.textContent || "";
+    const fromStatus = status.match(
+      /(?:attacco|inseguo|combattimento|attack|combat|orbita|orbit)\s+([^:(]+?)(?:\s*\(|\s*$)/i
+    );
+    if (fromStatus?.[1]) {
+      const cleaned = fromStatus[1].replace(/\s+/g, " ").trim();
+      if (cleaned && !/^NPC$/i.test(cleaned)) return cleaned;
+    }
+    return getRaidGateDisplayName() || "Raid";
+  }
+
+  /**
+   * Compact raid progress for Discord: "Ondata 10/11 · Froston · 20 kill"
+   * Prefers sticky NPC name; falls back to gate name (Void/Rift/…).
+   */
+  function formatRaidWaveProgressText(options = {}) {
+    const inRaid = isInRaidMap();
+    const hasProgress =
+      AUTO.raidCurrentStage > 0 || AUTO.raidCurrentWave > 0 || AUTO.raidTotalStages > 0;
+    if (!inRaid && !hasProgress && !options.force) return "";
+    const current = AUTO.raidCurrentStage || AUTO.raidCurrentWave || 0;
+    const total = AUTO.raidTotalStages || 0;
+    const name = resolveRaidDiscordFocusName();
+    const kills = Number.isFinite(options.kills)
+      ? Math.max(0, Math.floor(options.kills))
+      : Math.max(0, getSessionGains()?.npcKills ?? getNpcKillTotal() ?? 0);
+    const progress =
+      current > 0 && total > 0
+        ? `${current}/${total}`
+        : current > 0
+          ? String(current)
+          : total > 0
+            ? `?/${total}`
+            : "—";
+    return t("discord.raid_progress", { progress, name, kills });
   }
 
   function getSpriteNpcType(sprite) {
@@ -2996,9 +4069,15 @@
    * superseded so later kills still scoop.
    */
   function notePendingCombatCargo(npcId, positionHint = null) {
+    // mac45: never arm post-kill cargo while Stop/Pause — wasActivelyAttackingNpc
+    // is true for manual locks and lootAdd then cleared attackMode / lock.
+    if (!isBotLive()) return false;
     if (!npcId || !AUTO.collectCargo) return false;
     if (!AUTO.combatActive && !wasActivelyAttackingNpc(npcId)) return false;
     if (isCargoSettledForNpc(npcId)) return false;
+    // Never arm cargo while this NPC is still fightable — false kill flicker froze combat
+    // on "Attendo cargo NPC..." mid-attack.
+    if (isNpcStillFightable(npcId) || getNpcSprite(npcId)?.alive) return false;
 
     // Same kill already pending — keep original clock / position (unless hold blocked)
     if (AUTO.pendingCombatCargo?.npcId === npcId) {
@@ -3010,6 +4089,12 @@
         markCargoSettledForNpc(npcId);
         return false;
       }
+      enterMandatoryPostKillCargoPhase(
+        npcId,
+        AUTO.pendingCombatCargo.x,
+        AUTO.pendingCombatCargo.y,
+        AUTO.pendingCombatCargo.at
+      );
       return true;
     }
 
@@ -3046,6 +4131,8 @@
       failCount: 0,
     };
     rememberRecentCargoKillSite(npcId, pos.x, pos.y);
+    // mac41: mandatory phase — portal-drift heal cannot arm until scoop/empty wait.
+    enterMandatoryPostKillCargoPhase(npcId, pos.x, pos.y, AUTO.pendingCombatCargo.at);
     // Arm expectation only — do NOT soft-chase the death spot until real
     // (visible, allowed) cargo appears. lootAdd / tryStartPostKillCargoCollect scoop.
     return true;
@@ -3085,11 +4172,19 @@
       }
     }
     AUTO.combatOrbitEngagedIds.delete(npcId);
+    if (AUTO.combatEngageNpcId === npcId) {
+      AUTO.combatEngageNpcId = null;
+      AUTO.combatEngageStartedAt = 0;
+    }
     AUTO.npcKillsByType[typeKey] = (AUTO.npcKillsByType[typeKey] || 0) + 1;
     AUTO.trackedNpcTypes.delete(npcId);
     AUTO.watchedNpcIds.delete(npcId);
     AUTO.npcLastPositions.delete(npcId);
     updateNpcKillCounter();
+    // Every counted own kill must arm cargo (entityRemove may skip trackCargo).
+    if (AUTO.collectCargo && !isCargoSettledForNpc(npcId)) {
+      notePendingCombatCargo(npcId, killPos);
+    }
   }
 
   function trackNpcPosition(npcOrId) {
@@ -3145,6 +4240,1273 @@
     return items;
   }
 
+  function listNpcsNearPoint(x, y, radius) {
+    if (x == null || y == null || !(radius > 0)) return [];
+    const out = [];
+    for (const npc of listNpcs(0)) {
+      if (distance(npc.x, npc.y, x, y) <= radius) out.push(npc);
+    }
+    out.sort(
+      (a, b) => distance(a.x, a.y, x, y) - distance(b.x, b.y, x, y)
+    );
+    return out;
+  }
+
+  /** Raid Gate: every visible non-foreign cargo (sorted nearest to ship). */
+  function listRaidVisibleCargo(ship = getShipPosition()) {
+    if (!ship || !AUTO.collectCargo || !canCollectCargoNow()) return [];
+    if (!isInRaidMap()) return [];
+    const entities = getEntities();
+    if (!entities?.lootSprites) return [];
+    const items = [];
+    for (const [id, sprite] of entities.lootSprites) {
+      if (!isAllowedCombatCargo(id, sprite)) continue;
+      const entry = buildCollectibleEntry(id, sprite, ship);
+      if (!entry) continue;
+      items.push(entry);
+    }
+    items.sort((a, b) => a.dist - b.dist);
+    return items;
+  }
+
+  function findNearestRaidVisibleCargo(ship = getShipPosition()) {
+    const items = listRaidVisibleCargo(ship);
+    return items[0] || null;
+  }
+
+  /**
+   * True when ship is in native scoop band OR sitting on/very close to the cargo entity.
+   * Contact (on-entity) is independent of approach-point geometry (y-95).
+   * `free: true` uses the wider FREE_CONTACT_R band (proven-safe cargo only).
+   */
+  function isRaidCargoInContactRange(cargo, ship = getShipPosition(), opts = {}) {
+    if (!cargo || cargo.x == null || cargo.y == null || !ship) return false;
+    const distCargo =
+      cargo.dist != null
+        ? cargo.dist
+        : distance(ship.x, ship.y, cargo.x, cargo.y);
+    const contactR = opts.free ? RAID_CARGO_FREE_CONTACT_R : RAID_CARGO_CONTACT_R;
+    if (distCargo <= contactR) return true;
+    const ap = approachPoint(cargo);
+    const distAp = distance(ship.x, ship.y, ap.x, ap.y);
+    return distAp <= getCollectTriggerDistance(cargo) + 20;
+  }
+
+  /**
+   * Nearest allowed raid cargo the ship is already sitting on / in collect range of.
+   * Prefers the latched clear target when both are in contact.
+   * Free cargos get a slightly wider contact band so we arm sooner while orbiting past.
+   */
+  function findContactRaidCargo(ship, preferId = null) {
+    if (!ship || !AUTO.collectCargo || !canCollectCargoNow()) return null;
+    const items = listRaidVisibleCargo(ship);
+    let preferred = null;
+    let nearest = null;
+    for (const cargo of items) {
+      if (!cargo?.id) continue;
+      if (isCargoCollectAlreadyDone(cargo.id)) continue;
+      const free =
+        !isRaidShipThreatenedForCargo(ship) &&
+        !isRaidCargoApproachUnsafe(cargo, ship);
+      if (!isRaidCargoInContactRange(cargo, ship, { free })) continue;
+      if (preferId && cargo.id === preferId) preferred = cargo;
+      if (!nearest || cargo.dist < nearest.dist) nearest = cargo;
+    }
+    return preferred || nearest;
+  }
+
+  /**
+   * HARD RULE: sitting on allowed loot without scooping is a bug.
+   * Scoop immediately even during CLEARING/BREAKOUT/APPROACH / pack pressure /
+   * NPC-blocked patient latch — ship is already on the entity.
+   * Returns true when this tick owns movement/collect.
+   *
+   * mac32 HARD RULE: while sticky living + attack in raid, NEVER arm/scoop/divert
+   * cargo (native cargoTargetId walks to y-95 and collapses combat stand-off).
+   * Pending cargo is remembered for after the kill; scoop only when sticky is dead.
+   */
+  function tryContactRaidCargoScoop(input, ship, state = null, opts = {}) {
+    if (!input || !ship || !AUTO.collectCargo || !canCollectCargoNow()) return false;
+    if (isRaidHealActive()) return false;
+    // Sticky living fight owns kite — no mid-fight cargo arm/walk (opts ignored).
+    if (isInRaidMap() && hasLivingStickyCombat()) return false;
+    if (opts.keepCombatOrbit) return false;
+    if (abortCargoCollectIfHoldFull()) return true;
+
+    const preferId = state?.cargoId || state?.oppScoopId || null;
+    const cargo = findContactRaidCargo(ship, preferId);
+    if (!cargo) return false;
+
+    // Drop patient blockers — contact overrides latch/cooldown.
+    if (state) {
+      state.patientLatch = false;
+      state.scoopCooldownUntil = 0;
+      state.holdUntil = 0;
+      state.oppHoldUntil = 0;
+      state.oppScoopId = null;
+      state.oppScoopUntil = 0;
+      state.phase = "SCOOP";
+      state.cargoId = cargo.id;
+      state.x = cargo.x;
+      state.y = cargo.y;
+      state.cargoClearSince = Date.now();
+    } else {
+      AUTO.raidCargoClear = {
+        cargoId: cargo.id,
+        x: cargo.x,
+        y: cargo.y,
+        phase: "SCOOP",
+        startedAt: Date.now(),
+        clearingEnteredAt: 0,
+        cargoClearSince: Date.now(),
+        scoopCooldownUntil: 0,
+        patientLatch: false,
+        approachR: null,
+        angle: null,
+        dir: AUTO.orbitDirection || 1,
+        holdUntil: 0,
+        oppScoopId: null,
+        oppScoopUntil: 0,
+      };
+    }
+
+    // Prefer native collect task — do not leave cargoTargetId unset under the ship.
+    if (AUTO.currentTask === "collect" && AUTO.taskTargetId === cargo.id) {
+      armNativeCollect(cargo.id, { keepAttack: true });
+      driveCollect(cargo);
+      setStatus("status.raid_cargo_sweep", { dist: Math.round(cargo.dist) });
+      return true;
+    }
+    if (!startCollectTask(cargo)) {
+      if (!armNativeCollect(cargo.id, { keepAttack: true })) return false;
+    }
+    driveCollect(cargo);
+    setStatus("status.raid_cargo_sweep", { dist: Math.round(cargo.dist) });
+    return true;
+  }
+
+  /**
+   * Free (safe-to-scoop) cargo near the ship while we patient-clear a blocked one.
+   * Contact-range cargo is always eligible (even if NPC-guarded — already on it).
+   * Farther cargo: never returns NPC-guarded / path-blocked — patient rule stays.
+   * listRaidVisibleCargo is nearest-first → always prefer closest free in range.
+   */
+  function findOpportunisticFreeRaidCargo(ship, excludeId, maxDist = RAID_CARGO_OPP_SCOOP_R) {
+    if (!ship || !AUTO.collectCargo || !canCollectCargoNow()) return null;
+    const threatened = isRaidShipThreatenedForCargo(ship);
+    const items = listRaidVisibleCargo(ship);
+    for (const cargo of items) {
+      if (!cargo?.id || cargo.id === excludeId) continue;
+      if (isCargoCollectAlreadyDone(cargo.id)) continue;
+      if (cargo.dist > maxDist) continue;
+      // Contact under ship: always scoop (even during breakout pressure).
+      // Free cargo gets the wider contact band.
+      const freeNear =
+        !threatened && !isRaidCargoApproachUnsafe(cargo, ship);
+      if (isRaidCargoInContactRange(cargo, ship, { free: freeNear })) return cargo;
+      // Pack pressure → do not dive away from breakout for distant free cargo.
+      if (threatened) continue;
+      if (isRaidCargoApproachUnsafe(cargo, ship)) continue;
+      return cargo;
+    }
+    return null;
+  }
+
+  /**
+   * During CLEARING/BREAKOUT/APPROACH: immediately divert to scoop FREE cargos we pass.
+   * Does NOT abandon the blocked-cargo clear FSM (latch / phase stay on state).
+   * No dwell/cooldown/CLEARING-hold for proven-free cargo — CLEARING orbit must yield.
+   * Contact-range free cargo scoops even under pack pressure (tryContact handles first).
+   */
+  function tryDivertRaidClearForFreeCargo(input, ship, state) {
+    if (!input || !ship || !state) return false;
+    // Sticky living: never divert CLEARING orbit toward free cargo.
+    if (hasLivingStickyCombat()) return false;
+    if (
+      state.phase !== "BREAKOUT" &&
+      state.phase !== "CLEARING" &&
+      state.phase !== "APPROACH"
+    ) {
+      return false;
+    }
+
+    const now = Date.now();
+    let free = null;
+    const threatened = isRaidShipThreatenedForCargo(ship);
+
+    // Finish an in-progress free scoop before CLEARING can yank the orbit back.
+    if (state.oppScoopId && now < (state.oppScoopUntil || 0)) {
+      const spr = getLootSprite(state.oppScoopId);
+      const stillThere =
+        Boolean(spr) || Boolean(getGameState()?.loots?.has?.(state.oppScoopId));
+      if (
+        stillThere &&
+        !isCargoCollectAlreadyDone(state.oppScoopId) &&
+        !isForeignOwnedLoot(state.oppScoopId, spr)
+      ) {
+        free = buildCollectibleEntry(
+          state.oppScoopId,
+          spr || { x: state.oppScoopX, y: state.oppScoopY },
+          ship
+        );
+        // Contact under ship: keep scooping even if NPCs still linger.
+        if (
+          free &&
+          !isRaidCargoInContactRange(free, ship, {
+            free:
+              !threatened && !isRaidCargoApproachUnsafe(free, ship),
+          }) &&
+          (threatened || isRaidCargoApproachUnsafe(free, ship))
+        ) {
+          free = null;
+        }
+      }
+      if (!free) {
+        state.oppScoopId = null;
+        state.oppScoopUntil = 0;
+      }
+    }
+
+    if (!free) {
+      free = findOpportunisticFreeRaidCargo(ship, state.cargoId);
+      if (!free) {
+        if (threatened) {
+          state.oppScoopId = null;
+          state.oppScoopUntil = 0;
+        }
+        return false;
+      }
+      state.oppScoopId = free.id;
+      state.oppScoopX = free.x;
+      state.oppScoopY = free.y;
+      state.oppScoopUntil = now + RAID_CARGO_OPP_SCOOP_LOCK_MS;
+    } else {
+      state.oppScoopX = free.x;
+      state.oppScoopY = free.y;
+    }
+
+    // Free cargo: never wait on CLEARING hold / scoop cooldown / patient latch.
+    state.holdUntil = 0;
+    state.oppHoldUntil = 0;
+    state.scoopCooldownUntil = 0;
+
+    // Contact / native band — start collect immediately (clear FSM → SCOOP).
+    if (
+      isRaidCargoInContactRange(free, ship, {
+        free: !threatened && !isRaidCargoApproachUnsafe(free, ship),
+      })
+    ) {
+      return tryContactRaidCargoScoop(input, ship, state);
+    }
+
+    const ap = approachPoint(free);
+    const distAp = distance(ship.x, ship.y, ap.x, ap.y);
+    const trigger = getCollectTriggerDistance(free);
+
+    // In native scoop band — arm collect while keep-attacking; clear FSM preserved.
+    if (distAp <= trigger + 10) {
+      if (now - (AUTO.lastCollectSendAt || 0) > 250) {
+        armNativeCollect(free.id, { keepAttack: true });
+      }
+      sustainRaidCargoClearAttack(input);
+      setStatus("status.raid_cargo_opp_scoop", { dist: Math.round(free.dist) });
+      return true;
+    }
+
+    // Immediate divert every tick — CLEARING hold must not keep the orbit waypoint.
+    moveViaMinimap(ap.x, ap.y);
+    state.oppHoldUntil = 0;
+    state.holdUntil = 0;
+    sustainRaidCargoClearAttack(input);
+    setStatus("status.raid_cargo_opp_scoop", { dist: Math.round(free.dist) });
+    return true;
+  }
+
+  function clearRaidCargoClearState() {
+    AUTO.raidCargoClear = null;
+  }
+
+  /**
+   * True only while cargo clear/scoop FSM owns movement.
+   * collectCargo toggle alone must NOT change combat kite (mac33).
+   */
+  function isRaidCargoMovementActive() {
+    const st = AUTO.raidCargoClear;
+    if (!st) return false;
+    const phase = st.phase;
+    return (
+      phase === "CLEARING" ||
+      phase === "BREAKOUT" ||
+      phase === "APPROACH" ||
+      phase === "SCOOP" ||
+      Boolean(st.oppScoopId)
+    );
+  }
+
+  /**
+   * True when some cargo FSM / native cargo walk is actually interfering with combat.
+   * collectCargo UI toggle alone is NOT enough — zero-loot sticky fight must be
+   * identical to toggle OFF (mac33).
+   */
+  function hasInterferingRaidCargoState() {
+    if (AUTO.raidCargoClear) return true;
+    if (AUTO.cargoCollectInFlightId) return true;
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      if (tid && isCargoLoot(getLootSprite(tid), tid)) return true;
+    }
+    const K = getGameState();
+    if (K?.cargoTargetId) {
+      const ct = K.cargoTargetId;
+      if (
+        isCargoLoot(getLootSprite(ct), ct) ||
+        AUTO.pendingCollectId === ct
+      ) {
+        return true;
+      }
+    }
+    if (AUTO.pendingCollectId) {
+      const p = AUTO.pendingCollectId;
+      if (isCargoLoot(getLootSprite(p), p)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Abort cargo clear/scoop / native cargoTargetId so they cannot steal the kite.
+   *
+   * mac33 ROOT CAUSE FIX: previous mac32 called this every sticky tick whenever
+   * collectCargo UI was ON, and it did clearCollectMovement() + lastMinimapTarget=null
+   * even with ZERO loot. That null'd input.moveTarget every combat tick → ship
+   * stopped orbiting → NPC closed → clamp(dist) locked melee stand-off.
+   *
+   * Now: only clear cargo-specific state. NEVER touch combat moveTarget /
+   * lastMinimapTarget (those are the attack orbit).
+   */
+  function releaseRaidCargoClearForCombat() {
+    const stickyId =
+      AUTO.combatFocusId ||
+      AUTO.combatTargetId ||
+      (AUTO.currentTask === "combat" ? AUTO.taskTargetId : null);
+    const lootId =
+      AUTO.raidCargoClear?.cargoId ||
+      (AUTO.currentTask === "collect" ? AUTO.taskTargetId : null) ||
+      AUTO.cargoCollectInFlightId ||
+      AUTO.pendingCollectId ||
+      null;
+
+    // Clear native cargo walk ONLY — do NOT null input.moveTarget (combat kite).
+    const K = getGameState();
+    if (K?.cargoTargetId) {
+      const ct = K.cargoTargetId;
+      if (
+        isCargoLoot(getLootSprite(ct), ct) ||
+        AUTO.cargoCollectInFlightId === ct ||
+        AUTO.pendingCollectId === ct ||
+        (lootId && ct === lootId)
+      ) {
+        K.cargoTargetId = null;
+      }
+    }
+    if (lootId) {
+      AUTO.pendingBonusIds.delete(lootId);
+      if (AUTO.pendingCollectId === lootId) AUTO.pendingCollectId = null;
+      if (AUTO.chasingBonusId === lootId) AUTO.chasingBonusId = null;
+      if (AUTO.cargoCollectInFlightId === lootId) AUTO.cargoCollectInFlightId = null;
+    }
+    // Intentionally NOT: clearCollectMovement() / lastMinimapTarget = null
+    clearRaidCargoClearState();
+
+    // Contact scoop / beginRaidCargoScoop may have replaced combat with collect.
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      const spr = tid ? getLootSprite(tid) : null;
+      if (!tid || isCargoLoot(spr, tid) || AUTO.cargoCollectInFlightId === tid) {
+        clearCurrentTask();
+        AUTO.cargoCollectInFlightId = null;
+        AUTO.chasingBonusId = null;
+        AUTO.pendingCollectId = null;
+      }
+    }
+
+    // Restore combat task so runCurrentTask drives applyCombatOrbit, not driveCollect.
+    if (
+      stickyId &&
+      (isNpcStillFightable(stickyId) ||
+        Boolean(getNpcSprite(stickyId)?.alive) ||
+        !isCombatTargetConfirmedGone(stickyId))
+    ) {
+      AUTO.combatFocusId = stickyId;
+      AUTO.combatTargetId = stickyId;
+      if (AUTO.currentTask !== "combat" || AUTO.taskTargetId !== stickyId) {
+        AUTO.currentTask = "combat";
+        AUTO.taskTargetId = stickyId;
+      }
+    }
+  }
+
+  /**
+   * Raid Gate: true when the ship is packed / encircled and must break out
+   * before any cargo scoop (never sit still collecting inside an NPC swarm).
+   */
+  function isRaidShipThreatenedForCargo(ship = getShipPosition()) {
+    if (!isInRaidMap() || !ship) return false;
+    if (isRaidShipEncircled(ship) || isShipEncircledByNpcs(ship)) return true;
+    const close = listNpcs(RAID_CARGO_SHIP_DANGER_R);
+    if (close.length >= RAID_CARGO_SHIP_DANGER_MIN) return true;
+    if (close.length >= 1 && close[0].dist <= 220) return true;
+    return false;
+  }
+
+  /**
+   * Raid Gate: true when scooping would dive through / into NPCs sitting on cargo,
+   * cut a blocked path, OR when the ship itself is surrounded (scoop must yield).
+   */
+  function isRaidCargoApproachUnsafe(cargo, ship = getShipPosition()) {
+    if (!isInRaidMap()) return false;
+    if (isRaidShipThreatenedForCargo(ship)) return true;
+    if (!cargo || cargo.x == null || cargo.y == null) return false;
+    if (listNpcsNearPoint(cargo.x, cargo.y, RAID_CARGO_DANGER_R).length > 0) {
+      return true;
+    }
+    if (!ship) return false;
+    const mx = (ship.x + cargo.x) * 0.5;
+    const my = (ship.y + cargo.y) * 0.5;
+    const pathThreats = listNpcsNearPoint(mx, my, RAID_CARGO_PATH_R);
+    if (!pathThreats.length) return false;
+    // Only block when an NPC sits on the approach chord (between ship and cargo).
+    const abx = cargo.x - ship.x;
+    const aby = cargo.y - ship.y;
+    const abLen = Math.hypot(abx, aby) || 1;
+    for (const npc of pathThreats) {
+      const t =
+        ((npc.x - ship.x) * abx + (npc.y - ship.y) * aby) / (abLen * abLen);
+      if (t <= 0.08 || t >= 0.92) continue;
+      const px = ship.x + abx * t;
+      const py = ship.y + aby * t;
+      if (distance(npc.x, npc.y, px, py) <= RAID_CARGO_PATH_R) return true;
+    }
+    return false;
+  }
+
+  /** Return to patient CLEARING after a blocked/failed scoop (cooldown + no immediate re-dive). */
+  function returnToRaidCargoClearing(state, { preferBreakout = false, fromBlockedScoop = false } = {}) {
+    if (!state) return;
+    const now = Date.now();
+    if (fromBlockedScoop) {
+      state.scoopCooldownUntil = now + RAID_CARGO_SCOOP_COOLDOWN_MS;
+      state.patientLatch = true;
+    }
+    state.cargoClearSince = null;
+    state.approachR = null;
+    state.holdUntil = 0;
+    state.angle = null;
+    state.oppScoopId = null;
+    state.oppScoopUntil = 0;
+    if (preferBreakout) {
+      state.phase = "BREAKOUT";
+    } else {
+      state.phase = "CLEARING";
+      state.clearingEnteredAt = now;
+    }
+  }
+
+  /**
+   * True when CLEARING may leave for APPROACH/SCOOP.
+   * Contact (already on cargo): immediate.
+   * Proven-free cargo (path clear right now): immediate — zero dwell/cooldown.
+   * Patient latch delays apply only while cargo is still blocked.
+   */
+  function canRaidCargoLeaveClearing(state, ship) {
+    if (!state || !ship) return false;
+    const cargo = { id: state.cargoId, x: state.x, y: state.y };
+    // Already sitting on the latched cargo → scoop now (patient latch does not apply).
+    if (isRaidCargoInContactRange(cargo, ship)) {
+      state.patientLatch = false;
+      state.scoopCooldownUntil = 0;
+      return true;
+    }
+    if (isRaidShipThreatenedForCargo(ship)) return false;
+    if (isRaidCargoApproachUnsafe(cargo, ship)) return false;
+
+    // Currently free — drop patient gate/cooldown and leave CLEARING immediately.
+    state.patientLatch = false;
+    state.scoopCooldownUntil = 0;
+    return true;
+  }
+
+  function armRaidCargoClear(cargo, opts = {}) {
+    if (!cargo?.id || cargo.x == null || cargo.y == null) return false;
+    const ship = getShipPosition();
+    const preferBreakout = isRaidShipThreatenedForCargo(ship);
+    const fromBlockedScoop = Boolean(opts.fromBlockedScoop);
+    const approachUnsafe = isRaidCargoApproachUnsafe(cargo, ship);
+    const onCargo = Boolean(ship && isRaidCargoInContactRange(cargo, ship));
+    const existing = AUTO.raidCargoClear;
+    const now = Date.now();
+    // Already sitting on the cargo — never patient-orbit away; contact scoop owns next tick.
+    if (onCargo) {
+      if (existing?.cargoId === cargo.id) {
+        existing.x = cargo.x;
+        existing.y = cargo.y;
+        existing.phase = "SCOOP";
+        existing.patientLatch = false;
+        existing.scoopCooldownUntil = 0;
+        existing.holdUntil = 0;
+      } else {
+        AUTO.raidCargoClear = {
+          cargoId: cargo.id,
+          x: cargo.x,
+          y: cargo.y,
+          phase: "SCOOP",
+          startedAt: now,
+          clearingEnteredAt: 0,
+          cargoClearSince: now,
+          scoopCooldownUntil: 0,
+          patientLatch: false,
+          approachR: null,
+          angle: null,
+          dir: AUTO.orbitDirection || (Math.random() < 0.5 ? 1 : -1),
+          holdUntil: 0,
+          oppScoopId: null,
+          oppScoopUntil: 0,
+        };
+      }
+      return true;
+    }
+    if (existing?.cargoId === cargo.id) {
+      existing.x = cargo.x;
+      existing.y = cargo.y;
+      if (
+        existing.phase === "SCOOP" ||
+        existing.phase === "APPROACH" ||
+        !existing.phase
+      ) {
+        // Failed dive / hit near cargo → patient CLEARING, never instant re-scoop.
+        returnToRaidCargoClearing(existing, {
+          preferBreakout,
+          fromBlockedScoop: fromBlockedScoop || true,
+        });
+      } else if (preferBreakout && existing.phase === "CLEARING") {
+        // Surrounded mid-clear → escape first, do not keep tight orbit in the pack.
+        existing.phase = "BREAKOUT";
+        existing.holdUntil = 0;
+        existing.cargoClearSince = null;
+        existing.patientLatch = true;
+      } else if (fromBlockedScoop && existing.phase === "CLEARING") {
+        existing.scoopCooldownUntil = now + RAID_CARGO_SCOOP_COOLDOWN_MS;
+        existing.cargoClearSince = null;
+        existing.clearingEnteredAt = now;
+        existing.holdUntil = 0;
+        existing.patientLatch = true;
+      }
+      clearCollectMovement(cargo.id);
+      return true;
+    }
+    // Proven-free cargo: arm SCOOP directly — no CLEARING orbit / patient latch.
+    if (!preferBreakout && !approachUnsafe && !fromBlockedScoop) {
+      AUTO.raidCargoClear = {
+        cargoId: cargo.id,
+        x: cargo.x,
+        y: cargo.y,
+        phase: "SCOOP",
+        startedAt: now,
+        clearingEnteredAt: 0,
+        cargoClearSince: now,
+        scoopCooldownUntil: 0,
+        patientLatch: false,
+        approachR: null,
+        angle: null,
+        dir: AUTO.orbitDirection || (Math.random() < 0.5 ? 1 : -1),
+        holdUntil: 0,
+        oppScoopId: null,
+        oppScoopUntil: 0,
+      };
+      return true;
+    }
+    AUTO.raidCargoClear = {
+      cargoId: cargo.id,
+      x: cargo.x,
+      y: cargo.y,
+      phase: preferBreakout ? "BREAKOUT" : "CLEARING",
+      startedAt: now,
+      clearingEnteredAt: preferBreakout ? 0 : now,
+      cargoClearSince: null,
+      scoopCooldownUntil: fromBlockedScoop
+        ? now + RAID_CARGO_SCOOP_COOLDOWN_MS
+        : 0,
+      // Patient latch only when blocked and NOT already on the cargo entity.
+      patientLatch: Boolean(fromBlockedScoop || preferBreakout || approachUnsafe),
+      approachR: null,
+      angle: null,
+      dir: AUTO.orbitDirection || (Math.random() < 0.5 ? 1 : -1),
+      holdUntil: 0,
+      oppScoopId: null,
+      oppScoopUntil: 0,
+    };
+    clearCollectMovement(cargo.id);
+    if (AUTO.currentTask === "collect" && AUTO.taskTargetId === cargo.id) {
+      clearCurrentTask();
+    }
+    // Combat reposition for cargo — keep laser armed (not coffee/admin/map flee).
+    return true;
+  }
+
+  /** True when ship→waypoint chord cuts near the NPC pack centroid. */
+  function raidCargoClearChordCutsPack(ship, tx, ty, swarm) {
+    if (!ship || !swarm || tx == null || ty == null) return false;
+    const abx = tx - ship.x;
+    const aby = ty - ship.y;
+    const abLen = Math.hypot(abx, aby);
+    if (abLen < 40) return false;
+    const t = clamp(
+      ((swarm.x - ship.x) * abx + (swarm.y - ship.y) * aby) / (abLen * abLen),
+      0.08,
+      0.92
+    );
+    const px = ship.x + abx * t;
+    const py = ship.y + aby * t;
+    return distance(swarm.x, swarm.y, px, py) <= RAID_CARGO_CLEAR_CHORD_R;
+  }
+
+  /**
+   * Keep shooting sticky / nearest valid raid NPC while cargo-clearing.
+   * Lock+fire only — never steals combatFocus (would starve cargo golden rule).
+   */
+  function sustainRaidCargoClearAttack(input) {
+    if (!input || !AUTO.combatActive || isRaidHealActive()) return false;
+    const preferredId =
+      AUTO.combatFocusId ||
+      AUTO.combatTargetId ||
+      getGameState()?.lockedTargetId ||
+      null;
+    const npc = resolveRaidCombatTarget(preferredId);
+    if (!npc || !isNpcAllowedForCombat(npc.id)) return false;
+    const canFire = input.canFire?.(npc.id);
+    if (canFire === "ok") {
+      engageNpc(npc.id);
+      sustainRaidAttack(input);
+      return true;
+    }
+    // Soft lock while wide-orbiting out of band — resume shots when in range.
+    if (getGameState()?.lockedTargetId !== npc.id) {
+      setLockedTarget(npc.id);
+      input.notifyPlayerLocked?.(npc.id);
+    }
+    input.attackMode = true;
+    input.pendingAttackOnLock = npc.id;
+    input.syncAttackSession?.();
+    return true;
+  }
+
+  /** Escape vector: away from nearby NPC centroid into open space (raid cargo). */
+  function getRaidCargoBreakoutPoint(ship) {
+    if (!ship) return null;
+    const close = listNpcs(RAID_CARGO_SHIP_DANGER_R * 1.35);
+    const swarm = getRaidSwarmCentroid(close.length ? close : listNpcs(0));
+    let away = Math.atan2(ship.y - swarm.y, ship.x - swarm.x);
+    if (!Number.isFinite(away)) {
+      const center = getRaidCenter();
+      away = Math.atan2(ship.y - center.y, ship.x - center.x) || 0;
+    }
+    // Prefer the largest angular gap (open sector) when encircled.
+    if (close.length >= RAID_ENCIRCLE_MIN_NPCS) {
+      const angles = close
+        .map((n) => Math.atan2(n.y - ship.y, n.x - ship.x))
+        .sort((a, b) => a - b);
+      let maxGap = 0;
+      let gapMid = away;
+      for (let i = 0; i < angles.length; i++) {
+        const a = angles[i];
+        const b =
+          angles[(i + 1) % angles.length] +
+          (i + 1 === angles.length ? Math.PI * 2 : 0);
+        const gap = b - a;
+        if (gap > maxGap) {
+          maxGap = gap;
+          gapMid = a + gap * 0.5;
+        }
+      }
+      if (maxGap >= 0.55) away = gapMid;
+    }
+    const candidates = [];
+    for (const bias of [0, 0.35, -0.35, 0.7, -0.7, 1.15, -1.15, 1.6, -1.6]) {
+      const ang = away + bias;
+      const step = RAID_CARGO_BREAKOUT_STEP * (0.9 + Math.abs(bias) * 0.05);
+      const raw = {
+        x: ship.x + Math.cos(ang) * step,
+        y: ship.y + Math.sin(ang) * step,
+      };
+      const pt = clampToRaidSupportZone(raw.x, raw.y);
+      const threat = getNearestNpcDistance(pt.x, pt.y);
+      const towardSwarm =
+        (pt.x - ship.x) * (swarm.x - ship.x) + (pt.y - ship.y) * (swarm.y - ship.y);
+      const midDist = distance(
+        (ship.x + pt.x) * 0.5,
+        (ship.y + pt.y) * 0.5,
+        swarm.x,
+        swarm.y
+      );
+      const chordPenalty = raidCargoClearChordCutsPack(ship, pt.x, pt.y, swarm)
+        ? 480
+        : 0;
+      const score =
+        threat +
+        midDist * 0.45 -
+        (towardSwarm > 0 ? 420 : 0) -
+        chordPenalty +
+        Math.abs(bias) * 6;
+      candidates.push({ x: pt.x, y: pt.y, score });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || clampToRaidSupportZone(
+      ship.x + Math.cos(away) * RAID_CARGO_BREAKOUT_STEP,
+      ship.y + Math.sin(away) * RAID_CARGO_BREAKOUT_STEP
+    );
+  }
+
+  /**
+   * BREAKOUT → CLEARING (patient wide orbit + fire) → APPROACH (arc) → SCOOP.
+   * Scoop is forbidden until sustained cargo-clear latch + min dwell + cooldown.
+   * Never timeout-force a dive through the pack. Returns true while owning movement;
+   * false only when latch satisfied and ready for native SCOOP.
+   */
+  function driveRaidCargoClearMovement(input, ship, state) {
+    if (!input || !ship || !state) return false;
+    // Sticky living owns combat kite — never CLEARING/BREAKOUT/APPROACH divert.
+    if (hasLivingStickyCombat()) {
+      releaseRaidCargoClearForCombat();
+      return false;
+    }
+    const spr = getLootSprite(state.cargoId);
+    if (spr && spr.x != null && spr.y != null) {
+      state.x = spr.x;
+      state.y = spr.y;
+    }
+    const stillThere =
+      Boolean(spr) || Boolean(getGameState()?.loots?.has?.(state.cargoId));
+    if (
+      !stillThere ||
+      isCargoCollectAlreadyDone(state.cargoId) ||
+      isForeignOwnedLoot(state.cargoId, spr)
+    ) {
+      clearRaidCargoClearState();
+      return false;
+    }
+
+    // Soft-extend post-kill wait while we flank (do not abandon mid-clear).
+    if (AUTO.pendingCombatCargo) {
+      AUTO.pendingCombatCargo.at = Date.now();
+    }
+
+    // HARD RULE: sitting on allowed loot → scoop now (before breakout/clear orbit).
+    // CLEARING used to own the tick without ever calling driveCollect/startCollectTask.
+    if (tryContactRaidCargoScoop(input, ship, state)) return true;
+
+    const now = Date.now();
+    const shipThreatened = isRaidShipThreatenedForCargo(ship);
+    const cargoThreats = listNpcsNearPoint(state.x, state.y, RAID_CARGO_DANGER_R);
+
+    // Sustained clear latch — single-tick gaps do not unlock scoop.
+    if (cargoThreats.length) {
+      state.cargoClearSince = null;
+    } else if (!state.cargoClearSince) {
+      state.cargoClearSince = now;
+    }
+
+    if (shipThreatened && state.phase !== "BREAKOUT") {
+      returnToRaidCargoClearing(state, {
+        preferBreakout: true,
+        fromBlockedScoop: state.phase === "SCOOP" || state.phase === "APPROACH",
+      });
+      clearCollectMovement(state.cargoId);
+    }
+
+    // Opportunistic: scoop FREE cargos we pass while patient-clearing a blocked one.
+    // Does not abandon CLEARING latch / blocked target — divert then resume.
+    if (tryDivertRaidClearForFreeCargo(input, ship, state)) return true;
+
+    // BREAKOUT: step outside pack / open gap before any cargo-centered orbit.
+    if (state.phase === "BREAKOUT" || shipThreatened) {
+      state.phase = "BREAKOUT";
+      const encircledNow = isRaidShipEncircled(ship) || shipThreatened;
+      // While packed: never hold a short waypoint — recompute escape every tick.
+      if (
+        !encircledNow &&
+        state.holdUntil &&
+        now < state.holdUntil &&
+        AUTO.lastMinimapTarget &&
+        shouldKeepExistingMoveTarget(
+          { moveTarget: AUTO.lastMinimapTarget },
+          AUTO.lastMinimapTarget.x,
+          AUTO.lastMinimapTarget.y
+        )
+      ) {
+        sustainRaidCargoClearAttack(input);
+        setStatus("status.raid_cargo_breakout", {
+          dist: Math.round(distance(ship.x, ship.y, state.x, state.y)),
+        });
+        return true;
+      }
+      const pt = getRaidCargoBreakoutPoint(ship);
+      if (pt) {
+        moveViaMinimap(pt.x, pt.y);
+        // Short hold only after space opens; packed = 0 so next tick can pivot.
+        state.holdUntil = encircledNow ? 0 : now + RAID_CARGO_CLEAR_HOLD_MS;
+      }
+      // Cleared enough space → CLEARING only (never jump straight to SCOOP).
+      if (!shipThreatened && !isRaidShipEncircled(ship)) {
+        state.phase = "CLEARING";
+        state.clearingEnteredAt = now;
+        state.angle = null;
+        state.approachR = null;
+      }
+      sustainRaidCargoClearAttack(input);
+      setStatus("status.raid_cargo_breakout", {
+        dist: Math.round(distance(ship.x, ship.y, state.x, state.y)),
+      });
+      return true;
+    }
+
+    // APPROACH: evasive arc spiral toward cargo — abort to CLEARING if danger returns.
+    if (state.phase === "APPROACH") {
+      const cargoProbe = { id: state.cargoId, x: state.x, y: state.y };
+      if (
+        cargoThreats.length ||
+        isRaidShipThreatenedForCargo(ship) ||
+        isRaidCargoApproachUnsafe(cargoProbe, ship)
+      ) {
+        returnToRaidCargoClearing(state, { fromBlockedScoop: true });
+        // Fall through to CLEARING same tick.
+      } else {
+        const distCargo = distance(ship.x, ship.y, state.x, state.y);
+        if (distCargo <= RAID_CARGO_APPROACH_SCOOP_R) {
+          state.phase = "SCOOP";
+          return false;
+        }
+        let angle = state.angle;
+        if (angle == null || !Number.isFinite(angle)) {
+          angle = Math.atan2(ship.y - state.y, ship.x - state.x);
+        }
+        let r = state.approachR;
+        if (r == null || !Number.isFinite(r)) {
+          r = Math.max(distCargo, RAID_CARGO_APPROACH_SCOOP_R + 80);
+        }
+        if (
+          state.holdUntil &&
+          now < state.holdUntil &&
+          AUTO.lastMinimapTarget &&
+          shouldKeepExistingMoveTarget(
+            { moveTarget: AUTO.lastMinimapTarget },
+            AUTO.lastMinimapTarget.x,
+            AUTO.lastMinimapTarget.y
+          )
+        ) {
+          sustainRaidCargoClearAttack(input);
+          setStatus("status.raid_cargo_approach", {
+            dist: Math.round(distCargo),
+          });
+          return true;
+        }
+        const dir = state.dir || 1;
+        angle += dir * RAID_CARGO_CLEAR_ARC;
+        r = Math.max(r - RAID_CARGO_APPROACH_SPIRAL, RAID_CARGO_APPROACH_SCOOP_R * 0.85);
+        const swarm = getRaidSwarmCentroid(listNpcs(0));
+        let pt = null;
+        let tryAng = angle;
+        for (let tries = 0; tries < 8; tries++) {
+          const cand = clampToRaidSupportZone(
+            state.x + Math.cos(tryAng) * r,
+            state.y + Math.sin(tryAng) * r
+          );
+          if (!raidCargoClearChordCutsPack(ship, cand.x, cand.y, swarm)) {
+            pt = cand;
+            angle = tryAng;
+            break;
+          }
+          tryAng += dir * RAID_CARGO_CLEAR_ARC;
+        }
+        if (!pt) {
+          pt = clampToRaidSupportZone(
+            state.x + Math.cos(angle) * r,
+            state.y + Math.sin(angle) * r
+          );
+        }
+        state.angle = angle;
+        state.approachR = r;
+        moveViaMinimap(pt.x, pt.y);
+        state.holdUntil = now + RAID_CARGO_CLEAR_HOLD_MS;
+        sustainRaidCargoClearAttack(input);
+        setStatus("status.raid_cargo_approach", {
+          dist: Math.round(distCargo),
+        });
+        return true;
+      }
+    }
+
+    // CLEARING: wide orbit + keep shooting. Scoop forbidden until latch.
+    state.phase = "CLEARING";
+    if (!state.clearingEnteredAt) state.clearingEnteredAt = now;
+
+    // mac33: if ship is already inside NPC stand-off, BREAKOUT before clear arc.
+    const clearFloor = getCargoCombatSafeStandOff();
+    const nearNpc = listNpcs(clearFloor);
+    if (nearNpc.length && nearNpc[0].dist < clearFloor) {
+      returnToRaidCargoClearing(state, { preferBreakout: true });
+      const ptBreak = getRaidCargoBreakoutPoint(ship);
+      if (ptBreak) {
+        const pushedBreak = pushPointOutsideLivingNpcs(ptBreak, clearFloor);
+        moveViaMinimap(pushedBreak.x, pushedBreak.y);
+      }
+      sustainRaidCargoClearAttack(input);
+      setStatus("status.raid_cargo_breakout", {
+        dist: Math.round(distance(ship.x, ship.y, state.x, state.y)),
+      });
+      return true;
+    }
+
+    if (canRaidCargoLeaveClearing(state, ship)) {
+      // Free cargo: dive to SCOOP immediately (skip APPROACH spiral).
+      // Patient-blocked recoveries that just became free also scoop now.
+      state.phase = "SCOOP";
+      state.patientLatch = false;
+      state.scoopCooldownUntil = 0;
+      state.holdUntil = 0;
+      state.approachR = null;
+      return false;
+    }
+
+    const swarm = getRaidSwarmCentroid(
+      cargoThreats.length ? cargoThreats : listNpcs(0)
+    );
+    // Orbit center well outside the pack — never through centroid toward cargo.
+    const awayCargo = Math.atan2(swarm.y - state.y, swarm.x - state.x);
+    const cx =
+      swarm.x +
+      (Number.isFinite(awayCargo) ? Math.cos(awayCargo) * 320 : 0);
+    const cy =
+      swarm.y +
+      (Number.isFinite(awayCargo) ? Math.sin(awayCargo) * 320 : 0);
+
+    let angle = state.angle;
+    if (angle == null || !Number.isFinite(angle)) {
+      angle = Math.atan2(ship.y - cy, ship.x - cx);
+    }
+    const dir = state.dir || 1;
+    // Hold waypoint: less chaotic retarget spam (still keep laser up).
+    // mac33: abort hold if the held point (or ship) is inside NPC stand-off.
+    if (
+      state.holdUntil &&
+      now < state.holdUntil &&
+      AUTO.lastMinimapTarget &&
+      shouldKeepExistingMoveTarget(
+        { moveTarget: AUTO.lastMinimapTarget },
+        AUTO.lastMinimapTarget.x,
+        AUTO.lastMinimapTarget.y
+      )
+    ) {
+      const holdPt = AUTO.lastMinimapTarget;
+      const holdThreat = getNearestNpcDistance(holdPt.x, holdPt.y, clearFloor + 40);
+      if (!(holdThreat > 0 && holdThreat < clearFloor) && !(nearNpc.length && nearNpc[0].dist < clearFloor)) {
+        sustainRaidCargoClearAttack(input);
+        setStatus("status.raid_cargo_clear", {
+          dist: Math.round(distance(ship.x, ship.y, state.x, state.y)),
+        });
+        return true;
+      }
+      state.holdUntil = 0;
+    }
+    angle += dir * RAID_CARGO_CLEAR_ARC;
+
+    // Prefer the far arc — never cut toward cargo through the pack.
+    const cargoAng = Math.atan2(state.y - cy, state.x - cx);
+    let diff = Math.atan2(Math.sin(angle - cargoAng), Math.cos(angle - cargoAng));
+    if (Math.abs(diff) < 1.55) {
+      angle = cargoAng + Math.PI + dir * 0.85;
+    }
+
+    let pt = null;
+    for (let tries = 0; tries < 8; tries++) {
+      let tx = cx + Math.cos(angle) * RAID_CARGO_CLEAR_ORBIT_R;
+      let ty = cy + Math.sin(angle) * RAID_CARGO_CLEAR_ORBIT_R;
+      if (Number.isFinite(awayCargo)) {
+        tx += Math.cos(awayCargo) * 240;
+        ty += Math.sin(awayCargo) * 240;
+      }
+      const cand = pushPointOutsideLivingNpcs(
+        clampToRaidSupportZone(tx, ty),
+        clearFloor
+      );
+      if (
+        !raidCargoClearChordCutsPack(ship, cand.x, cand.y, swarm) &&
+        getNearestNpcDistance(cand.x, cand.y, clearFloor + 40) >= clearFloor * 0.92
+      ) {
+        pt = cand;
+        break;
+      }
+      angle += dir * RAID_CARGO_CLEAR_ARC;
+    }
+    if (!pt) {
+      const tx =
+        cx +
+        Math.cos(angle) * RAID_CARGO_CLEAR_ORBIT_R +
+        (Number.isFinite(awayCargo) ? Math.cos(awayCargo) * 240 : 0);
+      const ty =
+        cy +
+        Math.sin(angle) * RAID_CARGO_CLEAR_ORBIT_R +
+        (Number.isFinite(awayCargo) ? Math.sin(awayCargo) * 240 : 0);
+      pt = pushPointOutsideLivingNpcs(clampToRaidSupportZone(tx, ty), clearFloor);
+    }
+    state.angle = angle;
+    moveViaMinimap(pt.x, pt.y);
+    state.holdUntil = now + RAID_CARGO_CLEAR_HOLD_MS;
+    sustainRaidCargoClearAttack(input);
+    setStatus("status.raid_cargo_clear", {
+      dist: Math.round(distance(ship.x, ship.y, state.x, state.y)),
+    });
+    return true;
+  }
+
+  function beginRaidCargoScoop(cargo, ship = getShipPosition()) {
+    if (!cargo?.id) return false;
+    if (!canCollectCargoNow()) return false;
+    // Sticky living fight owns kite — remember pending only; scoop after kill.
+    if (hasLivingStickyCombat()) {
+      releaseRaidCargoClearForCombat();
+      return false;
+    }
+    const inputEarly = getInputSystem();
+    // Already on the cargo entity → scoop immediately (do not re-enter patient CLEARING).
+    if (ship && isRaidCargoInContactRange(cargo, ship)) {
+      if (inputEarly && tryContactRaidCargoScoop(inputEarly, ship, AUTO.raidCargoClear)) {
+        return true;
+      }
+    }
+    // Never arm native scoop while surrounded / latch not ready — clear owns the tick.
+    // Exception: contact range already handled above.
+    if (isRaidShipThreatenedForCargo(ship) || isRaidCargoApproachUnsafe(cargo, ship)) {
+      armRaidCargoClear(cargo, { fromBlockedScoop: true });
+      const input = getInputSystem();
+      if (ship && input && AUTO.raidCargoClear) {
+        return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+      }
+      return Boolean(AUTO.raidCargoClear);
+    }
+    // Free cargo: zero cooldown / patient gate — scoop now.
+    const st = AUTO.raidCargoClear;
+    if (st?.cargoId === cargo.id) {
+      st.patientLatch = false;
+      st.scoopCooldownUntil = 0;
+      st.holdUntil = 0;
+      if (
+        st.phase === "CLEARING" ||
+        st.phase === "BREAKOUT" ||
+        st.phase === "APPROACH"
+      ) {
+        const inputClear = getInputSystem();
+        if (ship && inputClear) {
+          // Release clear FSM this tick — fall through to native scoop.
+          st.phase = "SCOOP";
+        }
+      }
+    }
+    clearLockedTarget();
+    const input = getInputSystem();
+    if (input) {
+      input.attackMode = false;
+      input.pendingAttackOnLock = null;
+    }
+    if (AUTO.currentTask === "combat") {
+      AUTO.combatFocusId = null;
+      AUTO.combatTargetId = null;
+      clearCurrentTask();
+    }
+    if (!startCollectTask(cargo)) {
+      noteCargoCollectStartFailure();
+      armRaidCargoClear(cargo, { fromBlockedScoop: true });
+      return false;
+    }
+    if (AUTO.raidCargoClear?.cargoId === cargo.id) {
+      AUTO.raidCargoClear.phase = "SCOOP";
+      AUTO.raidCargoClear.x = cargo.x;
+      AUTO.raidCargoClear.y = cargo.y;
+    } else {
+      AUTO.raidCargoClear = {
+        cargoId: cargo.id,
+        x: cargo.x,
+        y: cargo.y,
+        phase: "SCOOP",
+        startedAt: Date.now(),
+        clearingEnteredAt: 0,
+        cargoClearSince: Date.now(),
+        scoopCooldownUntil: 0,
+        approachR: null,
+        angle: null,
+        dir: AUTO.orbitDirection || 1,
+        holdUntil: 0,
+      };
+    }
+    const dist =
+      cargo.dist != null
+        ? cargo.dist
+        : ship
+          ? distance(ship.x, ship.y, cargo.x, cargo.y)
+          : 0;
+    setStatus("status.raid_cargo_sweep", { dist: Math.round(dist) });
+    return true;
+  }
+
+  /**
+   * Raid Gate cargo sweep: BREAKOUT → CLEARING → APPROACH → SCOOP for every visible cargo
+   * before resuming normal raid combat search. Never interrupts a living sticky fight.
+   * Runs between waves / idle / stage-clear — not only mid-combat after a kill.
+   */
+  function driveRaidCargoSweepTick(input, ship) {
+    if (!isInRaidMap() || !AUTO.collectCargo) {
+      clearRaidCargoClearState();
+      return false;
+    }
+    if (!input || !ship) return false;
+    if (isRaidHealActive()) return false;
+    if (abortCargoCollectIfHoldFull()) return false;
+    if (!canCollectCargoNow()) {
+      clearRaidCargoClearState();
+      return false;
+    }
+
+    // Product rule: living sticky fight owns combat kite — zero cargo divert/arm.
+    if (hasLivingStickyCombat()) {
+      releaseRaidCargoClearForCombat();
+      return false;
+    }
+
+    // Contact scoop before any CLEARING orbit / patient latch — never sit on loot.
+    if (tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear)) return true;
+
+    let state = AUTO.raidCargoClear;
+    if (state) {
+      const spr = getLootSprite(state.cargoId);
+      const stillThere =
+        Boolean(spr) || Boolean(getGameState()?.loots?.has?.(state.cargoId));
+      if (
+        !stillThere ||
+        isCargoCollectAlreadyDone(state.cargoId) ||
+        isForeignOwnedLoot(state.cargoId, spr)
+      ) {
+        clearRaidCargoClearState();
+        state = null;
+      } else if (
+        state.phase === "BREAKOUT" ||
+        state.phase === "CLEARING" ||
+        state.phase === "APPROACH"
+      ) {
+        if (driveRaidCargoClearMovement(input, ship, state)) return true;
+        // Transitioned to SCOOP (latch satisfied + arc approach complete).
+        const cargo = buildCollectibleEntry(
+          state.cargoId,
+          spr || { x: state.x, y: state.y },
+          ship
+        );
+        if (cargo && beginRaidCargoScoop(cargo, ship)) return true;
+        if (AUTO.raidCargoClear) {
+          returnToRaidCargoClearing(AUTO.raidCargoClear, {
+            fromBlockedScoop: true,
+          });
+          return driveRaidCargoClearMovement(
+            input,
+            ship,
+            AUTO.raidCargoClear
+          );
+        }
+        return false;
+      } else if (state.phase === "SCOOP") {
+        // Surrounded while "collecting" far cargo → abort scoop, break out.
+        // Contact (already on cargo): keep scooping — do not yank back to BREAKOUT.
+        const scoopCargo = buildCollectibleEntry(
+          state.cargoId,
+          spr || { x: state.x, y: state.y },
+          ship
+        );
+        const onCargo =
+          scoopCargo && isRaidCargoInContactRange(scoopCargo, ship);
+        if (
+          !onCargo &&
+          (isRaidShipThreatenedForCargo(ship) ||
+            isRaidCargoApproachUnsafe(
+              { id: state.cargoId, x: state.x, y: state.y },
+              ship
+            ))
+        ) {
+          if (scoopCargo) {
+            armRaidCargoClear(scoopCargo, { fromBlockedScoop: true });
+            return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+          }
+        }
+        if (onCargo && tryContactRaidCargoScoop(input, ship, state)) return true;
+        if (AUTO.currentTask === "collect" && AUTO.taskTargetId === state.cargoId) {
+          return false; // driveCollect owns the tick
+        }
+        const cargo = scoopCargo || buildCollectibleEntry(
+          state.cargoId,
+          spr || { x: state.x, y: state.y },
+          ship
+        );
+        if (cargo && beginRaidCargoScoop(cargo, ship)) return true;
+        clearRaidCargoClearState();
+      }
+    }
+
+    // Active non-cargo task (or combat without living sticky already filtered): yield.
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      if (tid && isCargoLoot(getLootSprite(tid), tid)) {
+        // Collecting cargo but surrounded → reclaim tick for breakout.
+        if (isRaidShipThreatenedForCargo(ship)) {
+          const item = getCollectibleById(tid);
+          if (item) {
+            armRaidCargoClear(item, { fromBlockedScoop: true });
+            return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+          }
+        }
+        return false;
+      }
+    }
+    if (AUTO.currentTask && AUTO.currentTask !== "collect") return false;
+
+    // Prefer pending kill drop, else nearest remaining visible cargo.
+    let cargo = null;
+    if (AUTO.pendingCombatCargo) {
+      cargo = findCargoForPendingKill(AUTO.pendingCombatCargo);
+    }
+    if (!cargo) cargo = findNearestRaidVisibleCargo(ship);
+    if (!cargo) {
+      clearRaidCargoClearState();
+      return false;
+    }
+
+    if (isRaidCargoApproachUnsafe(cargo, ship) || isRaidShipThreatenedForCargo(ship)) {
+      // Already on it → scoop anyway (do not patient-orbit away from underfoot loot).
+      if (isRaidCargoInContactRange(cargo, ship)) {
+        return tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear);
+      }
+      armRaidCargoClear(cargo);
+      return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+    }
+
+    // Safe path with no active FSM — still prefer a short clear dwell if we just
+    // aborted a scoop (cooldown), otherwise scoop directly.
+    if (
+      AUTO.raidCargoClear?.scoopCooldownUntil &&
+      Date.now() < AUTO.raidCargoClear.scoopCooldownUntil &&
+      !isRaidCargoInContactRange(cargo, ship)
+    ) {
+      armRaidCargoClear(cargo);
+      return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+    }
+
+    return beginRaidCargoScoop(cargo, ship);
+  }
+
   function findCargoForPendingKill(pending) {
     if (!pending) return null;
     const nearDeath = listCargoNearPoint(pending.x, pending.y, POST_KILL_CARGO_RADIUS);
@@ -3159,9 +5521,20 @@
   }
 
   function tryStartPostKillCargoCollect() {
+    if (!isBotLive()) return false;
     if (!canCollectCargoNow() || !AUTO.pendingCombatCargo) return false;
     if (abortCargoCollectIfHoldFull()) return false;
-    if (AUTO.currentTask === "collect") return false;
+    // Bonus/booty collect must yield to own-kill cargo (nearest-bonus race).
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      const spr = tid ? getLootSprite(tid) : null;
+      const collectingCargo =
+        Boolean(tid && AUTO.cargoCollectInFlightId === tid) ||
+        Boolean(tid && isCargoLoot(spr, tid));
+      if (collectingCargo) return false;
+      clearCollectMovement(tid);
+      clearCurrentTask();
+    }
     if (AUTO.cargoCollectInFlightId) {
       const inFlight = AUTO.cargoCollectInFlightId;
       const stillThere =
@@ -3199,6 +5572,15 @@
       input.attackMode = false;
       input.pendingAttackOnLock = null;
     }
+    // Raid Gate: NPCs on the drop → kite clear before arming native scoop.
+    if (isInRaidMap() && isRaidCargoApproachUnsafe(cargo)) {
+      armRaidCargoClear(cargo);
+      const shipNow = getShipPosition();
+      if (shipNow && input && AUTO.raidCargoClear) {
+        return driveRaidCargoClearMovement(input, shipNow, AUTO.raidCargoClear);
+      }
+      return Boolean(AUTO.raidCargoClear);
+    }
     if (!startCollectTask(cargo)) {
       noteCargoCollectStartFailure();
       return false;
@@ -3214,8 +5596,22 @@
    * Re-arms pending from the remembered site and starts scoop — never chases empty air.
    */
   function tryScoopLatePostKillCargo(payload) {
+    if (!isBotLive()) return false;
     if (!canCollectCargoNow()) return false;
-    if (AUTO.pendingCombatCargo || AUTO.currentTask === "collect") return false;
+    if (AUTO.pendingCombatCargo) return false;
+    // Interrupt bonus/booty only — never abort an in-flight cargo scoop.
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      const spr = tid ? getLootSprite(tid) : null;
+      if (
+        (tid && AUTO.cargoCollectInFlightId === tid) ||
+        (tid && isCargoLoot(spr, tid))
+      ) {
+        return false;
+      }
+      clearCollectMovement(tid);
+      clearCurrentTask();
+    }
     if (abortCargoCollectIfHoldFull()) return false;
     pruneRecentCargoKillSites();
     if (!AUTO.recentCargoKillSites?.length) return false;
@@ -3245,6 +5641,12 @@
         failCount: 0,
         lateArm: true,
       };
+      enterMandatoryPostKillCargoPhase(
+        site.npcId,
+        site.x,
+        site.y,
+        AUTO.pendingCombatCargo.at
+      );
       if (!isInRaidMap()) pauseCombatForPostKillCargo(site.npcId);
       if (tryStartPostKillCargoCollect()) return true;
       // Visible but start failed — leave pending for drivePending tick.
@@ -3277,14 +5679,24 @@
    * Disarm attack/lock so post-kill cargo owns movement.
    * keepAlive syncAttackSession + living combat task were chasing the next NPC
    * while pendingCombatCargo was still open (standard maps).
+   *
+   * mac41: counted / mandatory-phase kills ignore sprite.alive flicker — only a
+   * truly fightable NPC (HP) may keep combat armed over cargo.
    */
   function pauseCombatForPostKillCargo(npcId) {
-    // Never disarm a living sticky for phantom cargo — only after confirmed gone.
+    // mac45: never disarm the player's lock/attack while Stop/Pause.
+    if (!isBotLive()) return;
+    const mandatoryOrCounted =
+      (npcId && AUTO.mandatoryPostKillCargo?.npcId === npcId) ||
+      (npcId && AUTO.countedNpcKillIds.has(npcId)) ||
+      (npcId && AUTO.pendingCombatCargo?.npcId === npcId);
+    if (npcId && isNpcStillFightable(npcId)) {
+      return;
+    }
     if (
       npcId &&
-      (isNpcStillFightable(npcId) ||
-        getNpcSprite(npcId)?.alive ||
-        !isCombatTargetConfirmedGone(npcId))
+      !mandatoryOrCounted &&
+      (getNpcSprite(npcId)?.alive || !isCombatTargetConfirmedGone(npcId))
     ) {
       return;
     }
@@ -3308,11 +5720,44 @@
    * never blocks combat forever on cargo that already left or never spawned.
    */
   function drivePendingCombatCargoTick(input, ship) {
-    if (!AUTO.collectCargo || !AUTO.pendingCombatCargo) return false;
+    if (!AUTO.collectCargo) return false;
+    // mac41: re-arm pending from mandatory phase if phantom-clear wiped it.
+    if (!AUTO.pendingCombatCargo && AUTO.mandatoryPostKillCargo) {
+      rearmPendingCombatCargoFromRecentKillSite();
+    }
+    if (!AUTO.pendingCombatCargo) return false;
 
     // Phantom pending: living NPC again → clear even with no combat task.
     clearFalsePendingCargoForLivingTarget(AUTO.pendingCombatCargo.npcId);
-    if (!AUTO.pendingCombatCargo) return false;
+    clearPhantomPendingCargoBlockingCombat();
+    if (!AUTO.pendingCombatCargo) {
+      // Keep owning the tick while mandatory phase still open (rearm next line).
+      if (isMandatoryPostKillCargoPhaseOpen()) {
+        if (!canCollectCargoNow()) {
+          endMandatoryPostKillCargoPhase();
+          return false;
+        }
+        rearmPendingCombatCargoFromRecentKillSite();
+      }
+      if (!AUTO.pendingCombatCargo) {
+        return Boolean(isMandatoryPostKillCargoPhaseOpen());
+      }
+    }
+
+    // Living sticky mid-fight: never own the tick / never pause combat for cargo.
+    // mac41: counted/mandatory dead sticky is NOT "living" — see hasLivingStickyCombat.
+    if (hasLivingStickyCombat()) return false;
+
+    // Force-clear combat task so scoop is not blocked by `if (AUTO.currentTask)`.
+    if (
+      AUTO.currentTask === "combat" &&
+      AUTO.mandatoryPostKillCargo &&
+      !isNpcStillFightable(AUTO.mandatoryPostKillCargo.npcId)
+    ) {
+      pauseCombatForPostKillCargo(
+        AUTO.mandatoryPostKillCargo.npcId || AUTO.pendingCombatCargo?.npcId
+      );
+    }
 
     // Hold full: drop pending + moveTarget immediately, resume combat
     if (abortCargoCollectIfHoldFull()) return false;
@@ -3324,14 +5769,32 @@
       return false;
     }
 
-    // Mid-fight in raid: don't linger forever under fire.
+    // Mid-fight in raid: don't linger forever under fire waiting for invisible cargo.
+    // Visible but NPC-blocked cargo → evasive CLEARING/BREAKOUT instead of abandon.
     // When the stage is already clear, keep scooping — portal wait is next.
     if (isInRaidMap() && ship && !getGameState()?.raidStageClear) {
+      if (
+        AUTO.raidCargoClear?.phase === "CLEARING" ||
+        AUTO.raidCargoClear?.phase === "BREAKOUT" ||
+        AUTO.raidCargoClear?.phase === "APPROACH"
+      ) {
+        return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+      }
       const threat = getNearestNpcDistance(ship.x, ship.y, getPlayerFireRange() + 220);
       if (threat < Infinity && threat <= getPlayerFireRange() + 80) {
         if (Date.now() - AUTO.pendingCombatCargo.at > 1800) {
-          finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
-          return false;
+          const cargo = findCargoForPendingKill(AUTO.pendingCombatCargo);
+          if (cargo) {
+            if (isRaidCargoApproachUnsafe(cargo, ship) || isRaidShipThreatenedForCargo(ship)) {
+              armRaidCargoClear(cargo);
+              return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+            }
+            // Visible + safe enough: fall through to normal scoop start.
+          } else if (!listRaidVisibleCargo(ship).length) {
+            // No visible cargo under fire — don't freeze forever on empty wait.
+            finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
+            return false;
+          }
         }
       }
     }
@@ -3391,12 +5854,30 @@
     const pending = AUTO.pendingCombatCargo;
     const waitedMs = Date.now() - pending.at;
 
+    // GOLDEN RULE: never abandon while visible allowed cargo remains near the kill.
+    const visibleNearPending = listCargoNearPoint(
+      pending.x,
+      pending.y,
+      POST_KILL_CARGO_RADIUS
+    ).filter((c) => !isCargoCollectAlreadyDone(c.id));
     if (waitedMs > POST_KILL_CARGO_WAIT_MS) {
-      finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
-      return false;
+      if (visibleNearPending.length) {
+        // Soft-extend the wait window — scoop owns until collected/gone.
+        pending.at = Date.now() - Math.floor(POST_KILL_CARGO_WAIT_MS * 0.55);
+      } else if (
+        isInRaidMap() &&
+        listRaidVisibleCargo(ship).length > 0
+      ) {
+        // Raid leftover elsewhere on map — yield to sweep, keep site for late lootAdd.
+        finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
+        return false;
+      } else {
+        finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
+        return false;
+      }
     }
 
-    // Orphaned in-flight without a collect task: abandon
+    // Orphaned in-flight without a collect task: retry longer while cargo still visible.
     if (AUTO.cargoCollectInFlightId && waitedMs > POST_KILL_CARGO_STUCK_MS) {
       const inFlight = AUTO.cargoCollectInFlightId;
       const stillThere =
@@ -3409,6 +5890,12 @@
         blockCargoUntilHoldFrees("status.cargo_hold_full");
         return false;
       }
+      // Still visible — re-arm collect instead of abandoning (golden rule).
+      if (tryStartPostKillCargoCollect()) return true;
+      if (visibleNearPending.length) {
+        pending.at = Date.now() - Math.floor(POST_KILL_CARGO_WAIT_MS * 0.55);
+        return true;
+      }
       finishCombatCargoCollect(inFlight, { count: false });
       return false;
     }
@@ -3419,14 +5906,16 @@
     if (!pendingNow) return false;
 
     const waitedNow = Date.now() - pendingNow.at;
-    if (waitedNow > POST_KILL_CARGO_WAIT_MS) {
-      finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
-      return false;
-    }
-
     const nearCargo = listCargoNearPoint(pendingNow.x, pendingNow.y, POST_KILL_CARGO_RADIUS).filter(
       (c) => !isCargoCollectAlreadyDone(c.id)
     );
+    if (waitedNow > POST_KILL_CARGO_WAIT_MS && !nearCargo.length) {
+      finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
+      return false;
+    }
+    if (waitedNow > POST_KILL_CARGO_WAIT_MS && nearCargo.length) {
+      pendingNow.at = Date.now() - Math.floor(POST_KILL_CARGO_WAIT_MS * 0.55);
+    }
 
     // No visible/allowed cargo: never soft-chase the death spot (phantom "Vado al cargo").
     // Clear leftover move toward pending, expire after appear grace, let combat continue.
@@ -3462,12 +5951,17 @@
         }
       }
 
-      if (waitedNow > POST_KILL_CARGO_APPEAR_MS) {
+      if (waitedNow > POST_KILL_CARGO_WAIT_MS) {
         finishCombatCargoCollect(AUTO.cargoCollectInFlightId, { count: false });
         return false;
       }
-      // Do not own the tick — combat / wander continue while we wait for lootAdd.
-      return false;
+      // Raid Gate: do not freeze on empty air — let the visible-cargo sweep continue.
+      // Pending stays armed so a late drop for this kill still scoops.
+      if (isInRaidMap()) return false;
+      // Own the post-kill window until WAIT_MS so nearest bonus / next NPC cannot
+      // steal the tick while lootAdd is still in flight (no soft-chase of empty air).
+      setStatus("status.cargo_wait");
+      return true;
     }
 
     // Visible but startCollect failed this tick — don't freeze; retry next tick or stuck path
@@ -3477,6 +5971,8 @@
 
   function handleEntityKill(payload) {
     if (!payload) return;
+    // mac45: kill→cargo arming is bot-only; manual play must keep lock/attack free.
+    if (!isBotLive()) return;
     // hit/rocketHit often omit targetHp on normal damage — that is NOT a kill.
     // Only explicit HP<=0 may arm cargo / count; missing HP must wait for
     // entityRemove / clearTaskIfDone confirmed-gone (prevents mid-fight abandon).
@@ -3509,6 +6005,7 @@
   }
 
   function handleEntityRemove(payload) {
+    if (!isBotLive()) return;
     const ids = payload?.ids;
     if (!Array.isArray(ids)) return;
 
@@ -3570,6 +6067,35 @@
     return isBonusLoot(sprite);
   }
 
+  function maybeAlertAdminKill(payload) {
+    if (!AUTO.active) return;
+    const myNick = String(
+      getLocalPlayer()?.nickname || getLocalPlayer()?.username || ""
+    ).trim();
+    const victim = String(payload?.victimNickname || payload?.victim || "").trim();
+    const killer = String(
+      payload?.killerNickname || payload?.killer || payload?.killerName || ""
+    ).trim();
+    // killed event: only when we are the victim. deathInfo may lack victim fields.
+    if (victim && myNick && victim !== myNick) return;
+    let adminName = "";
+    if (killer && isKnownAdminNickname(killer)) adminName = killer;
+    if (!adminName) {
+      const nearby = findNearestAdminPlayer(FLEE_ENEMY_DETECT_RADIUS);
+      if (nearby?.nickname) adminName = nearby.nickname;
+    }
+    if (!adminName && AUTO.adminPauseName) adminName = AUTO.adminPauseName;
+    if (!adminName && !isSectorZMap()) return;
+    if (!adminName) adminName = "?";
+    rememberAdminName(adminName);
+    sendDiscordAdminAlert(
+      "admin_kill",
+      t("discord.admin_alert.killed", { name: adminName }),
+      { name: adminName }
+    );
+    setStatus("status.admin_killed_you", { name: adminName });
+  }
+
   function registerStoryNetHooks() {
     const net = window.__RG_NET__;
     if (!net?.onMessage) return;
@@ -3595,6 +6121,7 @@
     // Arming is owned by handleEntityKill / noteNpcKill / clearTaskIfDone.
     // Late killReward after collect was the main source of phantom cargo_wait.
     net.onMessage("killReward", () => {
+      if (!isBotLive()) return;
       if (AUTO.pendingCombatCargo && canCollectCargoNow()) {
         tryStartPostKillCargoCollect();
       }
@@ -3602,6 +6129,7 @@
 
     net.onMessage("lootAdd", (payload) => {
       rememberLootOwners(payload);
+      if (!isBotLive()) return;
       if (AUTO.pendingCombatCargo) {
         tryStartPostKillCargoCollect();
       } else {
@@ -3740,11 +6268,13 @@
     net.onMessage("lockInfo", (payload) => {
       if (!payload?.targetId) return;
       const K = getGameState();
-      // Mirror game client lock ownership flags.
+      // Mirror game client lock ownership flags (safe while Stop — no control steal).
       if (K && K.lockedTargetId === payload.targetId) {
         K.lockTargetOwnedByOther = !!payload.isOwnedByOther;
         K.lockOwnerExpiresAt = payload.expiresAt ?? 0;
       }
+      // mac45: while Stop/Pause, never clear lock / attackMode — manual play owns input.
+      if (!isBotLive()) return;
       if (!payload.isOwnedByOther) {
         // Confirmed our lock (red circle) — clear any stale foreign mark.
         AUTO.foreignNpcIds.delete(payload.targetId);
@@ -3791,6 +6321,20 @@
       requestPlayerSlowSync();
     });
 
+    net.onMessage("enrichOreSuccess", (payload) => {
+      applyEnrichPayloadLocal(payload);
+      AUTO.refineryPending = true;
+      scheduleRefineryProcess(250);
+      requestPlayerSlowSync();
+    });
+
+    net.onMessage("enrichOreFailed", () => {
+      clearRefineryEnhanceQueue();
+      AUTO.refineryPending = true;
+      AUTO.refineryScheduledAt = Date.now() + 900;
+      requestPlayerSlowSync();
+    });
+
     net.onMessage("buyAmmoSuccess", (payload) => {
       const player = getLocalPlayer();
       if (player && payload?.ammoType) {
@@ -3814,16 +6358,23 @@
     net.onMessage("rocketHit", handleEntityKill);
     net.onMessage("entityRemove", handleEntityRemove);
     net.onMessage("raidDeath", handleRaidDeath);
-    net.onMessage("deathInfo", () => {
+    net.onMessage("deathInfo", (payload) => {
       // Sticky definitive death — bypasses arrival-grace ignores / flaky alive sync.
       AUTO.deathInfoReceived = true;
       const K = getGameState();
       if (K) K.isDead = true;
+      maybeAlertAdminKill(payload);
       // B13 reliability: repair FIRST so register→stopPlay(death limit) cannot block it.
       // Then count; then repair again if still active (ties wasDead for recover).
       if (AUTO.active && !AUTO.paused) tryAutoRepairAfterDeath();
       registerPlayerDeath(isInRaidMap() ? "raid" : "combat");
       if (AUTO.active && !AUTO.paused) tryAutoRepairAfterDeath();
+    });
+    net.onMessage("killed", (payload) => {
+      maybeAlertAdminKill(payload);
+    });
+    net.onMessage("groupInviteReceived", (payload) => {
+      handleGroupInviteReceived(payload);
     });
     net.onMessage("repairShipSuccess", () => {
       const K = getGameState();
@@ -3886,12 +6437,14 @@
       AUTO.bootyKeyBuyPending = false;
       setStatus("status.booty_key_buy_failed");
     });
-    net.onMessage("raidInfo", () => {
+    net.onMessage("raidInfo", (payload) => {
+      noteRaidProgressFromInfo(payload);
       if (!AUTO.raidGateId) return;
       applyRaidGateNpcSelection(AUTO.raidGateId);
       window.setTimeout(() => syncRaidNpcSelectionFromMap(), 600);
     });
-    net.onMessage("raidWave", () => {
+    net.onMessage("raidWave", (payload) => {
+      noteRaidProgressFromWave(payload);
       // Soft wave arm: short breakout window only — never clear combat/orbit (that caused freeze).
       armRaidWaveReposition("wave");
       if (mustHealBeforeRaidAdvance()) {
@@ -3916,6 +6469,7 @@
       }, 700);
     });
     net.onMessage("raidStageClear", (payload) => {
+      noteRaidProgressFromStageClear(payload);
       const isLast =
         Boolean(payload?.isLastStage) || Boolean(getGameState()?.raidIsLastStage);
       if (isLast) {
@@ -3934,10 +6488,21 @@
       window.setTimeout(() => syncRaidNpcSelectionFromMap(), 400);
     });
     net.onMessage("raidExit", (payload) => {
+      clearRaidProgressTracking();
       if (payload?.completed) {
         maybeStopOnRaidGateComplete("exit");
       }
     });
+
+    // Portal jump confirmations: stop tryJump spam (esp. raid stage → "nessun portale vicino").
+    const latchJumpIfNavigating = (reason) => () => {
+      if (NAV.active && NAV.phase === "jump") latchPortalJump(reason);
+    };
+    net.onMessage("jumpApproved", latchJumpIfNavigating("jumpApproved"));
+    net.onMessage("jumpExecute", latchJumpIfNavigating("jumpExecute"));
+    net.onMessage("raidPortalReady", latchJumpIfNavigating("raidPortalReady")); // log "portale pronto"
+    net.onMessage("raidJumpApproved", latchJumpIfNavigating("raidJumpApproved"));
+    net.onMessage("raidJumpExecute", latchJumpIfNavigating("raidJumpExecute"));
   }
 
   function installGameHooks() {
@@ -3948,11 +6513,33 @@
 
     if (!net.__rgStoryClearWrapped) {
       net.__rgStoryClearWrapped = true;
+      const rebindStoryHooks = () => {
+        AUTO.gameHooksInstalled = false;
+        registerStoryNetHooks();
+        AUTO.gameHooksInstalled = true;
+        // Soft-reset / room transfer clears callbacks *after* clearCallbacks wrap
+        // rebinds us, then messageBridge.register() wipes again via clearMessageCallbacks.
+        // Re-request raidInfo once hooks are back so stage/total aren't stuck at 0.
+        try {
+          if (isInRaidMap() || getGameState()?.inRaid) {
+            net.sendRequestRaidInfo?.();
+          }
+        } catch (_) {}
+      };
       const origClear = net.clearCallbacks.bind(net);
       net.clearCallbacks = function rgStoryClearCallbacks() {
         origClear();
-        registerStoryNetHooks();
+        rebindStoryHooks();
       };
+      // Critical: room transfer softReset calls clearCallbacks THEN messageBridge.register()
+      // which uses clearMessageCallbacks — that path was wiping Bastion raid/kill hooks.
+      if (typeof net.clearMessageCallbacks === "function") {
+        const origClearMsg = net.clearMessageCallbacks.bind(net);
+        net.clearMessageCallbacks = function rgStoryClearMessageCallbacks() {
+          origClearMsg();
+          rebindStoryHooks();
+        };
+      }
     }
 
     if (AUTO.gameHooksInstalled) return;
@@ -3997,6 +6584,8 @@
    * Do not thrash raid orbit (no orbit reset here).
    */
   function handleNetLockOrShootFailed(payload, source) {
+    // mac45: do not clear the player's lock while Bastion is Stop/Pause.
+    if (!isBotLive()) return;
     const reason = String(payload?.reason || "").toLowerCase();
     if (source === "shoot" && reason && reason !== "no_lock" && reason !== "invalid_target") {
       return;
@@ -4286,6 +6875,39 @@
     if (npcId) AUTO.combatOrbitEngagedIds.add(npcId);
   }
 
+  function noteCombatEngageStart(npcId) {
+    if (!npcId) return;
+    if (AUTO.combatEngageNpcId !== npcId) {
+      AUTO.combatEngageNpcId = npcId;
+      AUTO.combatEngageStartedAt = Date.now();
+    }
+  }
+
+  /**
+   * True once sticky has taken our damage / aggro'd us, or first-hit timeout elapsed
+   * while we were already in laser range (so portal-drift does not leave unhit NPCs).
+   */
+  function hasStickyFirstHitOrTimeout(npc) {
+    if (!npc?.id) return true;
+    updateCombatOrbitEngagement(npc);
+    if (isCombatOrbitEngaged(npc.id)) return true;
+    const state = getGameState()?.npcs?.get?.(npc.id);
+    if (state?.max_hp > 0 && state.hp != null && state.hp < state.max_hp - 0.5) {
+      markCombatOrbitEngaged(npc.id);
+      return true;
+    }
+    if (isNpcAttackingPlayer(npc.id)) {
+      markCombatOrbitEngaged(npc.id);
+      return true;
+    }
+    const started =
+      AUTO.combatEngageNpcId === npc.id ? AUTO.combatEngageStartedAt || 0 : 0;
+    if (started && Date.now() - started >= PORTAL_DRIFT_FIRST_HIT_TIMEOUT_MS) {
+      return true;
+    }
+    return false;
+  }
+
   function updateCombatOrbitEngagement(npc) {
     if (!npc?.id || isInRaidMap() || isCombatOrbitEngaged(npc.id)) return;
 
@@ -4416,9 +7038,11 @@
     if (!ship) return false;
     const close = listNpcs(RAID_ENCIRCLE_CLOSE_R);
     if (close.length < RAID_ENCIRCLE_MIN_NPCS) return false;
+    // 4+ close = packed (was MIN+2 with MIN=3 → 5).
     if (close.length >= RAID_ENCIRCLE_MIN_NPCS + 2) return true;
     const spread = getRaidAngularSpread(ship, close);
-    return spread >= Math.PI * 0.85;
+    // Partial surround / flanking: fire sooner (was π·0.85). MIN=2 allows 2-flank detect.
+    return spread >= Math.PI * 0.72;
   }
 
   function needsRaidWaveBreakout(ship = getShipPosition()) {
@@ -4521,28 +7145,227 @@
     return true;
   }
 
-  /** Gentle orbit bias toward nearest friendly portal (opt-in). Does not hard-charge. */
   /**
-   * Standard-map portal drift: soft-blend the orbit waypoint toward the allied
-   * portal so the fight gradually migrates there. Freeze within stand-off of the
-   * portal (no linear pull) so near-portal combat stays a pure circle via
-   * softClampStdOrbitCircle — linear blend near the portal was the oval bug.
+   * Legacy outer combat ring (~560m). Not used for arrive anymore — arrive is portal
+   * safe/center (PORTAL_HEAL_CENTER_DIST / in_safe_zone). Kept for docs/hysteresis context.
    */
-  function applyPortalDriftBias(tx, ty, ship, npc, radius) {
-    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship) return { x: tx, y: ty };
+  const PORTAL_DRIFT_OUTER_RING_DIST = 560;
+  /** Resume migrate only after leaving this ring (hysteresis vs safe-center arrive). */
+  const PORTAL_DRIFT_RESUME_DIST = 780;
+  /** Max soft-hold step toward portal (longer leg = fewer retargets; laser clamp still applies). */
+  const PORTAL_DRIFT_STEP = 820;
+  /** Prolonged heading hold before a soft retarget (human mouse-hold, not minimap spam). */
+  const PORTAL_DRIFT_MIGRATE_HOLD_MS = 2650;
+  /** Blend weight keeping prior heading vs portal vector (higher = more linear). */
+  const PORTAL_DRIFT_HEADING_KEEP = 0.86;
+  /** Soft / marked peak lateral wobble (irregular stretches; often 0 = straight). */
+  const PORTAL_DRIFT_WOBBLE_SOFT_MAX = 16;
+  const PORTAL_DRIFT_WOBBLE_MARKED_MAX = 44;
+
+  /**
+   * Irregular portal-drift lateral stretch: sometimes straight (amp=0), sometimes
+   * near-imperceptible, sometimes slightly marked. Hold length + side change
+   * irregularly — never alternating L/R on a fixed bucket clock.
+   */
+  function refreshPortalDriftWobbleState() {
+    const now = Date.now();
+    if (AUTO.portalDriftWobbleUntil && now < AUTO.portalDriftWobbleUntil) return;
+    const roll = Math.random();
+    let amp = 0;
+    let holdMs;
+    if (roll < 0.4) {
+      // Straight stretch — longer holds feel smoother / less twitchy.
+      amp = 0;
+      holdMs = randBetween(2400, 5200);
+    } else if (roll < 0.78) {
+      // Nearly imperceptible lateral bias.
+      amp = randBetween(4, PORTAL_DRIFT_WOBBLE_SOFT_MAX);
+      holdMs = randBetween(1600, 3400);
+    } else {
+      // Slightly more marked oscillation (still soft).
+      amp = randBetween(PORTAL_DRIFT_WOBBLE_SOFT_MAX + 4, PORTAL_DRIFT_WOBBLE_MARKED_MAX);
+      holdMs = randBetween(1200, 2800);
+    }
+    // Prefer keeping the same side across stretches (~60%) so path doesn't flip-flop.
+    if (amp > 0 && Math.random() >= 0.6) {
+      AUTO.portalDriftWobbleSide = Math.random() < 0.5 ? 1 : -1;
+    } else if (!AUTO.portalDriftWobbleSide) {
+      AUTO.portalDriftWobbleSide = Math.random() < 0.5 ? 1 : -1;
+    }
+    AUTO.portalDriftWobbleAmp = amp;
+    AUTO.portalDriftWobbleUntil = now + holdMs;
+  }
+
+  /**
+   * Portal drift (opt-in, standard maps): independent from Orbita.
+   * Migrate toward nearest allied portal CENTER / safe zone without abandoning sticky fire range.
+   * Works with orbit ON or OFF — only requires combat sticky + drift toggle.
+   * Arrived + Orbit OFF: hold still inside safe/center and keep laser on sticky.
+   * Arrived + Orbit ON: release so applyCombatOrbit can kite around sticky near portal
+   * (still inside safe hysteresis — do NOT re-hold at center).
+   * Do NOT treat the ~560m outer ring as arrived — NPCs can still hurt there.
+   */
+  function getPortalDriftRetreatPortal(ship) {
+    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship) return null;
     const portal = findNearestFriendlyPortal({ preferSafeBase: false });
-    if (!portal) return { x: tx, y: ty };
+    if (!portal) return null;
+    // Same safe signal as heal / coffee-admin hold (not PORTAL_DRIFT_OUTER_RING_DIST).
+    if (isInSafeZone() || isAtFriendlyPortalHealCenter(ship)) {
+      AUTO.portalDriftArrived = true;
+    } else if (portal.dist >= PORTAL_DRIFT_RESUME_DIST) {
+      AUTO.portalDriftArrived = false;
+    }
+    if (AUTO.portalDriftArrived) return null;
+    return portal;
+  }
 
-    // Freeze near portal — keep pure circular combat orbit (no linear pull → no oval).
-    const PORTAL_DRIFT_FREEZE_DIST = 560;
-    if (portal.dist <= PORTAL_DRIFT_FREEZE_DIST) return { x: tx, y: ty };
+  /**
+   * Owns movement while migrating, or while holding at portal after arrival (Orbit OFF only).
+   * Returns true when this path owns the tick (caller keeps engage/shoot on sticky).
+   */
+  function drivePortalDriftRetreat(ship, npc) {
+    if (!AUTO.orbitPortalDrift || isInRaidMap() || !ship || !npc) return false;
 
-    // Soft blend (~12%) so combat orbit stays primary but fight drifts toward portal.
-    const blend = 0.12;
-    return {
-      x: tx + (portal.x - tx) * blend,
-      y: ty + (portal.y - ty) * blend,
-    };
+    // First-hit gate: some NPCs never follow unless wounded. Keep engaging in
+    // laser range until sticky is hit (or timeout) before migrating to portal.
+    const fireRangeEarly = getPlayerFireRange() || 635;
+    if (npc.dist <= fireRangeEarly * 1.02) {
+      noteCombatEngageStart(npc.id);
+      updateCombatOrbitEngagement(npc);
+      if (!hasStickyFirstHitOrTimeout(npc)) {
+        return false;
+      }
+    } else {
+      // Out of laser: approach first — never portal-migrate before first shot chance.
+      return false;
+    }
+
+    const migratePortal = getPortalDriftRetreatPortal(ship);
+    const fireRange = fireRangeEarly;
+    const maxFire = fireRange * 0.95;
+
+    // Safe/center reached:
+    // - Orbit OFF → hold still (drift-only park) and keep attacking.
+    // - Orbit ON  → release to applyCombatOrbit (orbit must work at portal).
+    if (AUTO.portalDriftArrived) {
+      if (AUTO.modeOrbit) return false;
+      if (npc.dist <= fireRange * 1.02) {
+        clearCombatMoveTarget(getInputSystem());
+        AUTO.lastMinimapTarget = null;
+        setStatus(
+          `Deriva portale: fermo in safe, fuoco su ${npc.name} (${Math.round(npc.dist)}m)`
+        );
+        return true;
+      }
+      // Sticky left laser — release so approach can close; hysteresis keeps arrive until resume.
+      return false;
+    }
+
+    if (!migratePortal) return false;
+
+    // Ideal: portal center when sticky can still be shot from there; else closest in-band point.
+    const portal = migratePortal;
+    const dNpcPortal = Math.hypot(portal.x - npc.x, portal.y - npc.y);
+    let idealX;
+    let idealY;
+    if (dNpcPortal <= maxFire) {
+      idealX = portal.x;
+      idealY = portal.y;
+    } else {
+      const a = Math.atan2(portal.y - npc.y, portal.x - npc.x);
+      idealX = npc.x + Math.cos(a) * maxFire;
+      idealY = npc.y + Math.sin(a) * maxFire;
+    }
+
+    const toIdealDx = idealX - ship.x;
+    const toIdealDy = idealY - ship.y;
+    const toIdealDist = Math.hypot(toIdealDx, toIdealDy) || 1;
+    if (toIdealDist < 72) {
+      // Already on ideal — avoid micro-step spam while still migrating (pre-arrive).
+      clearCombatMoveTarget(getInputSystem());
+      return true;
+    }
+
+    // Soft continuous migrate (gameplay setMoveTarget = prolonged mouse-hold feel):
+    // longer heading holds, almost-linear blend toward portal, irregular soft wobble.
+    // Prefer setMoveTargetDirect over minimap click spam; laser stand-off always wins.
+    const held = AUTO.lastMinimapTarget;
+    const heldAge = Date.now() - (AUTO.lastMinimapMoveAt || 0);
+    if (held && heldAge < PORTAL_DRIFT_MIGRATE_HOLD_MS) {
+      const rem = distance(ship.x, ship.y, held.x, held.y);
+      if (rem > (AUTO.arriveDistance || 50) + 36) {
+        // Re-assert same soft hold if the engine dropped moveTarget; no new click.
+        const input = getInputSystem();
+        const mt = input?.moveTarget;
+        if (
+          !mt ||
+          mt.x == null ||
+          distance(mt.x, mt.y, held.x, held.y) > 110
+        ) {
+          setMoveTargetDirect(input, held.x, held.y);
+        }
+        const outerHintHold =
+          portal.dist > PORTAL_DRIFT_OUTER_RING_DIST
+            ? `portale ~${Math.round(portal.dist)}m`
+            : `verso safe ~${Math.round(portal.dist)}m`;
+        setStatus(
+          `Deriva portale: migro in safe (${Math.round(npc.dist)}m laser, ${outerHintHold})`
+        );
+        return true;
+      }
+    }
+
+    const step = Math.min(PORTAL_DRIFT_STEP, Math.max(280, toIdealDist));
+    let dirX = toIdealDx / toIdealDist;
+    let dirY = toIdealDy / toIdealDist;
+    if (held) {
+      const curDx = held.x - ship.x;
+      const curDy = held.y - ship.y;
+      const curLen = Math.hypot(curDx, curDy);
+      if (curLen > 48) {
+        const keep = PORTAL_DRIFT_HEADING_KEEP;
+        const bx = (curDx / curLen) * keep + dirX * (1 - keep);
+        const by = (curDy / curLen) * keep + dirY * (1 - keep);
+        const bLen = Math.hypot(bx, by) || 1;
+        dirX = bx / bLen;
+        dirY = by / bLen;
+      }
+    }
+
+    // Non-periodic human wobble: refresh amp/side on irregular stretches (often zero).
+    refreshPortalDriftWobbleState();
+    const wobbleAmp = Number(AUTO.portalDriftWobbleAmp) || 0;
+    const side = AUTO.portalDriftWobbleSide >= 0 ? 1 : -1;
+    let tx = ship.x + dirX * step - dirY * side * wobbleAmp;
+    let ty = ship.y + dirY * step + dirX * side * wobbleAmp;
+
+    // Hard clamp: never leave effective fire / stand-off of sticky.
+    let dNpc = Math.hypot(tx - npc.x, ty - npc.y);
+    if (dNpc > maxFire) {
+      const a = Math.atan2(ty - npc.y, tx - npc.x);
+      tx = npc.x + Math.cos(a) * maxFire;
+      ty = npc.y + Math.sin(a) * maxFire;
+    } else if (dNpc < fireRange * 0.72 && npc.dist >= fireRange * 0.72) {
+      // Don't dive inward toward sticky while portal-migrating (stand-off preference).
+      const a = Math.atan2(ty - npc.y, tx - npc.x);
+      const floorR = Math.min(maxFire, Math.max(npc.dist, fireRange * 0.82));
+      tx = npc.x + Math.cos(a) * floorR;
+      ty = npc.y + Math.sin(a) * floorR;
+    }
+
+    const safe = clampToPlayArea(tx, ty);
+    const input = getInputSystem();
+    setMoveTargetDirect(input, safe.x, safe.y);
+    AUTO.lastMinimapTarget = { x: safe.x, y: safe.y };
+    AUTO.lastMinimapMoveAt = Date.now();
+    const outerHint =
+      portal.dist > PORTAL_DRIFT_OUTER_RING_DIST
+        ? `portale ~${Math.round(portal.dist)}m`
+        : `verso safe ~${Math.round(portal.dist)}m`;
+    setStatus(
+      `Deriva portale: migro in safe (${Math.round(npc.dist)}m laser, ${outerHint})`
+    );
+    return true;
   }
 
   /**
@@ -4823,6 +7646,9 @@
     const swarm = getRaidSwarmCentroid(all.length ? all : null);
     const turretR = getRaidTurretRange() * 0.72;
     const fireRange = getPlayerFireRange();
+    const encircled = isShipEncircledByNpcs(ship);
+    // Decisive step when packed; normal step otherwise.
+    const breakStep = encircled ? RAID_BREAKOUT_STEP * 1.15 : RAID_BREAKOUT_STEP;
 
     let away = Math.atan2(ship.y - swarm.y, ship.x - swarm.x);
     if (!Number.isFinite(away)) {
@@ -4830,6 +7656,30 @@
     }
     const dir = AUTO.raidWaveEscapeDir || 1;
     away += dir * 0.55;
+
+    // Prefer largest open angular gap when encircled (same idea as cargo breakout).
+    if (encircled) {
+      const close = listNpcs(RAID_ENCIRCLE_CLOSE_R);
+      if (close.length >= RAID_ENCIRCLE_MIN_NPCS) {
+        const angles = close
+          .map((n) => Math.atan2(n.y - ship.y, n.x - ship.x))
+          .sort((a, b) => a - b);
+        let maxGap = 0;
+        let gapMid = away;
+        for (let i = 0; i < angles.length; i++) {
+          const a = angles[i];
+          const b =
+            angles[(i + 1) % angles.length] +
+            (i + 1 === angles.length ? Math.PI * 2 : 0);
+          const gap = b - a;
+          if (gap > maxGap) {
+            maxGap = gap;
+            gapMid = a + gap * 0.5;
+          }
+        }
+        if (maxGap >= 0.5) away = gapMid;
+      }
+    }
 
     const shipR = Math.hypot(ship.x - center.x, ship.y - center.y) || turretR;
     const cruiseCap = getRaidOrbitCruiseMax();
@@ -4842,7 +7692,7 @@
     const candidates = [];
     for (const bias of [0, 0.4, -0.4, 0.85, -0.85, 1.3, -1.3]) {
       const ang = away + bias;
-      for (const radius of [desiredR, Math.max(desiredR, turretR * 0.78), shipR + RAID_BREAKOUT_STEP * 0.55]) {
+      for (const radius of [desiredR, Math.max(desiredR, turretR * 0.78), shipR + breakStep * 0.55]) {
         const pt = clampToPlayArea(center.x + Math.cos(ang) * radius, center.y + Math.sin(ang) * radius);
         const threat = getNearestNpcDistance(pt.x, pt.y);
         const r = distance(pt.x, pt.y, center.x, center.y);
@@ -4858,14 +7708,14 @@
     const best = candidates[0];
     if (!best) {
       return clampToPlayArea(
-        ship.x + Math.cos(away) * RAID_BREAKOUT_STEP,
-        ship.y + Math.sin(away) * RAID_BREAKOUT_STEP
+        ship.x + Math.cos(away) * breakStep,
+        ship.y + Math.sin(away) * breakStep
       );
     }
 
     const dist = distance(ship.x, ship.y, best.x, best.y);
-    if (dist <= RAID_BREAKOUT_STEP) return { x: best.x, y: best.y };
-    const t = RAID_BREAKOUT_STEP / dist;
+    if (dist <= breakStep) return { x: best.x, y: best.y };
+    const t = breakStep / dist;
     return clampToPlayArea(ship.x + (best.x - ship.x) * t, ship.y + (best.y - ship.y) * t);
   }
 
@@ -5046,6 +7896,11 @@
     }
 
     const breakout = getRaidBreakoutPoint(ship);
+    // Packed: force a fresh escape click (bypass soft interval/delta dither).
+    if (encircled) {
+      AUTO.lastMinimapMoveAt = 0;
+      AUTO.lastMinimapTarget = null;
+    }
     moveViaMinimap(breakout.x, breakout.y);
 
     if (npc) {
@@ -5240,6 +8095,51 @@
       fireRange,
       npcRange,
     };
+  }
+
+  /**
+   * Stand-off floor used by cargo CLEARING waypoints (post-kill only).
+   * Not used to diverge combat orbit when collectCargo toggle is ON.
+   * Numbers @ laser 650: preferred≈630, maxR≈631, floor max(preferred, 620)≈630m.
+   */
+  function getCargoCombatSafeStandOff(npc = null) {
+    const { minR, maxR, preferred } = getOrbitRadii(npc);
+    const outer = Math.max(preferred, maxR * 0.98);
+    return Math.max(outer, minR + 16, RAID_CARGO_CLEAR_NPC_FLOOR);
+  }
+
+  /**
+   * Push a CLEARING/BREAKOUT waypoint outside living-NPC hit range.
+   */
+  function pushPointOutsideLivingNpcs(pt, floorR = null) {
+    if (!pt) return pt;
+    const floor = floorR != null ? floorR : getCargoCombatSafeStandOff();
+    const threats = listNpcs(floor + 80);
+    if (!threats.length) return pt;
+    let x = pt.x;
+    let y = pt.y;
+    for (let pass = 0; pass < 4; pass++) {
+      let moved = false;
+      for (const n of threats) {
+        const d = distance(x, y, n.x, n.y);
+        if (d >= floor || d < 1e-3) continue;
+        const ang = Math.atan2(y - n.y, x - n.x);
+        x = n.x + Math.cos(ang) * floor;
+        y = n.y + Math.sin(ang) * floor;
+        moved = true;
+      }
+      if (!moved) break;
+      if (isInRaidMap()) {
+        const z = clampToRaidSupportZone(x, y);
+        x = z.x;
+        y = z.y;
+      } else {
+        const z = clampToPlayArea(x, y);
+        x = z.x;
+        y = z.y;
+      }
+    }
+    return { x, y };
   }
 
   /**
@@ -5455,20 +8355,24 @@
 
   /**
    * Standard maps: suppress inward radial clicks that close distance while the
-   * ship can already shoot — plus the post-retreat re-dive after a hit.
+   * ship can already shoot — plus stable kite under fire (no approach↔retreat loop).
    */
   function shouldSuppressStdInwardAfterHit(ship, npc, tx, ty) {
     if (isInRaidMap() || !ship || !npc || tx == null || ty == null) return false;
     const curD = distance(ship.x, ship.y, npc.x, npc.y);
     const newD = distance(tx, ty, npc.x, npc.y);
-    if (!(newD < curD - 10)) return false;
+    if (!(newD < curD - 8)) return false;
 
     const fireRange = getPlayerFireRange();
     // Already in laser range: never click inward toward the NPC body.
     if (curD <= fireRange) return true;
 
-    // After retreat + recent damage: block the immediate inward re-click.
     if (!isStdCombatRecentlyDamaged()) return false;
+
+    // Under fire with sticky: prefer stable outer kite while still near laser band.
+    if (curD <= fireRange * 1.2) return true;
+
+    // After an outward retreat: block the immediate inward re-click.
     if (AUTO.stdOrbitLastRadialSign !== 1) return false;
     return newD < curD - 12;
   }
@@ -5479,16 +8383,61 @@
     const { preferred, maxR } = getOrbitRadii(npc);
     const dist = distance(ship.x, ship.y, npc.x, npc.y) || 1;
     const holdR = Math.min(
-      Math.max(dist, preferred) * (1 + STD_HIT_ORBIT_OUTWARD),
+      Math.max(dist, preferred, maxR * 0.92) * (1 + STD_HIT_ORBIT_OUTWARD),
       maxR * (1 + STD_HIT_ORBIT_OUTWARD)
     );
     const ang = Math.atan2(ship.y - npc.y, ship.x - npc.x);
     const dir = AUTO.orbitDirection || 1;
-    const lead = dir * (Math.PI / 2) * 0.35;
+    // Prefer strafe (π/2) over radial jab — stable kite under fire.
+    const lead = dir * (Math.PI / 2) * (isStdCombatRecentlyDamaged() ? 0.72 : 0.35);
     return clampToPlayArea(
       npc.x + Math.cos(ang + lead) * holdR,
       npc.y + Math.sin(ang + lead) * holdR
     );
+  }
+
+  /**
+   * Orbit ON + portalDriftArrived: soft-clamp orbit waypoint so sticky stays in
+   * laser stand-off and the ship is not yanked repeatedly outside safe.
+   * Does not force hold-still — still orbits, just gentler near the portal.
+   */
+  function softenPortalSafeOrbitPoint(ship, npc, tx, ty) {
+    if (!ship || !npc || tx == null || ty == null) return { x: tx, y: ty };
+    const { minR, maxR, preferred, fireRange } = getOrbitRadii(npc);
+    const laserCap = Math.min(maxR, fireRange * 0.94);
+    let x = tx;
+    let y = ty;
+    let dNpc = Math.hypot(x - npc.x, y - npc.y) || 1;
+    // Keep distance in [minStandOff, laserRange] — never sit on NPC, never leave laser.
+    if (dNpc < minR || dNpc > laserCap) {
+      const ang = Math.atan2(y - npc.y, x - npc.x);
+      const r = clamp(Math.max(dNpc, preferred, minR * 1.05), minR, laserCap);
+      x = npc.x + Math.cos(ang) * r;
+      y = npc.y + Math.sin(ang) * r;
+      dNpc = r;
+    }
+    const portal = findNearestFriendlyPortal({ preferSafeBase: false });
+    if (portal && Number.isFinite(portal.x) && Number.isFinite(portal.y)) {
+      const dPortal = Math.hypot(x - portal.x, y - portal.y);
+      // Soft pull toward portal when the orbit chord would leave the safe disk.
+      // Keep laser on sticky — blend, don't snap to center.
+      const safePull = PORTAL_HEAL_CENTER_DIST * 3.2;
+      if (dPortal > safePull) {
+        const pull = 0.28;
+        x = x * (1 - pull) + portal.x * pull;
+        y = y * (1 - pull) + portal.y * pull;
+        // Reproject onto laser ring after portal blend.
+        const ang2 = Math.atan2(y - npc.y, x - npc.x);
+        const r2 = clamp(
+          Math.hypot(x - npc.x, y - npc.y) || preferred,
+          minR,
+          laserCap
+        );
+        x = npc.x + Math.cos(ang2) * r2;
+        y = npc.y + Math.sin(ang2) * r2;
+      }
+    }
+    return clampToPlayArea(x, y);
   }
 
   function getMapBounds() {
@@ -5544,9 +8493,129 @@
   }
 
   /**
-   * True when rewriting the move target would only add robotic micro-jerks.
-   * Raid / Approach A path is untouched (caller gates with !isInRaidMap).
+   * Light imperfect pathing for long/safe moves.
+   * Never for: laser orbit fine positioning, portal-center final approach, or in-raid.
+   * Mid-path flee / coffee / map hops: allowed when options.midPath (or default map travel).
    */
+  function canHumanizePathMove(options = {}) {
+    if (options.precise || options.finalApproach) return false;
+    if (isInRaidMap()) return false;
+    // Combat laser orbit / sticky fine positioning must stay accurate.
+    if (AUTO.currentTask === "combat" && (AUTO.modeOrbit || AUTO.taskTargetId)) return false;
+    // Flee / coffee: only mid-path soft legs (caller sets midPath + finalApproach near portal).
+    if (AUTO.fleeActive || NAV.kind === "flee" || NAV.kind === "coffee") {
+      return options.midPath === true;
+    }
+    if (AUTO.portalHoldReason === "admin" || AUTO.portalHoldReason === "coffee") {
+      return options.midPath === true;
+    }
+    return true;
+  }
+
+  function countVisibleOtherPlayers() {
+    const K = getGameState();
+    if (!K?.players || !K?.mySessionId) return 0;
+    let n = 0;
+    for (const sessionId of K.players.keys()) {
+      if (sessionId !== K.mySessionId) n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * Irregular long-path lateral stretch (same idea as portal-drift wobble):
+   * sometimes straight, sometimes soft, sometimes marked — never fixed L/R 2s clock.
+   */
+  function refreshPathHumanWobbleState() {
+    const now = Date.now();
+    if (AUTO.pathHumanUntil && now < AUTO.pathHumanUntil) return;
+    const roll = Math.random();
+    let amp = 0;
+    let holdMs;
+    if (roll < 0.42) {
+      amp = 0;
+      holdMs = randBetween(2200, 4800);
+    } else if (roll < 0.8) {
+      amp = randBetween(8, 28);
+      holdMs = randBetween(1500, 3200);
+    } else {
+      amp = randBetween(30, 62);
+      holdMs = randBetween(1100, 2600);
+    }
+    if (amp > 0 && Math.random() >= 0.55) {
+      AUTO.pathHumanSide = Math.random() < 0.5 ? 1 : -1;
+    } else if (!AUTO.pathHumanSide) {
+      AUTO.pathHumanSide = Math.random() < 0.5 ? 1 : -1;
+    }
+    AUTO.pathHumanAmp = amp;
+    AUTO.pathHumanUntil = now + holdMs;
+  }
+
+  /**
+   * Soft mid-chord toward destination with irregular human wobble.
+   * Final destination unchanged for short / precise / final-approach moves.
+   */
+  function humanizeLongMovePoint(ship, destX, destY, options = {}) {
+    if (!ship || !canHumanizePathMove(options)) return { x: destX, y: destY };
+    const dx = destX - ship.x;
+    const dy = destY - ship.y;
+    const dist = Math.hypot(dx, dy);
+    const minDist = options.minDist || 420;
+    if (!(dist > minDist)) return { x: destX, y: destY };
+
+    refreshPathHumanWobbleState();
+    const others = countVisibleOtherPlayers();
+    let amp = Number(AUTO.pathHumanAmp) || 0;
+    if (others > 0 && amp > 0) amp = Math.min(amp * 1.25, 78);
+    // Cap vs remaining distance so we don't overshoot wildly.
+    amp = Math.min(amp, dist * 0.055);
+    const inv = 1 / dist;
+    const nx = -dy * inv;
+    const ny = dx * inv;
+    // Along fraction: mostly ahead on the chord (mouse-hold toward goal).
+    const along = clamp(0.28 + Math.random() * 0.14, 0.26, 0.48);
+    const side = (AUTO.pathHumanSide >= 0 ? 1 : -1) * amp;
+    const step = Math.min(dist * along, Math.max(360, Math.min(920, dist * 0.42)));
+    return clampToPlayArea(
+      ship.x + dx * inv * step + nx * side,
+      ship.y + dy * inv * step + ny * side
+    );
+  }
+
+  /** Soft prolonged move toward a far destination (map / flee mid / coffee mid / raid-gate). */
+  function softLongMoveToward(input, ship, destX, destY, options = {}) {
+    if (!ship) return false;
+    const dist = distance(ship.x, ship.y, destX, destY);
+    const finalR = options.finalRange != null ? options.finalRange : 240;
+    if (dist <= finalR || options.finalApproach) {
+      return setMoveTargetDirect(input, destX, destY);
+    }
+    const soft = humanizeLongMovePoint(ship, destX, destY, {
+      ...options,
+      midPath: true,
+    });
+    // Hold existing soft waypoint longer (fewer retargets = less robotic).
+    const holdMs = 2100;
+    const held = AUTO.lastMinimapTarget;
+    const heldAge = Date.now() - (AUTO.lastMinimapMoveAt || 0);
+    if (held && heldAge < holdMs) {
+      const rem = distance(ship.x, ship.y, held.x, held.y);
+      if (rem > (AUTO.arriveDistance || 50) + 40) {
+        const mt = input?.moveTarget;
+        if (!mt || mt.x == null || distance(mt.x, mt.y, held.x, held.y) > 120) {
+          setMoveTargetDirect(input, held.x, held.y);
+        }
+        return true;
+      }
+    }
+    const ok = setMoveTargetDirect(input, soft.x, soft.y);
+    if (ok) {
+      AUTO.lastMinimapTarget = { x: soft.x, y: soft.y };
+      AUTO.lastMinimapMoveAt = Date.now();
+    }
+    return ok;
+  }
+
   /**
    * Soft-move memory must not keep a waypoint aimed at a previous sticky's geometry.
    * Call whenever the living combat sticky id changes.
@@ -5556,6 +8625,7 @@
     if (AUTO.lastMinimapStickyId === id) return;
     AUTO.lastMinimapStickyId = id;
     AUTO.lastMinimapTarget = null;
+    AUTO.orbitHumanHoldUntil = 0;
   }
 
   function shouldKeepExistingMoveTarget(input, x, y) {
@@ -5592,6 +8662,11 @@
     }
 
     const dot = (toCurDx / curLen) * (toNewDx / newLen) + (toCurDy / curLen) * (toNewDy / newLen);
+    // Soft continuous retreat / same-vector hold (mouse-hold feel).
+    if (dot >= 0.88 && remaining > 90) {
+      const targetDelta = distance(cur.x, cur.y, x, y);
+      if (targetDelta < Math.max(130, remaining * 0.45)) return true;
+    }
     // ~cos(40°) ≈ 0.76 — same-ish direction
     if (dot < 0.76) return false;
 
@@ -5605,12 +8680,24 @@
     const safe = clampToPlayArea(worldX, worldY);
     const now = Date.now();
     const softStandard = !isInRaidMap();
+    const execFluid = !softStandard && isRaidExecutionerRound();
+    const combatSoft =
+      softStandard &&
+      (AUTO.currentTask === "combat" || AUTO.orbitPortalDrift);
+    // Combat orbit: longer irregular cadence (not every ~300ms tick).
+    const combatInterval = combatSoft
+      ? Math.max(AUTO.minimapMoveMinIntervalMs || 90, 480)
+      : 220;
     const minInterval = softStandard
-      ? Math.max(AUTO.minimapMoveMinIntervalMs || 90, 220)
-      : AUTO.minimapMoveMinIntervalMs;
+      ? combatInterval
+      : execFluid
+        ? Math.max(AUTO.raidOrbitMoveMinIntervalMs || 260, 470)
+        : AUTO.minimapMoveMinIntervalMs;
     const minDelta = softStandard
-      ? Math.max(AUTO.minimapMoveMinDelta || 28, 55)
-      : AUTO.minimapMoveMinDelta;
+      ? Math.max(AUTO.minimapMoveMinDelta || 28, combatSoft ? 95 : 55)
+      : execFluid
+        ? Math.max(AUTO.minimapMoveMinDelta || 28, 78)
+        : AUTO.minimapMoveMinDelta;
 
     if (
       AUTO.lastMinimapTarget &&
@@ -5620,8 +8707,8 @@
       return true;
     }
 
-    // Soft heading gate (standard maps): don't spam a nearly-identical click.
-    if (softStandard && AUTO.lastMinimapTarget) {
+    // Soft heading gate (standard maps + Executioner raid): don't spam a nearly-identical click.
+    if ((softStandard || execFluid) && AUTO.lastMinimapTarget) {
       const ship = getShipPosition();
       if (ship && shouldKeepExistingMoveTarget({ moveTarget: AUTO.lastMinimapTarget }, safe.x, safe.y)) {
         return true;
@@ -5709,18 +8796,39 @@
    * Story 3 applyCombatOrbit (~2307) — NPC-centered π/2 kite.
    * Raid uses the same geometry (Story 3 reliability). Deltas: B lock dir, E soft support,
    * F radial ping-pong recovery (raid gates only).
+   * @param {{ force?: boolean }} [opts] force=true: kite even when Orbit UI is off
+   *   (Executioner last wave — never stand still).
    */
-  function applyCombatOrbit(npc) {
-    if (!AUTO.modeOrbit || !npc) return false;
+  function applyCombatOrbit(npc, opts = {}) {
+    if (!npc) return false;
+    if (!AUTO.modeOrbit && !opts.force) return false;
     // Heal-flee / wave breakout own movement — do not fight them with π/2 orbit clicks.
     if (isRaidHealActive()) return false;
     if (isInRaidMap() && needsRaidWaveBreakout()) return false;
     const shipEarly = getShipPosition();
     if (!isInRaidMap() && shipEarly && needsStandardOrbitBreakout(shipEarly)) return false;
 
+    // Abort cargo FSM/native cargo walk only when it is actually interfering.
+    // mac33: collectCargo toggle alone must NOT call release (that null'd the kite).
+    if (
+      isInRaidMap() &&
+      AUTO.collectCargo &&
+      hasLivingStickyCombat() &&
+      hasInterferingRaidCargoState()
+    ) {
+      releaseRaidCargoClearForCombat();
+    }
+
     const ship = getShipPosition();
     const input = getInputSystem();
     if (!ship || !input) return false;
+
+    // Portal drift: interrupt circle and retreat to portal before any orbit geometry.
+    if (drivePortalDriftRetreat(ship, npc)) return true;
+
+    // Orbit ON + drift arrived: gentler kite near safe (stable laser stand-off, less thrash).
+    const portalSafeOrbit =
+      AUTO.orbitPortalDrift && AUTO.portalDriftArrived && !isInRaidMap();
 
     const { minR, maxR, fireRange, preferred } = getOrbitRadii(npc);
     // A: still approach-orbit when slightly outside fire band (Story 3 gate was fireRange+40)
@@ -5728,6 +8836,7 @@
 
     const now = Date.now();
     const inRaid = isInRaidMap() && !isRaidHealActive();
+    const execFluid = inRaid && isRaidExecutionerRound();
     if (!inRaid) updateStdCombatHitTracker();
     const hitSoft = !inRaid && isStdCombatRecentlyDamaged();
 
@@ -5766,7 +8875,10 @@
       } else {
         // Standard maps: avoid abrupt timed 180° orbit flips (robotic jerks).
         // Only nudge the timer forward; direction changes come from boundary/stuck.
-        AUTO.orbitFlipAt = now + Math.max(AUTO.orbitFlipIntervalMs || 14000, 18000) + randBetween(-2000, 3000);
+        const flipBase = portalSafeOrbit
+          ? Math.max(AUTO.orbitFlipIntervalMs || 14000, 24000)
+          : Math.max(AUTO.orbitFlipIntervalMs || 14000, 18000);
+        AUTO.orbitFlipAt = now + flipBase + randBetween(-2000, 3000);
       }
     }
 
@@ -5782,15 +8894,24 @@
     if (dist < minR || dist > maxR + 10) {
       // Standard + recent hit: prefer slightly larger band (less inward settle).
       // Standard maps: ease toward preferred/maxR — never settle on minR.
+      // Raid: same as cargo OFF — ease with safety margin (collectCargo must not diverge).
       let targetR = dist > maxR
         ? maxR
         : inRaid
-          ? clamp(dist + AUTO.orbitNpcSafetyMargin, minR, maxR)
+          ? clamp(
+              Math.max(dist + AUTO.orbitNpcSafetyMargin, preferred),
+              minR,
+              maxR
+            )
           : clamp(
               Math.max(dist + AUTO.orbitNpcSafetyMargin, preferred),
               minR,
               maxR
             );
+      if (portalSafeOrbit) {
+        // Near portal: keep a strict laser stand-off — never dive into NPC body.
+        targetR = clamp(Math.max(preferred, minR * 1.08, dist), minR, Math.min(maxR, fireRange * 0.94));
+      }
       if (hitSoft && dist < minR) {
         targetR = clamp(
           Math.max(targetR, preferred, minR * (1 + STD_HIT_ORBIT_OUTWARD), dist + AUTO.orbitNpcSafetyMargin),
@@ -5807,7 +8928,9 @@
         ty = npc.y + Math.sin(targetAngle) * targetR;
       } else {
         // Soft band correction: light tangential bias (not a hard radial snap).
-        let angle = radialAngle + AUTO.orbitDirection * (0.12 + randBetween(0, 0.08));
+        // Portal-safe: smaller angle nudge so we don't thrash safe edges.
+        const bandBias = portalSafeOrbit ? 0.06 + randBetween(0, 0.04) : 0.12 + randBetween(0, 0.08);
+        let angle = radialAngle + AUTO.orbitDirection * bandBias;
         if (isNearMapBoundary(ship.x, ship.y, 60)) {
           angle += AUTO.orbitDirection * 0.1;
         }
@@ -5816,6 +8939,19 @@
         ty = npc.y + Math.sin(angle) * targetR;
       }
     } else {
+      // Standard: slightly longer lead / softer arc so orbit clicks feel less twitchy.
+      // Portal-safe: smaller π/2 lead + shorter arc → less yank outside safe.
+      // Executioner: slightly smaller arc than mac24 fluid — stay in laser (don't outrun sticky).
+      const arcBase = inRaid
+        ? execFluid
+          ? Math.max(AUTO.orbitArcRadians || 0.1, 0.11)
+          : AUTO.orbitArcRadians
+        : portalSafeOrbit
+          ? Math.max(AUTO.orbitArcRadians || 0.1, 0.08)
+          : Math.max(AUTO.orbitArcRadians || 0.1, hitSoft ? 0.18 : 0.14);
+      const arcStep = arcBase * (1 + randBetween(0, inRaid ? (execFluid ? 0.07 : 0.08) : portalSafeOrbit ? 0.06 : hitSoft ? 0.2 : 0.12));
+      const tangentLead = AUTO.orbitDirection * (portalSafeOrbit ? Math.PI / 2.6 : Math.PI / 2);
+      const targetAngle = radialAngle + tangentLead + AUTO.orbitDirection * arcStep;
       let targetRadius = clamp(dist, minR, maxR);
       if (!inRaid) {
         // Prefer outer stand-off (preferred/maxR); don't settle near minR while in fire range.
@@ -5828,24 +8964,53 @@
         } else {
           targetRadius = clamp(Math.max(dist, preferred), minR, maxR);
         }
+      } else if (execFluid) {
+        // Hold preferred laser band — tighter orbit so sticky shots land reliably.
+        targetRadius = clamp(
+          dist > preferred + 28
+            ? Math.min(dist, preferred + 10)
+            : Math.max(Math.min(dist, preferred + 6), preferred - 10),
+          minR,
+          Math.min(maxR, fireRange - 2)
+        );
+      } else {
+        // mac33: raid combat (cargo ON or OFF identical) — prefer outer laser stand-off,
+        // never lock targetRadius = current dist when already inside preferred.
+        if (dist < preferred) {
+          targetRadius = clamp(
+            Math.max(dist + (AUTO.orbitNpcSafetyMargin || 36), preferred),
+            minR,
+            maxR
+          );
+        } else {
+          targetRadius = clamp(Math.max(dist, preferred), minR, maxR);
+        }
+      }
+      if (portalSafeOrbit) {
+        // Strict laser band while kiting near portal safe.
+        targetRadius = clamp(
+          Math.max(preferred, Math.min(dist, maxR)),
+          minR,
+          Math.min(maxR, fireRange * 0.94)
+        );
       }
       if (hitSoft) {
-        targetRadius = Math.min(maxR * (1 + STD_HIT_ORBIT_OUTWARD), targetRadius * (1 + STD_HIT_ORBIT_OUTWARD));
+        // Stable outer kite under fire — prefer maxR/strafe, not preferred re-settle.
+        targetRadius = Math.min(
+          maxR * (1 + STD_HIT_ORBIT_OUTWARD),
+          Math.max(targetRadius, preferred, dist) * (1 + STD_HIT_ORBIT_OUTWARD)
+        );
       }
-      // Standard: slightly longer lead / softer arc so orbit clicks feel less twitchy.
-      const arcBase = inRaid
-        ? AUTO.orbitArcRadians
-        : Math.max(AUTO.orbitArcRadians || 0.1, 0.14);
-      const arcStep = arcBase * (1 + randBetween(0, inRaid ? 0.08 : 0.12));
-      const tangentLead = AUTO.orbitDirection * (Math.PI / 2);
-      const targetAngle = radialAngle + tangentLead + AUTO.orbitDirection * arcStep;
       tx = npc.x + Math.cos(targetAngle) * targetRadius;
       ty = npc.y + Math.sin(targetAngle) * targetRadius;
       if (!inRaid) {
         // Light curve offset on approach chord — reproject so radius stays circular.
-        const curve = AUTO.orbitDirection * (18 + randBetween(0, 14));
-        tx += Math.cos(targetAngle + Math.PI / 2) * curve * 0.35;
-        ty += Math.sin(targetAngle + Math.PI / 2) * curve * 0.35;
+        const curveAmp = portalSafeOrbit
+          ? 8 + randBetween(0, 6)
+          : 18 + randBetween(0, 14) + (hitSoft ? 10 : 0);
+        const curve = AUTO.orbitDirection * curveAmp;
+        tx += Math.cos(targetAngle + Math.PI / 2) * curve * (portalSafeOrbit ? 0.22 : 0.35);
+        ty += Math.sin(targetAngle + Math.PI / 2) * curve * (portalSafeOrbit ? 0.22 : 0.35);
         const angCurve = Math.atan2(ty - npc.y, tx - npc.x);
         tx = npc.x + Math.cos(angCurve) * targetRadius;
         ty = npc.y + Math.sin(angCurve) * targetRadius;
@@ -5870,54 +9035,93 @@
       safeTarget = recoverRaidOrbitTangential(ship, npc);
     }
     if (!inRaid) {
+      // Near portal (or drift off): keep circular softClamp. Far retreat is handled
+      // earlier by drivePortalDriftRetreat — never soft-blend orbit waypoints again.
       const orbitR =
         wantOrbitR > 1
           ? wantOrbitR
           : Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || preferred;
-      const preDrift = safeTarget;
-      const drifted = applyPortalDriftBias(safeTarget.x, safeTarget.y, ship, npc, orbitR);
-      const driftActive = drifted.x !== preDrift.x || drifted.y !== preDrift.y;
-      // Active drift must not be reprojected onto the NPC ring (that kills attraction).
-      // Frozen / no-op drift keeps softClamp so near-portal orbit stays circular.
-      if (driftActive) {
-        safeTarget = clampToPlayArea(drifted.x, drifted.y);
-      } else {
-        safeTarget = softClampStdOrbitCircle(drifted.x, drifted.y, npc, orbitR);
-      }
-      // Recent damage / in-range stand-off: don't click inward toward the NPC body.
-      // When portal drift just moved the point, never softClamp-erase attraction —
-      // keep the portal-ward angle and restore stand-off radius only.
+      safeTarget = softClampStdOrbitCircle(safeTarget.x, safeTarget.y, npc, orbitR);
       if (shouldSuppressStdInwardAfterHit(ship, npc, safeTarget.x, safeTarget.y)) {
-        if (driftActive) {
-          const ang = Math.atan2(safeTarget.y - npc.y, safeTarget.x - npc.x);
-          const holdR = Math.max(
-            orbitR,
-            preferred,
-            Math.hypot(ship.x - npc.x, ship.y - npc.y) || 0
-          );
-          safeTarget = clampToPlayArea(
-            npc.x + Math.cos(ang) * holdR,
-            npc.y + Math.sin(ang) * holdR
-          );
-        } else {
-          safeTarget = softenStdOrbitPointAfterHit(ship, npc, safeTarget.x, safeTarget.y);
-          safeTarget = softClampStdOrbitCircle(
-            safeTarget.x,
-            safeTarget.y,
-            npc,
-            Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || orbitR
-          );
-        }
+        safeTarget = softenStdOrbitPointAfterHit(ship, npc, safeTarget.x, safeTarget.y);
+        safeTarget = softClampStdOrbitCircle(
+          safeTarget.x,
+          safeTarget.y,
+          npc,
+          Math.hypot(safeTarget.x - npc.x, safeTarget.y - npc.y) || orbitR
+        );
+      }
+      if (portalSafeOrbit) {
+        safeTarget = softenPortalSafeOrbitPoint(ship, npc, safeTarget.x, safeTarget.y);
       }
       noteStdOrbitRadialSign(ship, npc, safeTarget.x, safeTarget.y);
     }
-    moveViaMinimap(safeTarget.x, safeTarget.y);
-    if (inRaid) AUTO.lastRaidOrbitMoveAt = now;
+    // Portal-safe / Executioner / standard combat: irregular human hold before retarget.
+    // Not every mainTick — prolonged mouse-hold feel on the orbit chord.
+    if (!inRaid) {
+      if (!AUTO.orbitHumanHoldUntil || now >= AUTO.orbitHumanHoldUntil) {
+        // Refresh next hold window irregularly (380–900ms).
+        AUTO.orbitHumanHoldUntil =
+          now +
+          (portalSafeOrbit
+            ? randBetween(520, 920)
+            : hitSoft
+              ? randBetween(420, 780)
+              : randBetween(380, 860));
+      } else if (
+        AUTO.lastMinimapTarget &&
+        shouldKeepExistingMoveTarget(
+          { moveTarget: AUTO.lastMinimapTarget },
+          safeTarget.x,
+          safeTarget.y
+        )
+      ) {
+        // Re-assert soft hold if engine dropped moveTarget — no new click.
+        const mt = input.moveTarget;
+        const held = AUTO.lastMinimapTarget;
+        if (
+          !mt ||
+          mt.x == null ||
+          distance(mt.x, mt.y, held.x, held.y) > 120
+        ) {
+          setMoveTargetDirect(input, held.x, held.y);
+        }
+        return true;
+      }
+    }
+    const holdMs = portalSafeOrbit
+      ? 620
+      : execFluid
+        ? Math.max((AUTO.raidOrbitMoveMinIntervalMs || 260) * 2.25, 580)
+        : !inRaid
+          ? 480
+          : 0;
+    if (
+      holdMs > 0 &&
+      AUTO.lastMinimapTarget &&
+      now - (AUTO.lastMinimapMoveAt || 0) < holdMs &&
+      shouldKeepExistingMoveTarget(
+        { moveTarget: AUTO.lastMinimapTarget },
+        safeTarget.x,
+        safeTarget.y
+      )
+    ) {
+      return true;
+    }
+    // Standard maps: prefer continuous setMoveTarget (mouse-hold) over minimap click spam.
+    if (!inRaid) {
+      setMoveTargetDirect(input, safeTarget.x, safeTarget.y);
+      AUTO.lastMinimapTarget = { x: safeTarget.x, y: safeTarget.y };
+      AUTO.lastMinimapMoveAt = now;
+    } else {
+      moveViaMinimap(safeTarget.x, safeTarget.y);
+      AUTO.lastRaidOrbitMoveAt = now;
+    }
     return true;
   }
 
   function refreshCombatOrbit() {
-    if (!AUTO.modeOrbit || AUTO.currentTask !== "combat") return;
+    if (AUTO.currentTask !== "combat") return;
     if (isRaidHealActive()) return;
     const ship = getShipPosition();
     // KeepAlive assist: if encircled / wave-armed, break out instead of orbiting into the pack.
@@ -5934,6 +9138,9 @@
       return;
     }
     const npc = getNpcEntry(AUTO.taskTargetId);
+    // Portal drift is independent from Orbita — run even when orbit is off.
+    if (!isInRaidMap() && ship && npc && drivePortalDriftRetreat(ship, npc)) return;
+    if (!AUTO.modeOrbit) return;
     if (!npc || !shouldHoldOrbitDistance(npc)) return;
     applyCombatOrbit(npc);
   }
@@ -5979,6 +9186,11 @@
 
   function toggleOrbitPortalDrift() {
     AUTO.orbitPortalDrift = !AUTO.orbitPortalDrift;
+    if (!AUTO.orbitPortalDrift) {
+      AUTO.portalDriftArrived = false;
+      AUTO.portalDriftWobbleUntil = 0;
+      AUTO.portalDriftWobbleAmp = 0;
+    }
     updateModeButtons();
     setStatus(AUTO.orbitPortalDrift ? "status.portal_drift_on" : "status.portal_drift_off");
   }
@@ -6128,6 +9340,37 @@
     return Boolean(sprite?.alive);
   }
 
+  function isPostKillCargoNpcId(npcId) {
+    if (!npcId) return false;
+    return (
+      AUTO.mandatoryPostKillCargo?.npcId === npcId ||
+      AUTO.pendingCombatCargo?.npcId === npcId ||
+      AUTO.countedNpcKillIds.has(npcId)
+    );
+  }
+
+  function tickNpcRecoveryDebounce(npcId) {
+    if (!npcId) return;
+    if (!AUTO.npcRecoverySince) AUTO.npcRecoverySince = new Map();
+    if (!isNpcStillFightable(npcId) || !getNpcSprite(npcId)?.alive) {
+      AUTO.npcRecoverySince.delete(npcId);
+      return;
+    }
+    if (!AUTO.npcRecoverySince.has(npcId)) {
+      AUTO.npcRecoverySince.set(npcId, Date.now());
+    }
+  }
+
+  /** True only after sustained fightable+alive — not post-kill HP sync flicker. */
+  function isGenuineNpcRecovery(npcId) {
+    if (!npcId || !isNpcStillFightable(npcId)) return false;
+    if (!getNpcSprite(npcId)?.alive) return false;
+    if (!getNpcEntry(npcId)) return false;
+    tickNpcRecoveryDebounce(npcId);
+    const since = AUTO.npcRecoverySince?.get(npcId);
+    return Boolean(since && Date.now() - since >= POST_KILL_FALSE_RECOVERY_MS);
+  }
+
   /**
    * Undo a premature kill count when the NPC is clearly still in the fight.
    * False hit/rocketHit counts made confirmed-gone fire on the next flicker.
@@ -6177,9 +9420,151 @@
   function clearFalsePendingCargoForLivingTarget(npcId) {
     if (!npcId || !AUTO.pendingCombatCargo) return;
     if (AUTO.pendingCombatCargo.npcId !== npcId) return;
+    // mac41: confirmed/counted/mandatory kills must NOT be wiped by sprite.alive
+    // flicker — that cleared pending so portal-drift heal armed mid-cargo.
+    const confirmedKill =
+      AUTO.countedNpcKillIds.has(npcId) ||
+      isCombatTargetConfirmedGone(npcId) ||
+      AUTO.mandatoryPostKillCargo?.npcId === npcId;
+    if (confirmedKill) {
+      if (isGenuineNpcRecovery(npcId)) {
+        AUTO.pendingCombatCargo = null;
+        endMandatoryPostKillCargoPhase(npcId);
+        reclaimFalselyCountedLivingNpc(npcId);
+      } else if (isNpcStillFightable(npcId)) {
+        tickNpcRecoveryDebounce(npcId);
+      }
+      return;
+    }
     if (!isNpcStillFightable(npcId) && !getNpcSprite(npcId)?.alive) return;
     AUTO.pendingCombatCargo = null;
     reclaimFalselyCountedLivingNpc(npcId);
+  }
+
+  /**
+   * Drop phantom post-kill cargo expectation that would freeze the ship mid-fight.
+   * Returns true if pending was cleared.
+   *
+   * mac40/mac41: a confirmed/counted/mandatory kill must NOT be wiped by
+   * sprite.alive flicker — that cleared pending right after clearTaskIfDone
+   * armed it, so portal-drift post-kill heal armed with an empty lifecycle
+   * and abandoned cargo.
+   */
+  function clearPhantomPendingCargoBlockingCombat() {
+    const pending = AUTO.pendingCombatCargo;
+    if (!pending?.npcId) return false;
+    const pid = pending.npcId;
+    const confirmedKill =
+      AUTO.countedNpcKillIds.has(pid) ||
+      isCombatTargetConfirmedGone(pid) ||
+      AUTO.mandatoryPostKillCargo?.npcId === pid;
+    if (confirmedKill) {
+      // Only drop on sustained recovery — not post-kill HP flicker.
+      if (isGenuineNpcRecovery(pid)) {
+        AUTO.pendingCombatCargo = null;
+        endMandatoryPostKillCargoPhase(pid);
+        reclaimFalselyCountedLivingNpc(pid);
+        return true;
+      }
+      if (isNpcStillFightable(pid)) tickNpcRecoveryDebounce(pid);
+      return false;
+    }
+    if (isNpcStillFightable(pid) || getNpcSprite(pid)?.alive) {
+      AUTO.pendingCombatCargo = null;
+      reclaimFalselyCountedLivingNpc(pid);
+      return true;
+    }
+    // Living sticky fight open → never keep a cargo-wait freeze (even for another dead id).
+    // Scoop resumes after the sticky kill; mid-fight pending only stalls movement.
+    const sticky =
+      AUTO.combatFocusId ||
+      AUTO.combatTargetId ||
+      (AUTO.currentTask === "combat" ? AUTO.taskTargetId : null);
+    if (
+      sticky &&
+      sticky !== pid &&
+      (isNpcStillFightable(sticky) ||
+        getNpcSprite(sticky)?.alive ||
+        !isCombatTargetConfirmedGone(sticky))
+    ) {
+      // Defer: do not clear a real other-kill pending forever — just don't block this tick.
+      return false;
+    }
+    return false;
+  }
+
+  /**
+   * If phantom-clear / race wiped pending but a fresh own-kill site remains,
+   * re-arm so cargo scoop owns the tick before portal-drift cold heal.
+   */
+  function rearmPendingCombatCargoFromRecentKillSite() {
+    if (!AUTO.collectCargo || AUTO.pendingCombatCargo) return false;
+    if (!canCollectCargoNow() || hasLivingStickyCombat()) return false;
+    // Prefer mandatory phase (survives settle-skip / fightable flicker on sites).
+    const phase = AUTO.mandatoryPostKillCargo;
+    if (
+      phase &&
+      phase.x != null &&
+      phase.y != null &&
+      !isNpcStillFightable(phase.npcId) &&
+      !isCargoSettledForNpc(phase.npcId)
+    ) {
+      AUTO.pendingCombatCargo = {
+        x: phase.x,
+        y: phase.y,
+        npcId: phase.npcId,
+        at: phase.at || Date.now(),
+        failCount: 0,
+        lateArm: true,
+      };
+      return true;
+    }
+    pruneRecentCargoKillSites();
+    const now = Date.now();
+    let best = null;
+    for (const site of AUTO.recentCargoKillSites || []) {
+      if (!site || now - site.at > POST_KILL_CARGO_WAIT_MS) continue;
+      if (site.npcId && isCargoSettledForNpc(site.npcId)) continue;
+      // mac41: counted kills stay eligible despite brief fightable flicker.
+      if (
+        site.npcId &&
+        isNpcStillFightable(site.npcId) &&
+        !AUTO.countedNpcKillIds.has(site.npcId)
+      ) {
+        continue;
+      }
+      if (!best || site.at > best.at) best = site;
+    }
+    if (!best || best.x == null || best.y == null) return false;
+    AUTO.pendingCombatCargo = {
+      x: best.x,
+      y: best.y,
+      npcId: best.npcId,
+      at: best.at,
+      failCount: 0,
+      lateArm: true,
+    };
+    enterMandatoryPostKillCargoPhase(best.npcId, best.x, best.y, best.at);
+    return true;
+  }
+
+  /** True when we still have a living combat sticky (must not freeze for cargo wait). */
+  function hasLivingStickyCombat() {
+    const id =
+      AUTO.combatFocusId ||
+      AUTO.combatTargetId ||
+      (AUTO.currentTask === "combat" ? AUTO.taskTargetId : null);
+    if (!id) return false;
+    // mac43: post-kill cargo owns the tick — HP flicker must not block scoop.
+    if (isPostKillCargoNpcId(id)) {
+      if (isGenuineNpcRecovery(id)) return true;
+      return false;
+    }
+    return (
+      isNpcStillFightable(id) ||
+      Boolean(getNpcSprite(id)?.alive) ||
+      !isCombatTargetConfirmedGone(id)
+    );
   }
 
   /** Keep lock/fire on sticky id during brief invalid frames (finish the kill). */
@@ -6391,6 +9776,15 @@
     const K = getGameState();
     if (!input || !npc || !K) return false;
 
+    if (!canEngageFarmCombat()) {
+      if (AUTO.workingMapId && getCurrentMapId() !== AUTO.workingMapId && !AUTO.raidGateId) {
+        setStatus("status.wrong_map_no_farm", {
+          map: formatMapLabel(AUTO.workingMapId) || AUTO.workingMapId,
+        });
+      }
+      return false;
+    }
+
     if (!isNpcAllowedForCombat(id)) {
       markForeignNpc(id);
       setStatus("NPC di un altro giocatore — ignoro (onore)");
@@ -6432,6 +9826,8 @@
     AUTO.combatTargetId = null;
     AUTO.combatFocusId = null;
     AUTO.combatOrbitEngagedIds.clear();
+    AUTO.combatEngageNpcId = null;
+    AUTO.combatEngageStartedAt = 0;
     if (AUTO.currentTask === "combat") clearCurrentTask();
     const input = getInputSystem();
     if (input) {
@@ -6454,6 +9850,8 @@
     AUTO.raidHealSide = -1;
     AUTO.raidHealPhase = null;
     resetOrbitState();
+    // Suspend cargo-clear / combat orbit retargets — heal owns movement.
+    clearRaidCargoClearState();
     const input = getInputSystem();
     if (input) {
       input.attackMode = false;
@@ -6477,6 +9875,16 @@
     // Flee-to-heal: never resume until HP+shield are full (Play recover standard).
     if (!isPlayerFullyHealed()) {
       if (!AUTO.postDeathRecover) beginPreObjectiveHeal({ armBaseWait: false });
+      return false;
+    }
+    // mac42: never resume farm on the wrong map after flee/heal — return first.
+    if (AUTO.workingMapId && getCurrentMapId() !== AUTO.workingMapId && !AUTO.raidGateId) {
+      AUTO.combatSuspendedForFlee = false;
+      ensureReturnToWorkingMap("after_flee");
+      return false;
+    }
+    if (!canEngageFarmCombat()) {
+      AUTO.combatSuspendedForFlee = false;
       return false;
     }
     if (AUTO.selectedNpcTypes.size === 0) {
@@ -6551,6 +9959,9 @@
       AUTO.combatTargetGoneAt = 0;
     }
 
+    // Soft band early-heal: do not open a new sticky when already ≤ thr+tol.
+    if (shouldBlockNewEngageForHealBand()) return null;
+
     const npc = resolveCombatTarget();
     if (npc) AUTO.combatFocusId = npc.id;
     return npc;
@@ -6612,18 +10023,40 @@
 
       AUTO.combatTargetGoneAt = 0;
       const killPos = getNpcLastPosition(deadNpcId) || getShipPosition();
+      // Re-check living after confirm window — flicker can restore the NPC.
+      if (
+        isNpcStillFightable(deadNpcId) ||
+        getNpcSprite(deadNpcId)?.alive
+      ) {
+        clearFalsePendingCargoForLivingTarget(deadNpcId);
+        reclaimFalselyCountedLivingNpc(deadNpcId);
+        return;
+      }
       if (AUTO.collectCargo && AUTO.combatActive && wasActivelyAttackingNpc(deadNpcId)) {
         notePendingCombatCargo(deadNpcId, killPos);
       }
       AUTO.combatFocusId = null;
       AUTO.combatTargetId = null;
       clearCurrentTask();
-      // Standard maps: scoop preempts retarget until done/missed (cargo may appear late).
-      // Raid: only hold when drop is already visible+allowed (mid-fight pressure).
+      // GOLDEN RULE: scoop preempts retarget until done/missed (cargo may appear late).
+      // Raid: also hold when ANY visible leftover cargo remains (wave / stage idle).
       if (AUTO.pendingCombatCargo && canCollectCargoNow()) {
-        if (!isInRaidMap() || findCargoForPendingKill(AUTO.pendingCombatCargo)) {
+        if (
+          !isInRaidMap() ||
+          findCargoForPendingKill(AUTO.pendingCombatCargo) ||
+          findNearestRaidVisibleCargo()
+        ) {
           pauseCombatForPostKillCargo(deadNpcId);
         }
+        return;
+      }
+      if (
+        isInRaidMap() &&
+        AUTO.collectCargo &&
+        canCollectCargoNow() &&
+        findNearestRaidVisibleCargo()
+      ) {
+        // Leftover wave/stage cargo — do not start next sticky; sweep owns next ticks.
         return;
       }
       if (isInRaidMap() && AUTO.combatActive && AUTO.modeAttack) {
@@ -6660,6 +10093,7 @@
     AUTO.combatFocusId = npc.id;
     AUTO.combatTargetId = npc.id;
     AUTO.combatTargetGoneAt = 0;
+    noteCombatEngageStart(npc.id);
     trackNpcType(npc.id, npc.type);
     trackNpcPosition(npc);
     AUTO.chasingBonusId = null;
@@ -6674,6 +10108,7 @@
   }
 
   function startCollectTask(box) {
+    if (!isBotLive()) return false;
     if (!box) return false;
     if (box.kind === "cargo") {
       if (!canCollectCargoNow()) {
@@ -6706,11 +10141,71 @@
 
     if (tryStartPostKillCargoCollect()) return true;
 
+    // HARD RULE: while post-kill cargo lifecycle is open, never start heal / next NPC /
+    // bonus — scoop owns the window until collected or full WAIT_MS despawn.
+    if (hasOpenPostKillCargoLifecycle()) return false;
+
+    // Living sticky fight owns combat kite — never start cargo clear/scoop first.
+    // (mac28 left this ungated: brief currentTask=null → cargo dive → closer stand-off.)
+    if (isInRaidMap() && hasLivingStickyCombat()) {
+      if (
+        canEngageFarmCombat() &&
+        AUTO.modeAttack &&
+        AUTO.combatActive &&
+        startRaidCombatTask()
+      ) {
+        return true;
+      }
+      return false;
+    }
+
+    // Raid Gate: sweep every visible cargo before hunting the next NPC.
+    if (isInRaidMap() && AUTO.collectCargo && canCollectCargoNow()) {
+      const raidCargo = findNearestRaidVisibleCargo(getShipPosition());
+      if (raidCargo) {
+        const shipNow = getShipPosition();
+        if (
+          isRaidCargoApproachUnsafe(raidCargo, shipNow) ||
+          isRaidShipThreatenedForCargo(shipNow)
+        ) {
+          armRaidCargoClear(raidCargo);
+          // driveRaidCargoSweepTick owns BREAKOUT/CLEARING on the next tick.
+          return false;
+        }
+        if (startCollectTask(raidCargo)) {
+          AUTO.raidCargoClear = {
+            cargoId: raidCargo.id,
+            x: raidCargo.x,
+            y: raidCargo.y,
+            phase: "SCOOP",
+            startedAt: Date.now(),
+            clearingEnteredAt: 0,
+            cargoClearSince: Date.now(),
+            scoopCooldownUntil: 0,
+            approachR: null,
+            angle: null,
+            dir: AUTO.orbitDirection || 1,
+            holdUntil: 0,
+          };
+          setStatus("status.raid_cargo_sweep", { dist: Math.round(raidCargo.dist) });
+          return true;
+        }
+      }
+    }
+
+    // Portal drift hold: heal Attack config in place before hunting the next NPC.
+    if (maybeBeginPortalDriftPostKillHeal()) return false;
+
     if (AUTO.modeAttack && AUTO.combatActive) {
-      if (AUTO.pendingCombatCargo && canCollectCargoNow()) return false;
-      if (isInRaidMap()) {
+      if (!canEngageFarmCombat()) {
+        // Wrong map / Sector Z: never pick farm combat (nav/heal/flee still OK).
+        // mac42: actively return to working map instead of farming here.
+        if (ensureReturnToWorkingMap("farm_gate")) return true;
+      } else if (isInRaidMap()) {
         if (startRaidCombatTask()) return true;
       } else {
+        // Soft band: don't hunt a new NPC when already in early-heal HP band.
+        if (shouldBlockNewEngageForHealBand()) return false;
         // Sticky: re-lock same focus before hopping to a random nearest NPC.
         const npc = getFocusedCombatNpc();
         if (npc && startCombatTask(npc)) return true;
@@ -6823,6 +10318,15 @@
       return driveRaidHealTick(input, ship);
     }
 
+    // Abort cargo walk/FSM only if it is actually interfering (not toggle alone).
+    if (
+      AUTO.collectCargo &&
+      hasLivingStickyCombat() &&
+      hasInterferingRaidCargoState()
+    ) {
+      releaseRaidCargoClearForCombat();
+    }
+
     if (abandonForeignLockedTarget()) return true;
 
     if (maintainRaidSupportDuringCombat(input, ship)) return true;
@@ -6867,10 +10371,11 @@
     const { maxR, fireRange } = getOrbitRadii(npc);
     // Story 3 approachLimit = maxR + 12 (not fireRange+40 / tower approach)
     const approachLimit = AUTO.modeOrbit ? maxR + 12 : fireRange;
+    const execFluid = isRaidExecutionerRound();
 
     if (npc.dist > approachLimit) {
       // A: move every tick from first engage — NPC-radial approach (Story 3 getOrbitApproachPoint)
-      if (AUTO.modeOrbit) {
+      if (AUTO.modeOrbit || execFluid) {
         const ap = getOrbitApproachPoint(npc);
         moveViaMinimap(ap.x, ap.y);
         AUTO.lastRaidOrbitMoveAt = Date.now();
@@ -6881,7 +10386,7 @@
       }
       engageNpc(npc.id);
       setStatus(
-        AUTO.modeOrbit
+        AUTO.modeOrbit || execFluid
           ? `Raid orbita: ${npc.name} (${Math.round(npc.dist)}m)`
           : `Raid: avvicino ${npc.name} (${Math.round(npc.dist)}m)`
       );
@@ -6891,9 +10396,11 @@
     engageNpc(npc.id);
     sustainRaidAttack(input);
 
-    if (AUTO.modeOrbit) {
-      // A: orbit tick every combat cycle once in band (Story 3 applyCombatOrbit)
-      applyCombatOrbit(npc);
+    if (AUTO.modeOrbit || execFluid) {
+      // A: orbit tick every combat cycle once in band (Story 3 applyCombatOrbit).
+      // Executioner / config-2 path: force continuous kite even if Orbit UI is off —
+      // never clearMoveTarget / stand still (Executioners catch up and shred).
+      applyCombatOrbit(npc, execFluid && !AUTO.modeOrbit ? { force: true } : undefined);
       engageNpc(npc.id);
       sustainRaidAttack(input);
       setStatus(`Raid orbita ${npc.name}: ${Math.round(npc.dist)}m`);
@@ -6934,11 +10441,21 @@
         sustainCombatOnStickyId(focusId);
         return true;
       }
+      // Confirmed gone: arm post-kill cargo BEFORE clearing sticky so portal-drift
+      // heal cannot win the same gap (clearTaskIfDone may already have run).
+      if (AUTO.collectCargo && AUTO.combatActive) {
+        notePendingCombatCargo(focusId, getNpcLastPosition(focusId));
+      }
       AUTO.combatTargetGoneAt = 0;
       AUTO.combatFocusId = null;
       AUTO.combatTargetId = null;
       clearCurrentTask();
-      setStatus("NPC di un altro giocatore — cerco altro bersaglio");
+      if (AUTO.pendingCombatCargo) {
+        pauseCombatForPostKillCargo(focusId);
+        setStatus("status.cargo_wait");
+      } else {
+        setStatus("NPC di un altro giocatore — cerco altro bersaglio");
+      }
       return true;
     }
 
@@ -6956,15 +10473,27 @@
     AUTO.combatFocusId = npc.id;
     syncMinimapSoftMoveSticky(npc.id);
     trackNpcPosition(npc);
+    noteCombatEngageStart(npc.id);
     updateCombatOrbitEngagement(npc);
     applySmartCombatAmmo(npc.id);
     const game = getGame();
     if (game?.isPaused) game.resume();
 
     setLockedTarget(npc.id);
+    // Fire first — portal drift must not leave an unhit sticky.
+    engageNpc(npc.id);
+    input.syncAttackSession?.();
 
     // Standard maps: encircle / corner trap breakout (light reuse of raid pattern).
     if (!isInRaidMap() && ship && driveStandardOrbitBreakout(input, ship, npc)) {
+      return true;
+    }
+
+    // Portal drift owns movement while far from portal (interrupt orbit / approach).
+    // Gated on first sticky hit / timeout inside drivePortalDriftRetreat.
+    if (!isInRaidMap() && ship && drivePortalDriftRetreat(ship, npc)) {
+      engageNpc(npc.id);
+      input.syncAttackSession?.();
       return true;
     }
 
@@ -6977,19 +10506,52 @@
 
     if (npc.dist > approachLimit) {
       // Standard: never dive into NPC body — approach outer stand-off (preferred/maxR).
+      // Prefer continuous setMoveTarget (mouse-hold) over minimap click spam.
       const ap = getOrbitApproachPoint(npc);
+      let tx = ap.x;
+      let ty = ap.y;
       if (
         ship &&
         shouldSuppressStdInwardAfterHit(ship, npc, ap.x, ap.y)
       ) {
         const soft = softenStdOrbitPointAfterHit(ship, npc, ap.x, ap.y);
-        noteStdOrbitRadialSign(ship, npc, soft.x, soft.y);
-        moveViaMinimap(soft.x, soft.y);
+        tx = soft.x;
+        ty = soft.y;
+        noteStdOrbitRadialSign(ship, npc, tx, ty);
+      } else if (
+        ship &&
+        holdOrbit &&
+        isStdCombatRecentlyDamaged() &&
+        npc.dist <= fireRange
+      ) {
+        const soft = softenStdOrbitPointAfterHit(ship, npc, ap.x, ap.y);
+        tx = soft.x;
+        ty = soft.y;
+        noteStdOrbitRadialSign(ship, npc, tx, ty);
       } else if (holdOrbit || shouldChaseCombatTarget(npc, fireRange)) {
         if (ship) noteStdOrbitRadialSign(ship, npc, ap.x, ap.y);
-        moveViaMinimap(ap.x, ap.y);
       } else {
         clearCombatMoveTarget(input);
+        input.pendingAttackOnLock = npc.id;
+        setStatus(
+          holdOrbit
+            ? `Orbita: mi posiziono a ~${Math.round(maxR)}m (laser ~${Math.round(fireRange)}m)`
+            : `Avvicino ${npc.name} (${Math.round(npc.dist)}m → ~${Math.round(preferred)}m)`
+        );
+        return true;
+      }
+      const held = AUTO.lastMinimapTarget;
+      const heldAge = Date.now() - (AUTO.lastMinimapMoveAt || 0);
+      if (
+        held &&
+        heldAge < 520 &&
+        shouldKeepExistingMoveTarget({ moveTarget: held }, tx, ty)
+      ) {
+        setMoveTargetDirect(input, held.x, held.y);
+      } else {
+        setMoveTargetDirect(input, tx, ty);
+        AUTO.lastMinimapTarget = { x: tx, y: ty };
+        AUTO.lastMinimapMoveAt = Date.now();
       }
       input.pendingAttackOnLock = npc.id;
       setStatus(
@@ -7059,6 +10621,7 @@
       updateStatisticsPanel();
       updateAttackAmmoButtons();
       syncSecurityPanelFromAuto();
+      maybeDiscordNotifyStatsTick();
       if (AUTO.licenseKey && !isAppLicensed()) enforceLicenseGate();
       else updateLicenseLock();
       if (AUTO.raidGateId && isInRaidMap()) syncRaidNpcSelectionFromMap();
@@ -7287,6 +10850,7 @@
    * NON usare setMoveTargetDirect/minimappa e NON chiamare sendCollect a mano.
    */
   function armNativeCollect(lootId, opts = {}) {
+    if (!isBotLive()) return false;
     if (!lootId || isCargoCollectAlreadyDone(lootId)) return false;
     const K = getGameState();
     const input = getInputSystem();
@@ -7299,6 +10863,10 @@
     const lootType = getLootTypeFromId(lootId, sprite);
     const isCargo = lootType === "CARGO";
     const isBooty = lootType === "BOOTY_BOX";
+
+    // mac32: never set cargoTargetId for cargo while sticky living in raid —
+    // native client walks to (x, y-95) and collapses combat orbit stand-off.
+    if (isCargo && isInRaidMap() && hasLivingStickyCombat()) return false;
 
     if (isCargo) {
       if (isCargoHoldFull()) return false;
@@ -7364,6 +10932,11 @@
     if (!input || !ship || !item || !K) return;
 
     if (item.kind === "cargo") {
+      // Living sticky kite owns stand-off — never dive/clear/arm mid-fight.
+      if (isInRaidMap() && hasLivingStickyCombat()) {
+        releaseRaidCargoClearForCombat();
+        return;
+      }
       if (abortCargoCollectIfHoldFull()) return;
       if (isForeignOwnedLoot(item.id, getLootSprite(item.id))) {
         finishCombatCargoCollect(item.id, { count: false });
@@ -7378,11 +10951,47 @@
         finishCombatCargoCollect(item.id);
         return;
       }
+      // Raid Gate: surrounded OR NPCs on cargo → breakout/clear before diving.
+      // Critical: never sit still mid-pack with "raccolgo cargo" on a far drop.
+      // Exception: already on the cargo entity → scoop immediately (contact rule).
+      if (
+        isInRaidMap() &&
+        (isRaidShipThreatenedForCargo(ship) || isRaidCargoApproachUnsafe(item, ship))
+      ) {
+        if (isRaidCargoInContactRange(item, ship)) {
+          armNativeCollect(item.id, { keepAttack: true });
+          // Fall through to normal collect drive (do not clear→orbit away).
+        } else {
+          armRaidCargoClear(item, { fromBlockedScoop: true });
+          clearCollectMovement(item.id);
+          if (AUTO.currentTask === "collect" && AUTO.taskTargetId === item.id) {
+            // Keep task id in raidCargoClear; clear native path so breakout owns movement.
+            const Kclear = getGameState();
+            if (Kclear?.cargoTargetId === item.id) Kclear.cargoTargetId = null;
+          }
+          if (AUTO.raidCargoClear) {
+            driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+          }
+          return;
+        }
+      }
       const cargoWaitStarted =
         AUTO.pendingCombatCargo?.at || AUTO.lastCargoCollectAttempt?.at || 0;
       if (cargoWaitStarted && Date.now() - cargoWaitStarted > POST_KILL_CARGO_WAIT_MS) {
-        finishCombatCargoCollect(item.id, { count: false });
-        return;
+        // Raid sweep scoops are not bound to the short post-kill wait window.
+        // Golden rule: if cargo is still visible/allowed, keep scooping.
+        if (!isInRaidMap() || AUTO.pendingCombatCargo) {
+          const stillVisible =
+            getGameState()?.loots?.has?.(item.id) || Boolean(getLootSprite(item.id));
+          if (!stillVisible) {
+            finishCombatCargoCollect(item.id, { count: false });
+            return;
+          }
+          if (AUTO.pendingCombatCargo) {
+            AUTO.pendingCombatCargo.at =
+              Date.now() - Math.floor(POST_KILL_CARGO_WAIT_MS * 0.55);
+          }
+        }
       }
     }
 
@@ -7409,8 +11018,22 @@
     const distAp = distance(ship.x, ship.y, ap.x, ap.y);
     const trigger = getCollectTriggerDistance(item);
 
+    // Raid cargo far away: native path can stall under fire — reinforce with minimap.
+    if (
+      item.kind === "cargo" &&
+      isInRaidMap() &&
+      distAp > trigger + 80 &&
+      !isRaidShipThreatenedForCargo(ship)
+    ) {
+      moveViaMinimap(ap.x, ap.y);
+    }
+
     if (distAp > trigger) {
-      setStatus(`Raccolta ${collectKindLabel(item.kind)} (${Math.round(distAp)}m)`);
+      if (item.kind === "cargo" && isInRaidMap()) {
+        setStatus("status.raid_cargo_sweep", { dist: Math.round(distAp) });
+      } else {
+        setStatus(`Raccolta ${collectKindLabel(item.kind)} (${Math.round(distAp)}m)`);
+      }
     } else {
       setStatus(`Raccolta ${collectKindLabel(item.kind)}...`);
     }
@@ -7482,6 +11105,22 @@
 
     if (AUTO.currentTask === "collect") {
       const item = getCollectibleById(AUTO.taskTargetId);
+      // Raid sticky fight: never let cargo collect/clear own movement mid-kite.
+      if (
+        isInRaidMap() &&
+        hasLivingStickyCombat() &&
+        item?.kind === "cargo"
+      ) {
+        releaseRaidCargoClearForCombat();
+        const npc =
+          getNpcEntry(AUTO.taskTargetId) ||
+          getStickyCombatNpcEntry(AUTO.combatFocusId || AUTO.combatTargetId);
+        if (npc) {
+          driveRaidCombatEngage(npc);
+          return true;
+        }
+        return Boolean(AUTO.currentTask === "combat");
+      }
       if (!item) {
         const lootId = AUTO.taskTargetId;
         // Sprite momentaneamente assente ma loot ancora in stato gioco → tieni path nativo
@@ -7540,7 +11179,29 @@
       const input = getInputSystem();
       if (input?.netTick) input.netTick();
       // Post-kill scoop owns movement — do not re-sync attack.
-      if (AUTO.pendingCombatCargo && AUTO.collectCargo && canCollectCargoNow()) return;
+      if (AUTO.pendingCombatCargo && AUTO.collectCargo && canCollectCargoNow()) {
+        // Wide cargo clear is combat reposition — keep laser up (not a scoop pause).
+        if (
+          AUTO.raidCargoClear?.phase === "CLEARING" ||
+          AUTO.raidCargoClear?.phase === "BREAKOUT" ||
+          AUTO.raidCargoClear?.phase === "APPROACH"
+        ) {
+          if (AUTO.combatActive && !isRaidHealActive()) {
+            sustainRaidCargoClearAttack(input);
+          }
+        }
+        return;
+      }
+      if (
+        AUTO.raidCargoClear?.phase === "CLEARING" ||
+        AUTO.raidCargoClear?.phase === "BREAKOUT" ||
+        AUTO.raidCargoClear?.phase === "APPROACH"
+      ) {
+        if (AUTO.combatActive && !isRaidHealActive()) {
+          sustainRaidCargoClearAttack(input);
+        }
+        return;
+      }
       // Orbit / moveViaMinimap stay on mainTick only (no keepAlive orbit spam).
       if (AUTO.combatActive && !isRaidHealActive() && input?.syncAttackSession) {
         if (isInRaidMap() && isCombatEngaged()) {
@@ -7574,17 +11235,412 @@
     };
   }
 
-  function setStatus(textOrKey, params) {
+  function setStatus(textOrKey, params, options = {}) {
     const el = document.getElementById("rg-story-status");
     if (!el) return;
     const bundle = window.RG_STORY_I18N?.strings?.[AUTO.locale] || window.RG_STORY_I18N?.strings?.en;
+    let text = textOrKey;
     if (typeof textOrKey === "string" && bundle?.[textOrKey]) {
       AUTO.lastStatusKey = { key: textOrKey, params: params || {} };
-      el.textContent = t(textOrKey, params);
+      text = t(textOrKey, params);
+      el.textContent = text;
+    } else {
+      AUTO.lastStatusKey = null;
+      el.textContent = textOrKey;
+      text = String(textOrKey || "");
+    }
+    if (!options.skipDiscord) maybeDiscordNotifyStatus(text);
+  }
+
+  function isValidDiscordWebhookUrl(url) {
+    const u = String(url || "").trim();
+    if (!u) return false;
+    try {
+      const parsed = new URL(u);
+      if (parsed.protocol !== "https:") return false;
+      const host = parsed.hostname.toLowerCase();
+      if (host !== "discord.com" && host !== "discordapp.com") return false;
+      return /\/api\/webhooks\/\d+\/[\w-]+/i.test(parsed.pathname);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function loadDiscordWebhookPrefs() {
+    try {
+      const raw = localStorage.getItem(DISCORD_WEBHOOK_STORAGE_KEY);
+      if (!raw) return;
+      const data = JSON.parse(raw);
+      AUTO.discordWebhookEnabled = Boolean(data.enabled);
+      AUTO.discordWebhookUrl = String(data.url || "");
+      {
+        const parsed = Number(data.intervalMin);
+        AUTO.discordWebhookIntervalMin = clamp(
+          Math.round(Number.isFinite(parsed) ? parsed : 5),
+          0,
+          180
+        );
+      }
+      AUTO.discordNotifyStatus = data.notifyStatus !== false;
+    } catch (_) {}
+  }
+
+  function saveDiscordWebhookPrefs() {
+    try {
+      localStorage.setItem(
+        DISCORD_WEBHOOK_STORAGE_KEY,
+        JSON.stringify({
+          enabled: Boolean(AUTO.discordWebhookEnabled),
+          url: String(AUTO.discordWebhookUrl || ""),
+          intervalMin: (() => {
+            const parsed = Number(AUTO.discordWebhookIntervalMin);
+            return clamp(Math.round(Number.isFinite(parsed) ? parsed : 5), 0, 180);
+          })(),
+          notifyStatus: AUTO.discordNotifyStatus !== false,
+        })
+      );
+    } catch (_) {}
+  }
+
+  function getPortalHoldDiscordInfo() {
+    if (!(AUTO.coffeeBreakUntil && Date.now() < AUTO.coffeeBreakUntil)) return null;
+    const isAdmin = AUTO.portalHoldReason === "admin";
+    const remaining = formatCountdownSec(secondsUntil(AUTO.coffeeBreakUntil));
+    return {
+      reason: isAdmin ? "admin" : "coffee",
+      remaining,
+      adminName: AUTO.adminPauseName || "",
+      label: isAdmin
+        ? t("discord.admin_pause", {
+            name: AUTO.adminPauseName || "?",
+            time: remaining,
+          })
+        : t("discord.coffee_pause", { time: remaining }),
+    };
+  }
+
+  function getDiscordActivitySnapshot() {
+    const statusEl = document.getElementById("rg-story-status");
+    const status = statusEl?.textContent?.trim() || "—";
+    const modes = [];
+    if (AUTO.modeAttack) modes.push("Attacco");
+    if (AUTO.modeOrbit) modes.push("Orbita");
+    if (AUTO.orbitPortalDrift) modes.push("Deriva");
+    if (AUTO.collectBonus) modes.push("Bonus");
+    if (AUTO.collectCargo) modes.push("Cargo");
+    if (AUTO.collectBooty) modes.push("Bauli");
+    const gains = getSessionGains();
+    const player = getLocalPlayer();
+    const hp = getPlayerHpSnapshot();
+    const sh = getPlayerShieldSnapshot();
+    const inRaid = isInRaidMap();
+    const hasRaidProgress =
+      AUTO.raidCurrentStage > 0 || AUTO.raidCurrentWave > 0 || AUTO.raidTotalStages > 0;
+    const showRaid = inRaid || (Boolean(AUTO.raidGateId) && hasRaidProgress);
+    const raidProgress = showRaid
+      ? formatRaidWaveProgressText({
+          kills: gains?.npcKills ?? 0,
+          force: !inRaid && hasRaidProgress,
+        }) || "—"
+      : "—";
+    const hold = getPortalHoldDiscordInfo();
+    return {
+      status,
+      map: formatMapLabel(getCurrentMapId()) || getCurrentMapId() || "—",
+      modes: modes.length ? modes.join(" + ") : "—",
+      play: AUTO.active ? (AUTO.paused ? "Pausa" : "Play") : "Stop",
+      deaths: AUTO.deathCount || 0,
+      sticky: AUTO.combatFocusId || AUTO.taskTargetId || "—",
+      task: AUTO.currentTask || "—",
+      hp: `${Math.round(hp.percent)}%`,
+      shield: `${Math.round(sh.percent)}%`,
+      gains,
+      playerName: player?.username || player?.name || "—",
+      version: BASTION_APP_VERSION,
+      inRaid: showRaid,
+      raidProgress,
+      hold,
+    };
+  }
+
+  function buildDiscordWebhookPayload(kind, note) {
+    const snap = getDiscordActivitySnapshot();
+    const g = snap.gains || {};
+    const title =
+      kind === "stats"
+        ? "Bastion — statistiche sessione"
+        : kind === "test"
+          ? "Bastion — test webhook"
+          : kind === "admin_alert"
+            ? "Alert admin"
+            : "Bastion — attività";
+    const description =
+      note ||
+      (kind === "stats"
+        ? `Report periodico (${AUTO.discordWebhookIntervalMin || 0} min)`
+        : kind === "admin_alert"
+          ? "Evento admin"
+          : snap.status);
+    const fields = [
+      { name: "Stato", value: String(snap.play), inline: true },
+      { name: "Mappa", value: String(snap.map).slice(0, 80), inline: true },
+      { name: "Modi", value: String(snap.modes).slice(0, 80), inline: true },
+      { name: "HP / Scudo", value: `${snap.hp} / ${snap.shield}`, inline: true },
+      { name: "Task", value: String(snap.task), inline: true },
+      { name: "Morti", value: String(snap.deaths), inline: true },
+    ];
+    if (snap.inRaid) {
+      fields.push({
+        name: t("discord.raid_field"),
+        value: String(snap.raidProgress || "—").slice(0, 120),
+        inline: false,
+      });
+    }
+    if (snap.hold) {
+      fields.push({
+        name: t("discord.hold_field"),
+        value: String(snap.hold.label || "—").slice(0, 160),
+        inline: false,
+      });
+    }
+    if (kind === "admin_alert" && AUTO.adminPauseName) {
+      fields.push({
+        name: "Admin",
+        value: String(AUTO.adminPauseName).slice(0, 80),
+        inline: true,
+      });
+    }
+    fields.push(
+      {
+        name: "Sessione",
+        value: [
+          `NPC ${g.npcKills || 0}`,
+          `Bonus ${g.bonus || 0}`,
+          `Cargo ${g.cargo || 0}`,
+          `Bauli ${g.booty || 0}`,
+          `XP ${g.xp || 0}`,
+          `Honor ${g.honor || 0}`,
+          `Credits ${g.credits || 0}`,
+          `RM ${g.redMatter || 0}`,
+        ].join(" · "),
+      },
+      { name: "Attività", value: String(snap.status).slice(0, 200) }
+    );
+    const color =
+      kind === "stats"
+        ? 0x3b82f6
+        : kind === "test"
+          ? 0x22c55e
+          : kind === "admin_alert"
+            ? 0xef4444
+            : 0xf59e0b;
+    return {
+      username: "Bastion",
+      embeds: [
+        {
+          title,
+          description: String(description).slice(0, 400),
+          color,
+          fields,
+          footer: { text: `Bastion ${snap.version} · ${snap.playerName}` },
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+  }
+
+  async function sendDiscordWebhook(kind, note) {
+    if (!AUTO.discordWebhookEnabled && kind !== "test") return { ok: false, error: "off" };
+    const url = String(AUTO.discordWebhookUrl || "").trim();
+    if (!isValidDiscordWebhookUrl(url)) return { ok: false, error: "url" };
+    if (AUTO.discordWebhookBusy) return { ok: false, error: "busy" };
+    AUTO.discordWebhookBusy = true;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildDiscordWebhookPayload(kind, note)),
+      });
+      if (!res.ok) return { ok: false, error: `http_${res.status}` };
+      return { ok: true };
+    } catch (_) {
+      return { ok: false, error: "network" };
+    } finally {
+      AUTO.discordWebhookBusy = false;
+    }
+  }
+
+  /**
+   * Distinct admin Discord alerts (red "Alert admin" embed).
+   * Throttles duplicate type+identity pairs (~45s) without collapsing different event types.
+   */
+  function sendDiscordAdminAlert(eventType, summary, extra = {}) {
+    if (!AUTO.discordWebhookEnabled) return;
+    const identity = String(extra.name || extra.id || extra.nick || "").trim();
+    const throttleKey = `${eventType}:${identity || "_"}`;
+    const now = Date.now();
+    const last = AUTO.adminAlertLastAt[throttleKey] || 0;
+    if (now - last < 45000) return;
+    AUTO.adminAlertLastAt[throttleKey] = now;
+    if (identity) rememberAdminName(identity);
+    const note = String(summary || eventType).trim();
+    if (!note) return;
+    sendDiscordWebhook("admin_alert", note);
+  }
+
+  function rememberAdminName(name) {
+    const nick = String(name || "").trim();
+    if (!nick || nick === "?") return;
+    AUTO.adminKnownNames.add(nick);
+  }
+
+  function maybeDiscordNotifyStatus(text) {
+    if (!AUTO.discordWebhookEnabled || AUTO.discordNotifyStatus === false) return;
+    if (!AUTO.active) return;
+    const cleaned = String(text || "").trim();
+    if (!cleaned || cleaned === AUTO.discordLastStatusText) return;
+    const now = Date.now();
+    // Throttle: avoid spamming Discord on every tick.
+    if (now - (AUTO.discordLastStatusSentAt || 0) < 20000) return;
+    AUTO.discordLastStatusText = cleaned;
+    AUTO.discordLastStatusSentAt = now;
+    sendDiscordWebhook("status", cleaned);
+  }
+
+  /** Bypass status throttle — used for admin/coffee hold start (must reach Discord). */
+  function forceDiscordNotifyStatus(text) {
+    if (!AUTO.discordWebhookEnabled || AUTO.discordNotifyStatus === false) return;
+    if (!AUTO.active) return;
+    const cleaned = String(text || "").trim();
+    if (!cleaned) return;
+    const now = Date.now();
+    AUTO.discordLastStatusText = cleaned;
+    AUTO.discordLastStatusSentAt = now;
+    AUTO.discordLastHoldSentAt = now;
+    sendDiscordWebhook("status", cleaned);
+  }
+
+  /**
+   * While coffee/admin portal hold is active, refresh Discord with reason + remaining
+   * (~90s) so the user knows why the app is stopped.
+   */
+  function maybeDiscordNotifyPortalHoldTick() {
+    if (!AUTO.discordWebhookEnabled || AUTO.discordNotifyStatus === false) return;
+    if (!AUTO.active) return;
+    const hold = getPortalHoldDiscordInfo();
+    if (!hold) return;
+    const now = Date.now();
+    if (now - (AUTO.discordLastHoldSentAt || 0) < 90000) return;
+    AUTO.discordLastHoldSentAt = now;
+    AUTO.discordLastStatusText = hold.label;
+    AUTO.discordLastStatusSentAt = now;
+    sendDiscordWebhook("status", hold.label);
+  }
+
+  function maybeDiscordNotifyStatsTick() {
+    if (!AUTO.discordWebhookEnabled || !AUTO.active || AUTO.paused) return;
+    const mins = Number(AUTO.discordWebhookIntervalMin);
+    if (!(mins > 0)) return;
+    const now = Date.now();
+    const intervalMs = mins * 60 * 1000;
+    if (now - (AUTO.discordLastStatsSentAt || 0) < intervalMs) return;
+    AUTO.discordLastStatsSentAt = now;
+    sendDiscordWebhook("stats");
+  }
+
+  function syncDiscordWebhookUi() {
+    const enabled = document.getElementById("rg-discord-enabled");
+    const url = document.getElementById("rg-discord-webhook-url");
+    const interval = document.getElementById("rg-discord-interval");
+    const statusNotify = document.getElementById("rg-discord-status-notify");
+    if (enabled) enabled.classList.toggle("selected", Boolean(AUTO.discordWebhookEnabled));
+    if (statusNotify) statusNotify.classList.toggle("selected", AUTO.discordNotifyStatus !== false);
+    if (url && document.activeElement !== url) url.value = AUTO.discordWebhookUrl || "";
+    if (interval && document.activeElement !== interval) {
+      interval.value = String(AUTO.discordWebhookIntervalMin ?? 5);
+    }
+  }
+
+  function setDiscordWebhookStatus(msg) {
+    const el = document.getElementById("rg-discord-webhook-status");
+    if (el) el.textContent = msg || "";
+  }
+
+  async function testDiscordWebhook() {
+    saveDiscordWebhookPrefs();
+    if (!isValidDiscordWebhookUrl(AUTO.discordWebhookUrl)) {
+      setDiscordWebhookStatus(t("ui.settings.discord_invalid"));
       return;
     }
-    AUTO.lastStatusKey = null;
-    el.textContent = textOrKey;
+    setDiscordWebhookStatus(t("ui.settings.discord_sending"));
+    const wasEnabled = AUTO.discordWebhookEnabled;
+    AUTO.discordWebhookEnabled = true;
+    const result = await sendDiscordWebhook("test", t("ui.settings.discord_test_body"));
+    AUTO.discordWebhookEnabled = wasEnabled;
+    setDiscordWebhookStatus(
+      result.ok ? t("ui.settings.discord_ok") : t("ui.settings.discord_fail", { error: result.error || "?" })
+    );
+  }
+
+  function initDiscordWebhookControls() {
+    loadDiscordWebhookPrefs();
+    syncDiscordWebhookUi();
+    const enabled = document.getElementById("rg-discord-enabled");
+    const statusNotify = document.getElementById("rg-discord-status-notify");
+    const url = document.getElementById("rg-discord-webhook-url");
+    const interval = document.getElementById("rg-discord-interval");
+    const testBtn = document.getElementById("rg-discord-test");
+    const pasteBtn = document.getElementById("rg-discord-webhook-paste");
+    if (enabled && enabled.dataset.bound !== "1") {
+      enabled.dataset.bound = "1";
+      enabled.addEventListener("click", () => {
+        AUTO.discordWebhookEnabled = !AUTO.discordWebhookEnabled;
+        saveDiscordWebhookPrefs();
+        syncDiscordWebhookUi();
+        setStatus(
+          AUTO.discordWebhookEnabled ? "status.discord_on" : "status.discord_off"
+        );
+      });
+    }
+    if (statusNotify && statusNotify.dataset.bound !== "1") {
+      statusNotify.dataset.bound = "1";
+      statusNotify.addEventListener("click", () => {
+        AUTO.discordNotifyStatus = !AUTO.discordNotifyStatus;
+        saveDiscordWebhookPrefs();
+        syncDiscordWebhookUi();
+      });
+    }
+    if (url && url.dataset.bound !== "1") {
+      url.dataset.bound = "1";
+      bindDiscordWebhookInputInteractions();
+      const persist = () => {
+        AUTO.discordWebhookUrl = String(url.value || "").trim();
+        saveDiscordWebhookPrefs();
+      };
+      url.addEventListener("change", persist);
+      url.addEventListener("blur", persist);
+    }
+    if (pasteBtn && pasteBtn.dataset.bound !== "1") {
+      pasteBtn.dataset.bound = "1";
+      pasteBtn.addEventListener("click", () => {
+        pasteDiscordWebhookFromClipboard();
+      });
+    }
+    if (interval && interval.dataset.bound !== "1") {
+      interval.dataset.bound = "1";
+      bindPanelFormInput(interval);
+      const persist = () => {
+        AUTO.discordWebhookIntervalMin = clamp(Math.round(Number(interval.value) || 0), 0, 180);
+        interval.value = String(AUTO.discordWebhookIntervalMin);
+        saveDiscordWebhookPrefs();
+      };
+      interval.addEventListener("change", persist);
+      interval.addEventListener("blur", persist);
+    }
+    if (testBtn && testBtn.dataset.bound !== "1") {
+      testBtn.dataset.bound = "1";
+      testBtn.addEventListener("click", () => testDiscordWebhook());
+    }
   }
 
   function t(key, params) {
@@ -7719,6 +11775,7 @@
       "rg-story-play-main": "ui.play",
       "rg-story-stop": "ui.stop",
       "rg-license-paste": "ui.paste",
+      "rg-discord-webhook-paste": "ui.paste",
       "rg-license-apply": "ui.activate",
       "rg-device-copy": "ui.copy",
       "rg-npc-select-all": "ui.all",
@@ -7736,6 +11793,7 @@
       "rg-sec-flee-enemies": "ui.sec.flee_enemies",
       "rg-sec-flee-cloak": "ui.sec.flee_cloak",
       "rg-sec-flee-sap": "ui.sec.flee_sap",
+      "rg-sec-pause-admin": "ui.sec.pause_on_admin",
       "rg-sec-auto-booty-key": "ui.sec.auto_booty_key",
     };
     for (const [id, key] of Object.entries(textById)) {
@@ -7995,13 +12053,39 @@
     if (AUTO.fleeHpPercent <= 0) return false;
     if (AUTO.postDeathRecover) return false;
     if (AUTO.portalWaitUntil && Date.now() < AUTO.portalWaitUntil) return false;
+    // Post-kill cargo owns the tick — but never block HP flee while sticky still living
+    // (mac34: pendingCombatCargo must not freeze the ship under fire).
+    if (hasOpenPostKillCargoLifecycle() && !hasLivingStickyCombat()) return false;
     // Mid play-travel / map hop: HP can briefly read wrong after portal/config switch.
     if (NAV.active && (NAV.playAfterArrival || NAV.kind === "map" || NAV.kind === "raid")) {
       return false;
     }
     // Grace blocks map→base HP flee only; raid in-map heal flee stays allowed.
     if (isPostArrivalSecurityGraceActive() && !isInRaidMap()) return false;
-    return getPlayerHpSnapshot().percent <= AUTO.fleeHpPercent;
+    const hp = getPlayerHpSnapshot().percent;
+    const thr = AUTO.fleeHpPercent;
+    const tol = getFleeHpTolerance();
+    // Soft band: finish sticky kill down to thr−tol; between targets heal early at thr+tol.
+    if (hasLivingStickyCombat()) {
+      return hp <= thr - tol;
+    }
+    return hp <= thr + tol;
+  }
+
+  /** Fixed soft-band half-width around Flee HP % (default 5). */
+  function getFleeHpTolerance() {
+    const raw = Number(AUTO.fleeHpTolerance);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 5;
+  }
+
+  /**
+   * Between targets: already in early-heal soft band → do not start a fresh NPC.
+   * Mid-sticky fights are allowed so we can finish the kill down to thr−tol.
+   */
+  function shouldBlockNewEngageForHealBand() {
+    if (AUTO.fleeHpPercent <= 0) return false;
+    if (hasLivingStickyCombat()) return false;
+    return getPlayerHpSnapshot().percent <= AUTO.fleeHpPercent + getFleeHpTolerance();
   }
 
   function shouldResumeAfterRaidHeal() {
@@ -8035,6 +12119,8 @@
     const shipAngle = Math.atan2(ship.y - center.y, ship.x - center.x);
     const shipR = Math.hypot(ship.x - center.x, ship.y - center.y) || turretR + 200;
     const nearest = listNpcs(0)[0] || null;
+    const all = listNpcs(0);
+    const swarm = getRaidSwarmCentroid(all.length ? all : null);
 
     // Direzione di evasione: allontanarsi dal NPC più vicino, non puntare al centro
     let avoidAngle = shipAngle;
@@ -8062,10 +12148,17 @@
           const score = scoreRaidPathPoint(pt.x, pt.y, turretR, center);
           // Bonus se va nella direzione di evasione
           const angDiff = Math.abs(Math.atan2(Math.sin(ang - avoidAngle), Math.cos(ang - avoidAngle)));
+          const towardSwarm =
+            (pt.x - ship.x) * (swarm.x - ship.x) + (pt.y - ship.y) * (swarm.y - ship.y);
+          const chordCut = raidHealPathCrossesSwarm(ship, pt, 560);
           candidates.push({
             x: pt.x,
             y: pt.y,
-            score: score - angDiff * 80,
+            score:
+              score -
+              angDiff * 80 -
+              (chordCut ? 520 : 0) -
+              (towardSwarm > 0 ? 180 : 0),
             threat: getNearestNpcDistance(pt.x, pt.y),
             radius,
           });
@@ -8080,10 +12173,11 @@
         center.x + Math.cos(ang) * turretR,
         center.y + Math.sin(ang) * turretR
       );
+      const chordCut = raidHealPathCrossesSwarm(ship, pt, 560);
       candidates.push({
         x: pt.x,
         y: pt.y,
-        score: scoreRaidPathPoint(pt.x, pt.y, turretR, center) - 40,
+        score: scoreRaidPathPoint(pt.x, pt.y, turretR, center) - 40 - (chordCut ? 520 : 0),
         threat: getNearestNpcDistance(pt.x, pt.y),
         radius: turretR,
       });
@@ -8115,11 +12209,14 @@
     input.attackMode = false;
     input.pendingAttackOnLock = null;
     clearLockedTarget();
+    // Never let cargo-clear / combat orbit steal the lateral return.
+    clearRaidCargoClearState();
 
     const center = getRaidCenter();
     const turretR = getRaidTurretRange() * 0.68;
     const distCenter = distance(ship.x, ship.y, center.x, center.y);
     const threatNear = getNearestNpcDistance(ship.x, ship.y);
+    const now = Date.now();
 
     // Arrivati nel range torre → riprendi combat (senza aver tagliato l'orda di lato)
     if (distCenter <= turretR + RAID_SAFE_RETURN_ARRIVE) {
@@ -8134,11 +12231,28 @@
       return false;
     }
 
-    const waypoint = getRaidSafeReturnWaypoint(ship);
-    AUTO.raidFleeTarget = waypoint;
-    AUTO.raidHealPhase = "return";
+    // Hold current return step briefly — retarget spam causes chord thrash through pack.
+    if (
+      AUTO.raidHealPhase === "return" &&
+      AUTO.raidFleeTarget &&
+      AUTO.raidFleeTargetAt &&
+      now - AUTO.raidFleeTargetAt < RAID_HEAL_EVADE_HOLD_MS &&
+      AUTO.lastMinimapTarget &&
+      shouldKeepExistingMoveTarget(
+        { moveTarget: AUTO.lastMinimapTarget },
+        AUTO.lastMinimapTarget.x,
+        AUTO.lastMinimapTarget.y
+      )
+    ) {
+      setStatus(
+        `Raid: rientro laterale al range torre (${Math.round(distCenter)}m → ~${Math.round(turretR)}m)`
+      );
+      return true;
+    }
 
-    // Se un NPC è troppo vicino, spingi lateralmente via da lui
+    let waypoint = getRaidSafeReturnWaypoint(ship);
+
+    // Se un NPC è troppo vicino, spingi lateralmente via da lui (mai verso il centro pack)
     if (threatNear <= 520) {
       const npcs = listNpcs(700);
       if (npcs.length) {
@@ -8152,19 +12266,26 @@
         const escR = distance(escape.x, escape.y, center.x, center.y);
         if (escR < turretR + 80) {
           const ang = Math.atan2(escape.y - center.y, escape.x - center.x);
-          const boosted = clampToPlayArea(
+          waypoint = clampToPlayArea(
             center.x + Math.cos(ang) * Math.max(escR, turretR + 180),
             center.y + Math.sin(ang) * Math.max(escR, turretR + 180)
           );
-          setMoveTargetDirect(input, boosted.x, boosted.y);
         } else {
-          setMoveTargetDirect(input, escape.x, escape.y);
+          waypoint = escape;
         }
         setStatus(`Raid: evado NPC in rientro (${Math.round(threatNear)}m)`);
-        return true;
       }
     }
 
+    // Hard reject: never drive a chord through the swarm centroid.
+    if (raidHealPathCrossesSwarm(ship, waypoint, 560)) {
+      waypoint = getRaidHealEvasionWaypoint(ship);
+      setStatus(`Raid: scarto l'orda in rientro (${Math.round(distCenter)}m)`);
+    }
+
+    AUTO.raidFleeTarget = waypoint;
+    AUTO.raidFleeTargetAt = now;
+    AUTO.raidHealPhase = "return";
     setMoveTargetDirect(input, waypoint.x, waypoint.y);
     setStatus(
       `Raid: rientro laterale al range torre (${Math.round(distCenter)}m → ~${Math.round(turretR)}m)`
@@ -8379,6 +12500,107 @@
     return Boolean(getLocalPlayer()?.in_safe_zone);
   }
 
+  /** Portal drift arrived/hold on a standard map (allied portal ring ~560m). */
+  function isPortalDriftHoldPosition() {
+    return Boolean(AUTO.orbitPortalDrift && AUTO.portalDriftArrived && !isInRaidMap());
+  }
+
+  /** Within allied portal regen disk (center), not the 560m combat drift ring. */
+  const PORTAL_HEAL_CENTER_DIST = 120;
+
+  /**
+   * True when ship is at allied portal center for local regen.
+   * Game `in_safe_zone` is often false here — distance is the reliable signal.
+   */
+  function isAtFriendlyPortalHealCenter(ship = getShipPosition()) {
+    if (isInRaidMap() || !ship) return false;
+    const portal = findNearestFriendlyPortal({ preferSafeBase: false });
+    if (!portal || !Number.isFinite(portal.x) || !Number.isFinite(portal.y)) return false;
+    const dist = Number.isFinite(portal.dist)
+      ? portal.dist
+      : distance(ship.x, ship.y, portal.x, portal.y);
+    return dist <= PORTAL_HEAL_CENTER_DIST;
+  }
+
+  /**
+   * Hold-still heal without hub travel: real safe zone, raid, or portal center.
+   * Portal-drift "arrived" is now safe/center (same as heal). Older builds used the
+   * ~560m outer ring — that left the ship outside regen; do not revive that arrive.
+   */
+  function isHealHoldInPlace() {
+    return isInSafeZone() || isInRaidMap() || isAtFriendlyPortalHealCenter();
+  }
+
+  /**
+   * HARD PRODUCT RULE (collectCargo ON): after an own NPC kill, cargo must be
+   * scooped (or the drop truly gone after the full WAIT_MS window). Never abandon
+   * for portal post-kill heal, heal-at-portal, next-NPC search, bonus, or orbit.
+   * Priority: (1) wait/scoop kill cargo → (2) only then heal / search / next NPC.
+   *
+   * mac40: also treat a fresh recentCargoKillSite as open so portal-drift cold
+   * heal cannot arm in the gap after pending was phantom-cleared.
+   * mac41: mandatoryPostKillCargo phase is the ownership source of truth — heal
+   * literally cannot start while it is open.
+   */
+  function hasOpenPostKillCargoLifecycle() {
+    if (!AUTO.collectCargo) return false;
+    if (isMandatoryPostKillCargoPhaseOpen()) return true;
+    if (AUTO.pendingCombatCargo) return true;
+    if (AUTO.cargoCollectInFlightId) return true;
+    if (AUTO.currentTask === "collect") {
+      const tid = AUTO.taskTargetId;
+      if (tid && (isCargoLoot(getLootSprite(tid), tid) || AUTO.cargoCollectInFlightId === tid)) {
+        return true;
+      }
+    }
+    pruneRecentCargoKillSites();
+    const now = Date.now();
+    for (const site of AUTO.recentCargoKillSites || []) {
+      if (!site || now - site.at > POST_KILL_CARGO_WAIT_MS) continue;
+      if (site.npcId && isCargoSettledForNpc(site.npcId)) continue;
+      // mac41: do not treat brief fightable flicker as "closed" for counted kills.
+      if (
+        site.npcId &&
+        isNpcStillFightable(site.npcId) &&
+        !AUTO.countedNpcKillIds.has(site.npcId)
+      ) {
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Any non-death heal/recover must yield the tick while post-kill cargo is open.
+   * Death recover stays absolute (player died — scoop N/A). Hold-full is handled by
+   * abortCargoCollectIfHoldFull clearing the lifecycle, not by "skip for heal".
+   */
+  function shouldDeferHealForPostKillCargo() {
+    if (!AUTO.postDeathRecover) return false;
+    if (AUTO.preObjectiveHealKind === "death") return false;
+    return hasOpenPostKillCargoLifecycle();
+  }
+
+  /**
+   * Portal drift + arrived: after a kill AND after cargo settles, heal Attack
+   * config in place via beginPreObjectiveHeal(cold) before the next NPC search.
+   * Hard rule: never arms while post-kill cargo lifecycle is open
+   * (mandatory phase / pending / in-flight / fresh kill site within WAIT_MS).
+   */
+  function maybeBeginPortalDriftPostKillHeal() {
+    if (!isPortalDriftHoldPosition()) return false;
+    if (!AUTO.active || AUTO.paused || AUTO.postDeathRecover) return false;
+    if (!AUTO.modeAttack || !AUTO.combatActive) return false;
+    if (isPlayerFullyHealed()) return false;
+    // HARD RULE: cargo first — never arm heal during mandatory wait/scoop.
+    rearmPendingCombatCargoFromRecentKillSite();
+    if (hasOpenPostKillCargoLifecycle()) return false;
+    if (hasLivingStickyCombat()) return false;
+    beginPreObjectiveHeal({ armBaseWait: false, kind: "cold" });
+    return true;
+  }
+
   function listFactionSafeBases() {
     const K = getGameState();
     const mapId = getCurrentMapId();
@@ -8418,17 +12640,56 @@
   }
 
   /**
-   * While pre-objective heal needs regen and we are not in a safe zone:
-   * walk to the local faction base, or portal-travel to the home map first.
+   * While pre-objective heal needs regen and we are not holding in a safe spot:
+   * - portal drift OR cold Play: walk to allied portal CENTER on this map
+   * - else: walk to local faction base, or (death only) multi-map to a hub
+   * Cold Play ("cold"): LOCAL walk only — never leave the current map
+   * (Stop→Play was yanking O-2/O-3 → O-1 then HP-flee to hub).
    * Returns true while travel owns the tick.
    */
   function driveHealSafeZoneTravelTick(input = getInputSystem()) {
-    if (isInSafeZone() || isInRaidMap()) {
+    if (isInSafeZone() || isInRaidMap() || isAtFriendlyPortalHealCenter()) {
       AUTO.healSafeTravel = false;
       return false;
     }
 
     const ship = getShipPosition();
+    const coldPlay = AUTO.preObjectiveHealKind === "cold";
+    // Keep the recover-pending config (Attack on cold). Switching to run/roam
+    // made activeNum !== pending[0] next tick → holdStillAtBase cancelled the walk.
+    const healMoveConfig =
+      AUTO.preObjectiveHealKind === "cold"
+        ? AUTO.attackConfig
+        : AUTO.runConfig || AUTO.roamConfig;
+
+    // Portal-center heal (drift post-kill, or cold Play with no local base):
+    // Always walk to allied portal center / safe (≤PORTAL_HEAL_CENTER_DIST).
+    // Cold Play uses the same local walk so we never force-skip into HP-flee→X-1.
+    if ((AUTO.orbitPortalDrift || coldPlay) && ship) {
+      const portal = findNearestFriendlyPortal({ preferSafeBase: false });
+      if (portal && Number.isFinite(portal.x) && Number.isFinite(portal.y)) {
+        if (NAV.active && NAV.forHeal) stopNavigation();
+        if (healMoveConfig) ensureActiveConfig(healMoveConfig);
+        const dist = Number.isFinite(portal.dist)
+          ? portal.dist
+          : distance(ship.x, ship.y, portal.x, portal.y);
+        if (dist <= PORTAL_HEAL_CENTER_DIST) {
+          if (input) {
+            input.clearMoveTarget?.();
+            input.moveTarget = null;
+          }
+          AUTO.lastMinimapTarget = null;
+          AUTO.healSafeTravel = false;
+          setStatus("status.heal_portal_center_wait");
+          return false;
+        }
+        if (input) setMoveTargetDirect(input, portal.x, portal.y);
+        AUTO.healSafeTravel = true;
+        setStatus("status.heal_portal_center_walk", { dist: Math.round(dist) });
+        return true;
+      }
+    }
+
     const base = getNearestFactionSafeBase(ship);
 
     // Local walk into the safe circle when a base exists on this map.
@@ -8437,7 +12698,7 @@
 
       const arriveR = Math.max(140, base.radius * 0.4);
       const dist = distance(ship.x, ship.y, base.x, base.y);
-      ensureActiveConfig(AUTO.runConfig || AUTO.roamConfig);
+      if (healMoveConfig) ensureActiveConfig(healMoveConfig);
 
       if (dist <= arriveR) {
         if (input) {
@@ -8445,16 +12706,27 @@
           input.moveTarget = null;
         }
         AUTO.lastMinimapTarget = null;
+        AUTO.healSafeTravel = false;
         setStatus("status.heal_safe_wait");
-        return true;
+        return false;
       }
 
       if (input) setMoveTargetDirect(input, base.x, base.y);
+      AUTO.healSafeTravel = true;
       setStatus("status.heal_safe_walk", { dist: Math.round(dist) });
       return true;
     }
 
-    // Multi-hop / in-flight heal travel toward a safe map.
+    // Cold Play / Stop→Play: never multi-hop to X-1/X-7 just for pre-heal.
+    // Stay on map (hold still via recover tick) — death recover may hub below.
+    if (coldPlay) {
+      if (NAV.active && NAV.forHeal) stopNavigation();
+      AUTO.healSafeTravel = false;
+      setStatus("status.heal_safe_hold_map");
+      return false;
+    }
+
+    // Multi-hop / in-flight heal travel toward a safe map (death recover only).
     if (NAV.active && NAV.forHeal) {
       AUTO.healSafeTravel = true;
       setStatus("status.heal_safe_travel", {
@@ -8477,14 +12749,14 @@
 
     AUTO.healSafeTravel = true;
     if (startMapNavigation(healDest, { forHeal: true })) {
-      setStatus("status.heal_safe_travel", { map: formatMapLabel(healDest) });
+      setStatus(`heal driveHealSafeZoneTravelTick→${formatMapLabel(healDest)}`);
       return true;
     }
 
     // Fallback: one-hop to nearest friendly non-hub portal.
     if (startMapFlee({ reason: "heal" })) {
       NAV.forHeal = true;
-      setStatus("status.heal_safe_travel", { map: formatMapLabel(healDest) });
+      setStatus(`heal startMapFlee→${formatMapLabel(healDest)}`);
       return true;
     }
 
@@ -8493,15 +12765,36 @@
     return false;
   }
 
+  /**
+   * Roll a wait duration around the configured seconds (±jitterSec, min 0).
+   * Stores AUTO.lastRolledWaitSec for status/UI.
+   */
+  function rollWaitSec(baseSec, jitterSec = 2) {
+    const base = Math.max(0, Number(baseSec) || 0);
+    if (base <= 0) {
+      AUTO.lastRolledWaitSec = 0;
+      return 0;
+    }
+    const jit = Math.max(0, Number(jitterSec) || 0);
+    const lo = Math.max(0, base - jit);
+    const hi = base + jit;
+    const rolled = Math.round(randBetween(lo, hi) * 10) / 10;
+    AUTO.lastRolledWaitSec = rolled;
+    return rolled;
+  }
+
   function armPortalWait() {
     if (isInRaidMap()) {
       AUTO.portalWaitUntil = 0;
+      AUTO.lastRolledWaitSec = 0;
       return;
     }
     if (AUTO.portalWaitSec > 0) {
-      AUTO.portalWaitUntil = Date.now() + AUTO.portalWaitSec * 1000;
+      const sec = rollWaitSec(AUTO.portalWaitSec, 2);
+      AUTO.portalWaitUntil = Date.now() + sec * 1000;
     } else {
       AUTO.portalWaitUntil = 0;
+      AUTO.lastRolledWaitSec = 0;
     }
   }
 
@@ -8790,6 +13083,13 @@
   }
 
   function getPostDeathRecoverConfigNums() {
+    // Cold Play: only the Attack config must be full. Requiring Roam too caused
+    // Stop→Play to switch config, false-not-full, travel to X-1, then return to
+    // workingMap — while the ship was already combat-ready on Attack.
+    if (AUTO.preObjectiveHealKind === "cold") {
+      const n = clamp(Math.round(Number(AUTO.attackConfig) || 1), 1, 2);
+      return [n];
+    }
     const nums = new Set();
     for (const raw of [AUTO.attackConfig, AUTO.roamConfig]) {
       const n = clamp(Math.round(Number(raw) || 1), 1, 2);
@@ -8801,12 +13101,107 @@
 
   function clearPostDeathRecoverState() {
     AUTO.postDeathRecover = false;
+    AUTO.preObjectiveHealKind = null;
     AUTO.postDeathRecoverVerified = null;
     AUTO.postDeathRecoverSince = 0;
     AUTO.postDeathRecoverSwitchAt = 0;
     AUTO.baseWaitUntil = 0;
     AUTO.resumeTravelAfterBaseWait = false;
     AUTO.healSafeTravel = false;
+    clearSafeZoneMicroFidget();
+  }
+
+  function clearSafeZoneMicroFidget() {
+    AUTO.safeFidgetNextAt = 0;
+    AUTO.safeFidgetHoldUntil = 0;
+    AUTO.safeFidgetTarget = null;
+  }
+
+  /**
+   * Tiny random safe-zone micro-moves ONLY after HP/shield are full (post-heal delay).
+   * Never while regenerating — movement cancels heal. Sometimes none (idle still).
+   * Returns true when a fidget waypoint is active this tick.
+   */
+  function maybeDriveSafeZoneMicroFidget(input = getInputSystem()) {
+    if (isInRaidMap()) return false;
+    if (!isPlayerFullyHealed()) {
+      clearSafeZoneMicroFidget();
+      return false;
+    }
+    // Only fidget inside a real safe / portal-center hold.
+    const ship = getShipPosition();
+    if (!ship) return false;
+    if (!(isInSafeZone() || isAtFriendlyPortalHealCenter(ship))) return false;
+
+    const now = Date.now();
+    // Finish current micro-hold: clear target and schedule next (or skip).
+    if (AUTO.safeFidgetHoldUntil && now < AUTO.safeFidgetHoldUntil) {
+      const tgt = AUTO.safeFidgetTarget;
+      if (tgt && input) {
+        const rem = distance(ship.x, ship.y, tgt.x, tgt.y);
+        if (rem > 28) {
+          setMoveTargetDirect(input, tgt.x, tgt.y);
+          setStatus("status.safe_fidget");
+          return true;
+        }
+      }
+      // Arrived early — sit still for the rest of the hold.
+      if (input) {
+        input.clearMoveTarget?.();
+        input.moveTarget = null;
+      }
+      AUTO.lastMinimapTarget = null;
+      return false;
+    }
+
+    if (AUTO.safeFidgetHoldUntil && now >= AUTO.safeFidgetHoldUntil) {
+      AUTO.safeFidgetHoldUntil = 0;
+      AUTO.safeFidgetTarget = null;
+      if (input) {
+        input.clearMoveTarget?.();
+        input.moveTarget = null;
+      }
+      AUTO.lastMinimapTarget = null;
+      // Schedule next opportunity (sometimes a long idle = no fidget).
+      AUTO.safeFidgetNextAt = now + randBetween(900, 2800);
+    }
+
+    if (!AUTO.safeFidgetNextAt) {
+      // First entry into post-heal window: often idle first, sometimes fidget soon.
+      AUTO.safeFidgetNextAt = now + (Math.random() < 0.45 ? randBetween(400, 1200) : randBetween(1800, 4200));
+      return false;
+    }
+    if (now < AUTO.safeFidgetNextAt) return false;
+
+    // ~40% chance to skip this slot entirely (human: sometimes stay still).
+    if (Math.random() < 0.4) {
+      AUTO.safeFidgetNextAt = now + randBetween(1200, 3600);
+      return false;
+    }
+
+    const ang = Math.random() * Math.PI * 2;
+    const r = randBetween(28, 95);
+    const pt = clampToPlayArea(ship.x + Math.cos(ang) * r, ship.y + Math.sin(ang) * r);
+    // Keep fidget inside safe if we have a base radius.
+    const base = getNearestFactionSafeBase(ship);
+    let tx = pt.x;
+    let ty = pt.y;
+    if (base && base.radius > 80) {
+      const dBase = distance(base.x, base.y, tx, ty);
+      const maxR = Math.max(120, base.radius * 0.55);
+      if (dBase > maxR) {
+        const a = Math.atan2(ty - base.y, tx - base.x);
+        tx = base.x + Math.cos(a) * maxR * 0.7;
+        ty = base.y + Math.sin(a) * maxR * 0.7;
+      }
+    }
+    AUTO.safeFidgetTarget = { x: tx, y: ty };
+    AUTO.safeFidgetHoldUntil = now + randBetween(700, 1600);
+    AUTO.safeFidgetNextAt = AUTO.safeFidgetHoldUntil + randBetween(800, 2600);
+    if (input) setMoveTargetDirect(input, tx, ty);
+    AUTO.lastMinimapTarget = { x: tx, y: ty };
+    setStatus("status.safe_fidget");
+    return true;
   }
 
   function holdStillAtBase(input = getInputSystem()) {
@@ -8829,15 +13224,23 @@
   }
 
   /**
-   * Stay still until Attack+Roam are full (and optional baseWaitSec).
-   * Shared by cold Play start, post-death resume, and flee-to-heal.
-   * If heal is needed outside a safe zone, travel there first (non-raid).
-   * @param {{ armBaseWait?: boolean }} [options]
+   * Stay still until required configs are full (and optional baseWaitSec).
+   * Cold Play ("cold"): Attack config only — no X-1 round-trip just to verify Roam.
+   * Death/flee ("death"): Attack+Roam; may travel to faction safe hub if needed.
+   * @param {{ armBaseWait?: boolean, kind?: "cold"|"death" }} [options]
    */
   function beginPreObjectiveHeal(options = {}) {
     const armBaseWait = options.armBaseWait === true;
+    const kind = options.kind === "death" || armBaseWait ? "death" : "cold";
+    // HARD RULE: never arm cold heal (portal post-kill / Stop→Play cold) while
+    // post-kill cargo wait/scoop is open — cargo must finish first.
+    if (kind !== "death" && hasOpenPostKillCargoLifecycle()) {
+      return;
+    }
     holdStillAtBase();
+    clearSafeZoneMicroFidget();
     AUTO.postDeathRecover = true;
+    AUTO.preObjectiveHealKind = kind;
     AUTO.postDeathRecoverVerified = new Set();
     AUTO.postDeathRecoverSince = Date.now();
     AUTO.postDeathRecoverSwitchAt = 0;
@@ -8845,36 +13248,84 @@
     AUTO.deathSignalSince = 0;
     AUTO.healSafeTravel = false;
     if (armBaseWait && AUTO.baseWaitSec > 0) {
-      AUTO.baseWaitUntil = Date.now() + AUTO.baseWaitSec * 1000;
+      const sec = rollWaitSec(AUTO.baseWaitSec, 2);
+      AUTO.baseWaitUntil = Date.now() + sec * 1000;
     } else {
       AUTO.baseWaitUntil = 0;
+      AUTO.lastRolledWaitSec = 0;
     }
-    if (!isInRaidMap() && !isInSafeZone() && !isPlayerFullyHealed()) {
-      setStatus("status.heal_safe_travel", { map: formatMapLabel(getFactionHomeMapId()) });
-    } else {
+    if (isPlayerFullyHealed() || isHealHoldInPlace() || isInRaidMap()) {
       setStatus("status.base_heal_wait");
+    } else if (kind === "cold" || AUTO.orbitPortalDrift) {
+      // Honest status: cold/drift heal stays on this map (portal center / local base).
+      setStatus("status.heal_local_arm");
+    } else {
+      setStatus("status.heal_safe_travel", {
+        map: formatMapLabel(pickHealSafeDestination() || getFactionHomeMapId()),
+      });
     }
   }
 
   function beginPostDeathRecover() {
-    beginPreObjectiveHeal({ armBaseWait: true });
+    beginPreObjectiveHeal({ armBaseWait: true, kind: "death" });
   }
 
   function finishPostDeathRecoverAndResume() {
+    // HARD RULE: never resume search/combat while post-kill cargo is still open.
+    if (hasOpenPostKillCargoLifecycle()) {
+      AUTO.postDeathRecover = true;
+      AUTO.healSafeTravel = false;
+      return false;
+    }
+    // Capture before clear — cold vs death decides whether workingMap travel is allowed.
+    const wasCold = AUTO.preObjectiveHealKind === "cold";
     // Clear recover flag so maybeResumeObjectiveAfterDeath is allowed to run.
     AUTO.postDeathRecover = false;
     AUTO.baseWaitUntil = 0;
     AUTO.resumeTravelAfterBaseWait = false;
     AUTO.healSafeTravel = false;
+
+    // Cold Play (Stop→Play): stay on the map Play started on unless the user
+    // explicitly changed workingMapId while stopped (want !== stayId).
+    // Root cause of X-1 yank: stale workingMapId (often hub) + beginPlayTravel.
+    // mac42: if current map ≠ workingMapId after flee/heal, NEVER pin the wrong
+    // map via syncWorkingMapToCurrentMap — travel back instead.
+    if (wasCold && !AUTO.raidGateId) {
+      const currentId = getCurrentMapId();
+      const stayId = AUTO.coldPlayStayMapId || currentId;
+      const want = AUTO.workingMapId || "";
+      if (want && currentId && want !== currentId) {
+        // Off working map (unintended flee jump, or intentional objective change).
+        setStatus(`Play travel cold→beginPlayTravel workingMapId→${formatMapLabel(want)}`);
+      } else if (!want || want === currentId || (want === stayId && currentId === stayId)) {
+        syncWorkingMapToCurrentMap("cold-stay");
+        AUTO.coldPlayStayMapId = "";
+        clearPostDeathRecoverState();
+        armPostArrivalSecurityGrace();
+        if (AUTO.combatSuspendedForFlee) resumeCombatAfterFlee();
+        setStatus(
+          `Cura ok — resto su ${formatMapLabel(currentId || stayId)} (cold-stay, no beginPlayTravel)`
+        );
+        return true;
+      } else {
+        // Intentional objective change while stopped → travel after local heal.
+        setStatus(`Play travel cold→beginPlayTravel workingMapId→${formatMapLabel(want)}`);
+      }
+    }
+
     const needsTravel = needsTravelBeforeWork();
     const ok = maybeResumeObjectiveAfterDeath();
+    AUTO.coldPlayStayMapId = "";
     if (ok || !needsTravel) {
       clearPostDeathRecoverState();
       // Block false death/HP-flee while travel starts or objective work resumes.
       armPostArrivalSecurityGrace();
       if (AUTO.combatSuspendedForFlee) resumeCombatAfterFlee();
-      if (ok && needsTravel) setStatus("status.resume_after_death");
-      else setStatus("status.base_heal_done");
+      if (ok && needsTravel) {
+        /* beginPlayTravel / maybeResume already set a diagnostic status */
+      } else {
+        setStatus("status.base_heal_done");
+      }
       return ok;
     }
     // Travel could not start yet (e.g. raid portal not ready) — stay still and retry.
@@ -8884,14 +13335,19 @@
   }
 
   /**
-   * Pre-objective heal: stay still until Attack + Roam configs both report full
+   * Pre-objective heal: stay still until Attack (+ Roam on death) configs report full
    * HP/shield, and any armed baseWaitUntil has elapsed, then resume objective.
-   * Outside raid: if a config still needs heal and we are not in a safe zone,
-   * travel to the nearest faction safe zone first.
+   * Outside raid: if a config still needs heal and we are not hold-in-place,
+   * travel locally (portal center / base) or — death only — to a safe hub.
    * Returns true while recover owns the tick (blocks flee/wander/combat).
    */
   function drivePostDeathRecoverTick() {
     if (!AUTO.active || AUTO.paused || !AUTO.postDeathRecover) return false;
+    // HARD RULE: cargo scoop owns the tick over cold heal — never walk away / finish recover.
+    if (shouldDeferHealForPostKillCargo()) {
+      AUTO.healSafeTravel = false;
+      return false;
+    }
     if (AUTO.deathLimit > 0 && AUTO.deathCount >= AUTO.deathLimit) {
       clearPostDeathRecoverState();
       return false;
@@ -8908,14 +13364,15 @@
 
     const pending = configs.filter((n) => !verified.has(n));
 
-    // Need heal on the active pending config and not in a safe zone → travel first.
-    // If already fully healed on all configs, skip safe-zone travel (resume immediately).
+    // Need heal and not hold-in-place → local portal/base travel first (blocks HP-flee).
+    // Do NOT require activeNum === pending[0]: travel must keep owning movement even
+    // while we switch configs; otherwise holdStillAtBase cancels the portal walk.
+    // Never force-verify cold while damaged — that ended recover and let HP-flee → X-1.
     if (
       pending.length &&
       !isInRaidMap() &&
-      !isInSafeZone() &&
+      !isHealHoldInPlace() &&
       !switchCooling &&
-      activeNum === pending[0] &&
       !isPlayerFullyHealed()
     ) {
       const input = getInputSystem();
@@ -8924,12 +13381,11 @@
         input.pendingAttackOnLock = null;
       }
       clearLockedTarget();
+      clearSafeZoneMicroFidget();
       if (driveHealSafeZoneTravelTick(input)) return true;
-      // Travel unavailable — fall through to hold-still heal as last resort.
+      // Travel unavailable this tick (no portal yet): hold still; keep recover armed
+      // so shouldFleeByHp cannot yank the ship to a hub via startMapFlee.
     }
-
-    // In safe zone (or raid / already full path): hold still and regenerate.
-    holdStillAtBase();
 
     if (!switchCooling && isPlayerFullyHealed()) {
       verified.add(activeNum);
@@ -8938,18 +13394,32 @@
     const stillPending = configs.filter((n) => !verified.has(n));
     if (!stillPending.length) {
       // Both configs full — also respect configured base wait (parallel / whichever longer).
+      // HP/shield already full: hold still during regen is done; allow occasional micro-fidget.
       if (AUTO.baseWaitUntil && now < AUTO.baseWaitUntil) {
-        setStatus("status.base_wait", {
-          sec: Math.ceil((AUTO.baseWaitUntil - now) / 1000),
-        });
+        const input = getInputSystem();
+        if (!maybeDriveSafeZoneMicroFidget(input)) {
+          if (input) {
+            input.clearMoveTarget?.();
+            input.moveTarget = null;
+          }
+          AUTO.lastMinimapTarget = null;
+        }
+        const left = Math.ceil((AUTO.baseWaitUntil - now) / 1000);
+        const rolled = AUTO.lastRolledWaitSec > 0 ? AUTO.lastRolledWaitSec : left;
+        setStatus("status.base_wait", { sec: left, rolled });
         return true;
       }
       AUTO.baseWaitUntil = 0;
+      clearSafeZoneMicroFidget();
       // Prefer attack config before leaving base.
       ensureActiveConfig(AUTO.attackConfig || configs[0]);
       finishPostDeathRecoverAndResume();
       return true;
     }
+
+    // Still regenerating: hold perfectly still (movement cancels heal).
+    holdStillAtBase();
+    clearSafeZoneMicroFidget();
 
     const need = stillPending[0];
     if (activeNum !== need) {
@@ -8986,7 +13456,14 @@
     const ok = beginPlayTravel();
     if (ok) {
       armPostArrivalSecurityGrace();
-      setStatus("status.resume_after_death");
+      // Keep beginPlayTravel diagnostic status (workingMapId / raid) when travel starts.
+      if (!AUTO.raidGateId && AUTO.workingMapId && getCurrentMapId() !== AUTO.workingMapId) {
+        /* status already set inside beginPlayTravel */
+      } else if (AUTO.raidGateId) {
+        /* status already set inside beginPlayTravel */
+      } else {
+        setStatus("status.resume_after_death");
+      }
     }
     return ok;
   }
@@ -9228,7 +13705,7 @@
 
     if (AUTO.coffeeBreakUntil && now < AUTO.coffeeBreakUntil) {
       return {
-        key: "coffee",
+        key: AUTO.portalHoldReason === "admin" ? "admin" : "coffee",
         sec: Math.ceil((AUTO.coffeeBreakUntil - now) / 1000),
         until: AUTO.coffeeBreakUntil,
       };
@@ -9301,19 +13778,73 @@
       AUTO.nextCoffeeBreakAt = 0;
       return;
     }
-    AUTO.nextCoffeeBreakAt = Date.now() + AUTO.coffeeBreakIntervalMin * 60000;
+    const base = Number(AUTO.coffeeBreakIntervalMin) || 0;
+    const tol = getCoffeeToleranceMin();
+    const pctJitter = base * 0.15;
+    const jitter = tol > 0 ? Math.max(tol, pctJitter * 0.25) : pctJitter;
+    const lo = Math.max(0.5, base - jitter);
+    const hi = Math.max(lo, base + jitter);
+    const mins = randBetween(lo, hi);
+    AUTO.nextCoffeeBreakAt = Date.now() + mins * 60000;
+  }
+
+  /** ± minutes for coffee/admin hold (and interval) humanization. */
+  function getCoffeeToleranceMin() {
+    const raw = Number(AUTO.coffeeBreakToleranceMin);
+    if (Number.isFinite(raw) && raw >= 0) return raw;
+    const dur = Number(AUTO.coffeeBreakDurationMin) || 0;
+    return dur > 0 ? 2 : 0;
+  }
+
+  /** Configured hold minutes (no jitter) — fallback 5 if unset. */
+  function getCoffeeHoldDurationMin() {
+    const mins = Number(AUTO.coffeeBreakDurationMin) || 0;
+    return mins > 0 ? mins : 5;
+  }
+
+  /**
+   * Humanized hold: uniform in [max(0.5, set−tol), set+tol].
+   * Same formula for coffee breaks and admin pause.
+   */
+  function rollCoffeeHoldDurationMin() {
+    const base = getCoffeeHoldDurationMin();
+    const tol = getCoffeeToleranceMin();
+    const lo = Math.max(0.5, base - tol);
+    const hi = Math.max(lo, base + tol);
+    return randBetween(lo, hi);
+  }
+
+  /** Display rolled minutes as m:ss (e.g. 3.45 → "3:27"). */
+  function formatHoldDurationLabel(totalMin) {
+    const sec = Math.max(0, Math.round(Number(totalMin) * 60));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
   }
 
   function finishCoffeeBreak() {
+    const wasAdmin = AUTO.portalHoldReason === "admin";
+    const adminName = AUTO.adminPauseName || "";
     AUTO.coffeeBreakUntil = 0;
     AUTO.coffeeBreakActive = false;
+    AUTO.portalHoldReason = null;
+    AUTO.adminPauseLatched = false;
+    AUTO.adminPauseName = "";
+    AUTO.coffeeHoldRolledMin = 0;
     scheduleNextCoffeeBreak();
+    if (wasAdmin) {
+      sendDiscordAdminAlert(
+        "admin_resume",
+        t("discord.admin_alert.resume", { name: adminName || "?" }),
+        { name: adminName }
+      );
+    }
     if (isGameLoginScreenVisible() || !getLocalPlayer()) {
       beginCoffeeReloginPoll();
       return;
     }
     resumeCombatAfterFlee();
-    setStatus("status.coffee_done");
+    setStatus(wasAdmin ? "status.admin_pause_done" : "status.coffee_done");
   }
 
   function getGameSavedAccounts() {
@@ -9452,16 +13983,26 @@
     return true;
   }
 
-  function startCoffeeBreakNavigation() {
+  function startCoffeeBreakNavigation(options = {}) {
     if (AUTO.coffeeBreakActive || NAV.kind === "coffee") return false;
     if (isRaidHealActive() || AUTO.fleeActive) return false;
     if (AUTO.postDeathRecover) return false;
     if (AUTO.portalWaitUntil && Date.now() < AUTO.portalWaitUntil) return false;
 
-    const portal = findNearestPortal();
+    // Allied portal — walk to center/safe (NAV coffee tick), not any portal's outer ring.
+    const portal =
+      findNearestFriendlyPortal({ preferSafeBase: false }) || findNearestPortal();
     if (!portal) {
-      scheduleNextCoffeeBreak();
+      if (options.reason !== "admin") scheduleNextCoffeeBreak();
       return false;
+    }
+
+    const reason = options.reason === "admin" ? "admin" : "coffee";
+    AUTO.portalHoldReason = reason;
+    if (reason === "admin" && options.adminName) {
+      AUTO.adminPauseName = String(options.adminName);
+    } else if (reason !== "admin") {
+      AUTO.adminPauseName = "";
     }
 
     clearCurrentTask();
@@ -9477,7 +14018,14 @@
     NAV.jumpStartedAt = 0;
     NAV.lastMapId = getCurrentMapId();
     updatePlayControls();
-    setStatus(`Pausa caffè: verso ${portal.label} (${Math.round(portal.dist)}m)`);
+    if (reason === "admin") {
+      setStatus("status.admin_to_safe", {
+        name: AUTO.adminPauseName || "?",
+        dist: Math.round(portal.dist),
+      });
+    } else {
+      setStatus("status.coffee_to_safe", { dist: Math.round(portal.dist) });
+    }
     return true;
   }
 
@@ -9491,6 +14039,12 @@
     AUTO.coffeeBreakActive = false;
     AUTO.coffeeBreakUntil = 0;
     AUTO.nextCoffeeBreakAt = 0;
+    AUTO.coffeeHoldRolledMin = 0;
+    AUTO.portalHoldReason = null;
+    AUTO.adminPauseLatched = false;
+    AUTO.adminPauseCooldownUntil = 0;
+    AUTO.adminPauseName = "";
+    AUTO.sectorZHoldActive = false;
   }
 
   function findRaidStagePortal(kind) {
@@ -9610,13 +14164,19 @@
     }
 
     const currentId = getCurrentMapId();
+    const reason = options.reason || "map";
+    // mac42: map/HP/heal flee holds at portal on this map (no jump). Enemy may jump.
+    const localPortalHeal = reason === "map" || reason === "heal";
     // On a hub: prefer portal to a known safe-base map (X-7/home), not back to O-5.
     const avoidPrev =
       NAV.recentMaps && NAV.recentMaps.length >= 2
         ? NAV.recentMaps[NAV.recentMaps.length - 2]
         : null;
     let portal = null;
-    if (isNavHubMap(currentId)) {
+    if (localPortalHeal) {
+      // Nearest allied portal on THIS map for sit-and-regen (not jump-to-safe-base scoring).
+      portal = findNearestFriendlyPortal({ preferSafeBase: false });
+    } else if (isNavHubMap(currentId)) {
       portal = findNearestFriendlyPortal({
         preferSafeBase: true,
         avoidTargetId: avoidPrev,
@@ -9624,7 +14184,7 @@
     }
     if (!portal) {
       portal = findNearestFriendlyPortal({
-        preferSafeBase: true,
+        preferSafeBase: !localPortalHeal,
         avoidTargetId: isNavHubMap(currentId) ? avoidPrev : null,
       });
     }
@@ -9637,7 +14197,7 @@
     suspendCombatForFlee();
     ensureActiveConfig(AUTO.runConfig);
     AUTO.fleeActive = true;
-    AUTO.fleeMode = options.reason || "map";
+    AUTO.fleeMode = reason;
     AUTO.raidHealMode = false;
     noteNavMapVisit(currentId);
     // Flee must not inherit play-travel arrival → that re-ran objective resume / home hops.
@@ -9646,17 +14206,27 @@
     NAV.active = true;
     NAV.kind = "flee";
     NAV.path = [portal];
-    NAV.destinationId = portal.targetId;
+    // Local heal: destination is current map. Enemy flee may jump to portal.targetId.
+    NAV.destinationId = localPortalHeal ? currentId : portal.targetId;
     NAV.phase = "move";
     NAV.moveStartedAt = Date.now();
     NAV.jumpStartedAt = 0;
     NAV.lastMapId = currentId;
-    NAV.forHeal = options.reason === "heal";
+    NAV.forHeal = localPortalHeal;
+    // Clear any leftover jump latch/attempts from a prior hop — heal flee must not tryJump.
+    clearPortalJumpState();
     updatePlayControls();
-    setStatus("status.flee_portal", {
-      map: portal.label,
-      dist: Math.round(portal.dist),
-    });
+    if (localPortalHeal) {
+      setStatus("status.flee_heal_portal", {
+        dist: Math.round(portal.dist),
+        map: formatMapLabel(currentId),
+      });
+    } else {
+      const fleeWhy = "startMapFlee enemy";
+      setStatus(
+        `${fleeWhy} → ${portal.label || formatMapLabel(portal.targetId)} (${Math.round(portal.dist)}m)`
+      );
+    }
     return true;
   }
 
@@ -9692,10 +14262,16 @@
   }
 
   function driveRaidHealTick(input, ship) {
-    // Story 3 heal flee: switch to runConfig, stop fighting, travel to safest map side, hold to regen.
-    // Combat evasion / wave breakout stay separate — this path is only "fuga per guarirsi".
+    // mac34 restore: Bastion 14 / Story 3 travel→HOLD STILL + Bastion 2 lateral return.
+    // Regression (mac25+): CRITICAL_THREAT(420) + EVADE_HOLD anti-thrash made the ship
+    // sit in laser range without skirting, and over-skirt travel never reached the side.
+    // Working recipe: decisive flee to map side → hold still to regen → lateral return
+    // (driveRaidSafeReturnTick) when HP+shield full — never chord the pack.
     if (!input || !ship) return false;
     if (!AUTO.raidHealMode && !(AUTO.fleeActive && AUTO.fleeMode === "raid")) return false;
+
+    // Suspend cargo-clear / combat orbit retargets for the whole heal ownership window.
+    if (AUTO.raidCargoClear) clearRaidCargoClearState();
 
     if (isPlayerFullyHealed()) {
       // Only resume when already on the turret support ring. From a heal-side edge,
@@ -9717,8 +14293,17 @@
       if (AUTO.raidHealPhase !== "return") {
         AUTO.raidHealPhase = "return";
         AUTO.raidFleeTarget = null;
+        AUTO.raidFleeTargetAt = 0;
       }
       return driveRaidSafeReturnTick(input, ship);
+    }
+
+    // HP dipped again during return → back to side hold (do not keep cutting inward).
+    if (AUTO.raidHealPhase === "return") {
+      AUTO.raidHealPhase = "travel";
+      AUTO.raidFleeTarget = null;
+      AUTO.raidFleeTargetAt = 0;
+      AUTO.raidHealSide = -1;
     }
 
     ensureActiveConfig(getRaidFleeConfig());
@@ -9735,28 +14320,27 @@
     }
 
     const target = AUTO.raidFleeTarget;
-    const distToTarget = target ? distance(ship.x, ship.y, target.x, target.y) : Infinity;
+    const distToTarget = target
+      ? distance(ship.x, ship.y, target.x, target.y)
+      : Infinity;
     const arrived = distToTarget <= RAID_HEAL_ARRIVE_DIST;
 
-    if (arrived) {
+    // Story 3 / Bastion 14: once at the safe side, HOLD STILL to regenerate.
+    if (arrived || AUTO.raidHealPhase === "hold") {
       AUTO.raidHealPhase = "hold";
       clearRaidHealMovement(input);
 
-      if (threatNearShip <= RAID_HEAL_THREAT_DIST) {
-        // Incomplete heal: never cut straight through the pack to the opposite side.
-        // Close pressure → lateral skirt on current side; else hold until safer / fully healed.
-        // Side switch while low HP is forbidden (return path handles post-heal transit).
-        if (threatNearShip <= RAID_HEAL_HOLD_THREAT || isRaidShipEncircled(ship)) {
-          const evade = getRaidHealEvasionWaypoint(ship);
-          // Keep assigned heal side — only lateral step (never opposite-edge chord)
-          AUTO.raidHealPhase = "evade";
-          setMoveTargetDirect(input, evade.x, evade.y);
-          setStatus(`Raid: NPC vicino, resto sul lato (${Math.round(threatNearShip)}m)`);
-          return true;
-        }
-
+      // Bastion 19 (not Bastion 14 side-switch): close pressure → same-side lateral skirt.
+      // Opposite-edge switch while low HP cut through the pack (Bastion 14 thrash).
+      if (
+        threatNearShip <= RAID_HEAL_HOLD_THREAT ||
+        isRaidShipEncircled(ship)
+      ) {
+        const evade = getRaidHealEvasionWaypoint(ship);
+        AUTO.raidHealPhase = "evade";
+        setMoveTargetDirect(input, evade.x, evade.y);
         setStatus(
-          `Raid: riparo fermo HP ${Math.round(snap.percent)}% · scudo ${Math.round(sh.percent)}%`
+          `Raid: NPC vicino, resto sul lato (${Math.round(threatNearShip)}m)`
         );
         return true;
       }
@@ -9767,18 +14351,14 @@
       return true;
     }
 
-    // Travel / evade: skirt the pack — never drive a straight chord through the swarm
-    const mustSkirt =
-      threatNearShip <= RAID_HEAL_HOLD_THREAT ||
-      (target && raidHealPathCrossesSwarm(ship, target));
-    if (mustSkirt) {
+    // Travel to assigned side. Skirt ONLY when the straight path cuts the pack
+    // (Bastion 19 always-skirt on HOLD_THREAT prevented ever arriving — regression).
+    if (target && raidHealPathCrossesSwarm(ship, target)) {
       const evade = getRaidHealEvasionWaypoint(ship);
       AUTO.raidHealPhase = "evade";
       setMoveTargetDirect(input, evade.x, evade.y);
       setStatus(
-        threatNearShip <= RAID_HEAL_HOLD_THREAT
-          ? `Raid: scarto laterale NPC (${Math.round(threatNearShip)}m)`
-          : `Raid: scarto l'orda verso lato sicuro (${Math.round(distToTarget)}m)`
+        `Raid: scarto l'orda verso lato sicuro (${Math.round(distToTarget)}m)`
       );
       return true;
     }
@@ -9801,11 +14381,324 @@
     return true;
   }
 
-  function isHostilePlayer(player, sessionId) {
+  /**
+   * Cloak flag from game state and/or player sprite (client keeps cloaked players
+   * in K.players — same data the minimap already draws).
+   */
+  function isPlayerCloaked(sessionId, player) {
+    if (player?.cloaked) return true;
+    const sprite = getEntities()?.playerSprites?.get(sessionId);
+    return !!(sprite?.cloaked);
+  }
+
+  /**
+   * Admin / staff ship in client AOI (K.players — same pool as enemy detect).
+   * Prefer game flags synced from playerMeta; fall back to rank / sprite / title.
+   */
+  function isAdminOrStaffPlayer(player, sessionId) {
     const K = getGameState();
     if (!player || player.alive === false) return false;
     if (!sessionId || sessionId === K?.mySessionId) return false;
-    if (player.cloaked) return false;
+
+    if (player.is_admin || player.is_game_mod || player.is_moderator) return true;
+
+    const rank = String(player.rank || "").toUpperCase();
+    if (rank === "ADMIN" || rank === "GAME_MOD" || rank === "MODERATOR") return true;
+
+    const sprite = getEntities()?.playerSprites?.get(sessionId);
+    if (sprite?.isAdminPlayer) return true;
+
+    const title = String(player.active_title || "").trim().toLowerCase();
+    if (title === "admin" || title === "administrator") return true;
+
+    return false;
+  }
+
+  function findNearestAdminPlayer(maxRadius) {
+    const K = getGameState();
+    const ship = getShipPosition();
+    if (!K?.players || !ship) return null;
+
+    let best = null;
+    for (const [sessionId, player] of K.players) {
+      if (!isAdminOrStaffPlayer(player, sessionId)) continue;
+      const pos = getPlayerWorldPosition(sessionId, player);
+      if (!pos) continue;
+      const dist = distance(ship.x, ship.y, pos.x, pos.y);
+      if (maxRadius && dist > maxRadius) continue;
+      if (!best || dist < best.dist) {
+        best = {
+          sessionId,
+          x: pos.x,
+          y: pos.y,
+          dist,
+          nickname: player.nickname,
+          isAdmin: !!player.is_admin,
+          isGameMod: !!player.is_game_mod,
+          isModerator: !!player.is_moderator,
+        };
+      }
+    }
+    if (best?.nickname) rememberAdminName(best.nickname);
+    return best;
+  }
+
+  function isKnownAdminNickname(nick) {
+    const name = String(nick || "").trim();
+    if (!name) return false;
+    if (AUTO.adminKnownNames.has(name)) return true;
+    const K = getGameState();
+    if (!K?.players) return false;
+    for (const [sessionId, player] of K.players) {
+      if (String(player?.nickname || "") !== name) continue;
+      if (isAdminOrStaffPlayer(player, sessionId)) {
+        rememberAdminName(name);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function resolveGameApiUrl() {
+    try {
+      const id = String(localStorage.getItem("rg_selected_server") || "global");
+      if (GAME_API_BY_SERVER[id]) return GAME_API_BY_SERVER[id];
+    } catch (_) {}
+    return GAME_API_BY_SERVER.global;
+  }
+
+  async function acceptGroupInviteFromAdmin(inviterNickname, reason) {
+    if (AUTO.groupInviteAcceptBusy) return false;
+    const token = getGameState()?.authToken;
+    if (!token) return false;
+    AUTO.groupInviteAcceptBusy = true;
+    AUTO.lastGroupInviteNick = String(inviterNickname || "");
+    try {
+      const res = await fetch(`${resolveGameApiUrl()}/social/group/accept`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: "{}",
+      });
+      if (!res.ok) return false;
+      let data = null;
+      try {
+        data = await res.json();
+      } catch (_) {}
+      if (data && data.result && data.result !== "ok") return false;
+      const name = AUTO.lastGroupInviteNick || "?";
+      setStatus("status.admin_invite_accepted", { name });
+      sendDiscordAdminAlert(
+        "group_invite",
+        t("discord.admin_alert.invite", { name, reason: reason || "admin" }),
+        { name }
+      );
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      AUTO.groupInviteAcceptBusy = false;
+    }
+  }
+
+  function handleGroupInviteReceived(payload) {
+    const nick = String(payload?.inviterNickname || payload?.nickname || "").trim();
+    if (nick) AUTO.lastGroupInviteNick = nick;
+    const onZ = isSectorZMap();
+    const fromAdmin = nick ? isKnownAdminNickname(nick) : false;
+    // Sector Z: accept any invite (admin often TPs here). Else accept known admin invites.
+    if (onZ || fromAdmin) {
+      acceptGroupInviteFromAdmin(nick || "?", onZ ? "sector_z" : "admin");
+    }
+  }
+
+  function handleSocialChatAdminEvent(data) {
+    if (!data || typeof data !== "object") return;
+    const type = String(data.type || "");
+    const role = String(data.senderRole || data.role || "").toLowerCase();
+    const sender = String(data.sender || data.nickname || data.from || "").trim();
+    const isAdminRole =
+      role === "admin" ||
+      role === "administrator" ||
+      role === "gamemod" ||
+      role === "game_mod" ||
+      role === "moderator";
+    const known = sender ? isKnownAdminNickname(sender) : false;
+    if (!isAdminRole && !known) return;
+    if (sender) rememberAdminName(sender);
+    const text = String(data.text || data.message || "").slice(0, 120);
+    if (type === "whisper" || type === "dm" || type === "dm_in") {
+      const myId = String(getGameState()?.mySessionId || "");
+      // Ignore echoes we sent.
+      if (data.senderId && myId && String(data.senderId) === myId) return;
+      sendDiscordAdminAlert(
+        "admin_whisper",
+        t("discord.admin_alert.message", {
+          name: sender || "?",
+          kind: "whisper",
+          text: text || "…",
+        }),
+        { name: sender }
+      );
+      setStatus("status.admin_message", { name: sender || "?", kind: "whisper" });
+      return;
+    }
+    if (type === "message" || type === "chat") {
+      sendDiscordAdminAlert(
+        "admin_chat",
+        t("discord.admin_alert.message", {
+          name: sender || "?",
+          kind: "chat",
+          text: text || "…",
+        }),
+        { name: sender }
+      );
+      setStatus("status.admin_message", { name: sender || "?", kind: "chat" });
+    }
+  }
+
+  function installSocialChatAdminHook() {
+    if (AUTO.socialChatHookInstalled) return;
+    AUTO.socialChatHookInstalled = true;
+    const OrigWS = window.WebSocket;
+    if (!OrigWS) return;
+    function PatchedWebSocket(url, protocols) {
+      const ws =
+        protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
+      try {
+        if (String(url || "").includes("/social/chat")) {
+          ws.addEventListener("message", (ev) => {
+            try {
+              const data = JSON.parse(ev.data);
+              handleSocialChatAdminEvent(data);
+            } catch (_) {}
+          });
+        }
+      } catch (_) {}
+      return ws;
+    }
+    PatchedWebSocket.prototype = OrigWS.prototype;
+    try {
+      Object.assign(PatchedWebSocket, OrigWS);
+    } catch (_) {}
+    window.WebSocket = PatchedWebSocket;
+  }
+
+  /**
+   * Sector Z (JAIL): freeze farm/collect/nav objectives — hold still.
+   * Still accept admin group invites; Discord alert on enter.
+   */
+  function processSectorZSafeHold() {
+    const onZ = isSectorZMap();
+    if (!onZ) {
+      if (AUTO.sectorZHoldActive) {
+        AUTO.sectorZHoldActive = false;
+        sendDiscordAdminAlert(
+          "sector_z_leave",
+          t("discord.admin_alert.sector_z_leave"),
+          {}
+        );
+        setStatus("status.sector_z_leave");
+      }
+      return false;
+    }
+
+    if (!AUTO.sectorZHoldActive) {
+      AUTO.sectorZHoldActive = true;
+      clearCurrentTask();
+      pauseCombatForFlee();
+      if (NAV.active && NAV.kind !== "flee" && NAV.kind !== "coffee") {
+        stopNavigation();
+      }
+      const admin = findNearestAdminPlayer(FLEE_ENEMY_DETECT_RADIUS);
+      const name = admin?.nickname || AUTO.adminPauseName || "";
+      if (name) AUTO.adminPauseName = name;
+      setStatus("status.sector_z_hold", { name: name || "?" });
+      sendDiscordAdminAlert(
+        "sector_z",
+        t("discord.admin_alert.sector_z", { name: name || "?" }),
+        { name }
+      );
+    }
+
+    const input = getInputSystem();
+    if (input) {
+      input.clearMoveTarget?.();
+      input.moveTarget = null;
+      input.attackMode = false;
+      input.pendingAttackOnLock = null;
+    }
+    AUTO.lastMinimapTarget = null;
+    clearLockedTarget();
+    const admin = findNearestAdminPlayer(FLEE_ENEMY_DETECT_RADIUS);
+    if (admin?.nickname) {
+      AUTO.adminPauseName = admin.nickname;
+      setStatus("status.sector_z_hold", { name: admin.nickname });
+    } else {
+      setStatus("status.sector_z_hold", { name: AUTO.adminPauseName || "?" });
+    }
+    return true;
+  }
+
+  function shouldPauseForAdmin() {
+    if (!AUTO.pauseOnAdmin || !AUTO.active || AUTO.paused) return false;
+    if (AUTO.adminPauseLatched) return false;
+    if (AUTO.adminPauseCooldownUntil && Date.now() < AUTO.adminPauseCooldownUntil) return false;
+    if (AUTO.coffeeBreakActive || NAV.kind === "coffee") return false;
+    if (AUTO.coffeeBreakUntil && Date.now() < AUTO.coffeeBreakUntil) return false;
+    if (isRaidHealActive() || AUTO.fleeActive || AUTO.postDeathRecover) return false;
+    if (NAV.active) return false;
+    if (AUTO.portalWaitUntil && Date.now() < AUTO.portalWaitUntil) return false;
+    if (isSectorZMap()) return false;
+    return !!findNearestAdminPlayer(FLEE_ENEMY_DETECT_RADIUS);
+  }
+
+  function startAdminPauseNavigation() {
+    if (!shouldPauseForAdmin()) return false;
+    const admin = findNearestAdminPlayer(FLEE_ENEMY_DETECT_RADIUS);
+    if (!admin) return false;
+
+    AUTO.adminPauseLatched = true;
+    AUTO.adminPauseName = admin.nickname || "?";
+    rememberAdminName(AUTO.adminPauseName);
+    setStatus("status.admin_detected", { name: AUTO.adminPauseName });
+    sendDiscordAdminAlert(
+      "admin_detected",
+      t("discord.admin_alert.detected", { name: AUTO.adminPauseName }),
+      { name: AUTO.adminPauseName }
+    );
+
+    const ok = startCoffeeBreakNavigation({
+      reason: "admin",
+      adminName: AUTO.adminPauseName,
+    });
+    if (!ok) {
+      AUTO.adminPauseLatched = false;
+      AUTO.portalHoldReason = null;
+      AUTO.adminPauseName = "";
+      AUTO.adminPauseCooldownUntil = Date.now() + 8000;
+      setStatus("status.admin_no_portal");
+      sendDiscordAdminAlert(
+        "admin_no_portal",
+        t("discord.admin_alert.no_portal", { name: admin.nickname || "?" }),
+        { name: admin.nickname || "" }
+      );
+    }
+    return ok;
+  }
+
+  /**
+   * Faction/clan hostility only. Cloaked hostiles are included by default so
+   * flee-from-enemies matches minimap awareness (no fake radar — AOI only).
+   */
+  function isHostilePlayer(player, sessionId, options = {}) {
+    const K = getGameState();
+    if (!player || player.alive === false) return false;
+    if (!sessionId || sessionId === K?.mySessionId) return false;
+    // includeCloaked defaults true: cloaked ships remain in client AOI/minimap.
+    if (options.includeCloaked === false && isPlayerCloaked(sessionId, player)) return false;
     if (player.nickname && K?.groupMemberNicknames?.has(player.nickname)) return false;
 
     const myFaction = String(K?.myFaction || getLocalPlayer()?.faction || "").toUpperCase();
@@ -9830,18 +14723,19 @@
     return null;
   }
 
-  function findNearestHostilePlayer(maxRadius) {
+  function findNearestHostilePlayer(maxRadius, options = {}) {
     const K = getGameState();
     const ship = getShipPosition();
     if (!K?.players || !ship) return null;
 
     let best = null;
     for (const [sessionId, player] of K.players) {
-      if (!isHostilePlayer(player, sessionId)) continue;
+      if (!isHostilePlayer(player, sessionId, options)) continue;
       const pos = getPlayerWorldPosition(sessionId, player);
       if (!pos) continue;
       const dist = distance(ship.x, ship.y, pos.x, pos.y);
       if (maxRadius && dist > maxRadius) continue;
+      const cloaked = isPlayerCloaked(sessionId, player);
       if (!best || dist < best.dist) {
         best = {
           sessionId,
@@ -9850,6 +14744,7 @@
           dist,
           nickname: player.nickname,
           faction: player.faction,
+          cloaked,
         };
       }
     }
@@ -9864,19 +14759,107 @@
     return !!findNearestHostilePlayer(FLEE_ENEMY_DETECT_RADIUS);
   }
 
-  function startEnemyPlayerFlee() {
+  /**
+   * Surface cloaked hostiles in the status line (same AOI/minimap data — not a wallhack).
+   * Throttled so it does not spam while farming.
+   */
+  function maybeNoticeCloakedHostile() {
+    if (!AUTO.fleeEnemyPlayers || !AUTO.active || AUTO.paused) return;
+    if (AUTO.fleeActive || isInRaidMap()) return;
+    const player = getLocalPlayer();
+    if (player?.in_safe_zone) return;
+    if (AUTO.lastCloakHostileNoticeAt && Date.now() - AUTO.lastCloakHostileNoticeAt < 8000) return;
+
+    const enemy = findNearestHostilePlayer(FLEE_ENEMY_DETECT_RADIUS);
+    if (!enemy?.cloaked) return;
+    AUTO.lastCloakHostileNoticeAt = Date.now();
+    setStatus("status.cloak_hostile_near", {
+      name: enemy.nickname || enemy.faction || "?",
+      dist: Math.round(enemy.dist),
+    });
+  }
+
+  /**
+   * Continuously track HP/shield drops whenever PvP flee/SAP features are armed,
+   * so a cloak-reveal shot is not lost when flee starts one tick later.
+   */
+  function updatePvpFleeHitTracker() {
+    if (!(AUTO.fleeEnemyPlayers || AUTO.fleeUseSap || (AUTO.fleeActive && AUTO.fleeMode === "enemy"))) {
+      return;
+    }
+    if (!AUTO.active || AUTO.paused) return;
+    const hp = getPlayerHpSnapshot();
+    const shield = getPlayerShieldSnapshot();
+    const effective = (Number(hp.effective) || 0) + (Number(shield.current) || 0);
+    const prev = AUTO.pvpFleeLastCombatEffective;
+    AUTO.pvpFleeLastCombatEffective = effective;
+    if (prev == null) return;
+    if (effective < prev - 0.5) {
+      AUTO.pvpFleeHitAt = Date.now();
+    }
+  }
+
+  function seedPvpFleeUnderFire() {
+    AUTO.pvpFleeHitAt = Date.now();
+    // Keep baseline in sync so the next real drop still registers.
+    const hp = getPlayerHpSnapshot();
+    const shield = getPlayerShieldSnapshot();
+    AUTO.pvpFleeLastCombatEffective =
+      (Number(hp.effective) || 0) + (Number(shield.current) || 0);
+    return true;
+  }
+
+  function playerLooksAttackingLocal(sessionId) {
+    const K = getGameState();
+    if (!K?.mySessionId || !sessionId) return false;
+
+    const player = K.players?.get?.(sessionId);
+    if (player?.is_attacking && player.attack_target_id === K.mySessionId) return true;
+
+    const sprite = getEntities()?.playerSprites?.get(sessionId);
+    if (sprite) {
+      const targetId =
+        sprite.attack_target_id ?? sprite.attackTargetId ?? sprite.lockTargetId ?? null;
+      if (
+        (sprite.is_attacking || sprite.attackMode || sprite.attacking) &&
+        targetId === K.mySessionId
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function startEnemyPlayerFlee(options = {}) {
     const enemy = findNearestHostilePlayer(FLEE_ENEMY_DETECT_RADIUS);
     if (!enemy) return false;
+
+    // Capture under-fire evidence BEFORE flee suspends combat / resets baselines.
+    updatePvpFleeHitTracker();
+    const recentHit =
+      AUTO.pvpFleeHitAt && Date.now() - AUTO.pvpFleeHitAt < PVP_FLEE_HIT_WINDOW_MS;
+    const attacking = playerLooksAttackingLocal(enemy.sessionId);
+
     if (startMapFlee({ reason: "enemy" })) {
-      // Combat already disarmed inside startMapFlee — optional cloak (opt-in).
-      AUTO.pvpFleeLastCombatEffective = null;
-      AUTO.pvpFleeHitAt = 0;
+      // Do NOT wipe hit tracker (old bug: reset erased the reveal-shot that triggered flee).
+      // Seed SAP under-fire when pursuer is shooting, we just took damage, or HP-flee
+      // raced ahead of the enemy-flee path (typical cloak-reveal volley).
+      if (attacking || recentHit || options.fromHp) {
+        seedPvpFleeUnderFire();
+      }
       tryCloakForPvpFlee();
       const label = enemy.nickname || enemy.faction || "nemico";
-      setStatus("status.flee_enemy", {
-        name: label,
-        dist: Math.round(enemy.dist),
-      });
+      if (enemy.cloaked) {
+        setStatus("status.flee_enemy_cloak", {
+          name: label,
+          dist: Math.round(enemy.dist),
+        });
+      } else {
+        setStatus("status.flee_enemy", {
+          name: label,
+          dist: Math.round(enemy.dist),
+        });
+      }
       return true;
     }
     return false;
@@ -9909,42 +14892,11 @@
   }
 
   /**
-   * Track local HP+shield drops during PvP flee for under-fire detection.
-   */
-  function updatePvpFleeHitTracker() {
-    const hp = getPlayerHpSnapshot();
-    const shield = getPlayerShieldSnapshot();
-    const effective = (Number(hp.effective) || 0) + (Number(shield.current) || 0);
-    const prev = AUTO.pvpFleeLastCombatEffective;
-    AUTO.pvpFleeLastCombatEffective = effective;
-    if (prev == null) return;
-    if (effective < prev - 0.5) {
-      AUTO.pvpFleeHitAt = Date.now();
-    }
-  }
-
-  /**
    * True when this hostile player is actively shooting/hitting the local ship.
    * Uses is_attacking toward local, sprite attack flags, and recent HP/shield drops.
    */
   function isHostilePlayerFiringAtLocal(sessionId) {
-    const K = getGameState();
-    if (!K?.mySessionId || !sessionId) return false;
-
-    const player = K.players?.get?.(sessionId);
-    if (player?.is_attacking && player.attack_target_id === K.mySessionId) return true;
-
-    const sprite = getEntities()?.playerSprites?.get(sessionId);
-    if (sprite) {
-      const targetId =
-        sprite.attack_target_id ?? sprite.attackTargetId ?? sprite.lockTargetId ?? null;
-      if (
-        (sprite.is_attacking || sprite.attackMode || sprite.attacking) &&
-        targetId === K.mySessionId
-      ) {
-        return true;
-      }
-    }
+    if (playerLooksAttackingLocal(sessionId)) return true;
 
     updatePvpFleeHitTracker();
     if (AUTO.pvpFleeHitAt && Date.now() - AUTO.pvpFleeHitAt < PVP_FLEE_HIT_WINDOW_MS) {
@@ -9961,12 +14913,18 @@
    */
   function trySapShieldDuringPvpFlee() {
     if (!AUTO.fleeUseSap) return false;
-    if (!(AUTO.fleeActive && AUTO.fleeMode === "enemy")) return false;
-    if (NAV.kind !== "flee" || !NAV.active) return false;
+    if (!AUTO.fleeActive || NAV.kind !== "flee" || !NAV.active) return false;
+    // Prefer enemy-mode flee; also allow map/heal flee if a hostile is shooting us
+    // (HP-threshold flee often wins the race when a cloak reveal drops HP).
+    if (AUTO.fleeMode !== "enemy" && AUTO.fleeMode !== "map" && AUTO.fleeMode !== "heal") {
+      return false;
+    }
     if (getPlayerAmmoCount("SAP") <= 0) return false;
 
     const enemy = findNearestHostilePlayer(FLEE_ENEMY_DETECT_RADIUS);
     if (!enemy) return false;
+    // Map/heal flee: only engage SAP when flee-from-enemies is armed (PvP context).
+    if (AUTO.fleeMode !== "enemy" && !AUTO.fleeEnemyPlayers) return false;
 
     updatePvpFleeHitTracker();
     if (!isHostilePlayerFiringAtLocal(enemy.sessionId)) {
@@ -9981,6 +14939,11 @@
         clearLockedTarget();
       }
       return false;
+    }
+
+    // Promote map/heal flee to enemy mode so resume/cleanup stay on the PvP path.
+    if (AUTO.fleeMode !== "enemy") {
+      AUTO.fleeMode = "enemy";
     }
 
     const net = window.__RG_NET__;
@@ -10057,7 +15020,7 @@
    */
   function explainIdleReason() {
     if (AUTO.postDeathRecover || AUTO.healSafeTravel) {
-      if (AUTO.healSafeTravel || (!isInRaidMap() && !isInSafeZone() && !isPlayerFullyHealed())) {
+      if (AUTO.healSafeTravel || (!isInRaidMap() && !isHealHoldInPlace() && !isPlayerFullyHealed())) {
         setStatus("status.idle_heal_safe");
       } else {
         setStatus("status.idle_heal");
@@ -10069,8 +15032,19 @@
       return true;
     }
     if (AUTO.pendingCombatCargo && canCollectCargoNow()) {
-      setStatus("status.cargo_wait");
-      return true;
+      clearPhantomPendingCargoBlockingCombat();
+      // Mid-fight or phantom living kill: never show "Attendo cargo" / freeze.
+      if (
+        !AUTO.pendingCombatCargo ||
+        hasLivingStickyCombat() ||
+        isNpcStillFightable(AUTO.pendingCombatCargo.npcId) ||
+        getNpcSprite(AUTO.pendingCombatCargo.npcId)?.alive
+      ) {
+        /* fall through */
+      } else {
+        setStatus("status.cargo_wait");
+        return true;
+      }
     }
     if (
       AUTO.collectBooty &&
@@ -10107,25 +15081,39 @@
       return true;
     }
 
-    // Post-death / pre-Play: stay still until both configs are full HP+shield — blocks flee/wander.
+    // Sector Z (admin map): freeze all objectives — hold/safe mode.
+    if (AUTO.active && !AUTO.paused && processSectorZSafeHold()) return true;
+
+    // Post-death / pre-Play: stay still until configs are full HP+shield — blocks flee/wander.
+    // HARD RULE: cold portal post-kill heal NEVER starves cargo — if scoop window is open,
+    // defer recover so mainTick can drivePendingCombatCargoTick / collect first.
     if (AUTO.postDeathRecover) {
-      return drivePostDeathRecoverTick();
+      if (shouldDeferHealForPostKillCargo()) {
+        // Keep postDeathRecover armed — resume AFTER cargo collected / full WAIT_MS.
+        AUTO.healSafeTravel = false;
+      } else {
+        return drivePostDeathRecoverTick();
+      }
     }
 
     // Standalone base wait (legacy path; post-death now arms this inside pre-objective heal).
     if (AUTO.baseWaitUntil && Date.now() < AUTO.baseWaitUntil) {
       const input = getInputSystem();
-      if (input) {
-        input.clearMoveTarget?.();
-        input.moveTarget = null;
+      if (!maybeDriveSafeZoneMicroFidget(input)) {
+        if (input) {
+          input.clearMoveTarget?.();
+          input.moveTarget = null;
+        }
       }
       setStatus("status.base_wait", {
         sec: Math.ceil((AUTO.baseWaitUntil - Date.now()) / 1000),
+        rolled: AUTO.lastRolledWaitSec || 0,
       });
       return true;
     }
     if (AUTO.baseWaitUntil) {
       AUTO.baseWaitUntil = 0;
+      clearSafeZoneMicroFidget();
       if (AUTO.resumeTravelAfterBaseWait) {
         AUTO.resumeTravelAfterBaseWait = false;
         maybeResumeObjectiveAfterDeath();
@@ -10143,9 +15131,16 @@
         input.pendingAttackOnLock = null;
       }
       AUTO.lastMinimapTarget = null;
-      setStatus("status.coffee_pause", {
-        time: formatCountdownSec(secondsUntil(AUTO.coffeeBreakUntil)),
-      });
+      if (AUTO.portalHoldReason === "admin") {
+        setStatus("status.admin_pause", {
+          time: formatCountdownSec(secondsUntil(AUTO.coffeeBreakUntil)),
+        });
+      } else {
+        setStatus("status.coffee_pause", {
+          time: formatCountdownSec(secondsUntil(AUTO.coffeeBreakUntil)),
+        });
+      }
+      maybeDiscordNotifyPortalHoldTick();
       return true;
     }
     if (AUTO.coffeeBreakUntil && Date.now() >= AUTO.coffeeBreakUntil) {
@@ -10174,8 +15169,19 @@
       AUTO.nextCoffeeBreakAt > 0 &&
       Date.now() >= AUTO.nextCoffeeBreakAt
     ) {
-      startCoffeeBreakNavigation();
+      startCoffeeBreakNavigation({ reason: "coffee" });
     }
+
+    // Admin/staff in AOI → same portal hold as coffee (duration = coffee setting).
+    // Checked after scheduled coffee start so an in-progress coffee hold is not double-armed;
+    // if coffee did not start (interval off / busy), admin can still claim the tick.
+    if (shouldPauseForAdmin()) {
+      startAdminPauseNavigation();
+    }
+
+    // Keep PvP hit baseline warm so cloak-reveal damage is visible when flee starts.
+    updatePvpFleeHitTracker();
+    maybeNoticeCloakedHostile();
 
     if (shouldFleeByHp()) {
       // Heal travel already owns the route to a safe zone — do not HP-flee mid-path
@@ -10191,6 +15197,13 @@
           AUTO.raidHealSide = -1;
           AUTO.raidHealPhase = null;
           suspendCombatForFlee();
+        } else if (
+          AUTO.fleeEnemyPlayers &&
+          !isPostArrivalSecurityGraceActive() &&
+          findNearestHostilePlayer(FLEE_ENEMY_DETECT_RADIUS)
+        ) {
+          // HP drop from a PvP attacker (e.g. cloak reveal) must use enemy flee so SAP-on-flee can arm.
+          startEnemyPlayerFlee({ fromHp: true });
         } else {
           startMapFlee();
         }
@@ -10254,6 +15267,7 @@
 
     if (!K.raidStageClear) {
       AUTO.raidStageClearCargoUntil = 0;
+      AUTO.raidStageClearCargoStartedAt = 0;
       return false;
     }
 
@@ -10287,56 +15301,102 @@
   }
 
   /**
-   * After raidStageClear, briefly collect remaining own cargo before next portal.
-   * Time-boxed so a stuck loot cannot block the gate forever.
+   * After raidStageClear, collect remaining own cargo before next portal.
+   * Soft-extends while visible allowed cargo remains (or until hold full / hard cap).
+   * Must actually drive collect/sweep — never return true while sitting idle.
    */
   function maybeDriveRaidStageClearCargo(input, ship) {
     if (!AUTO.collectCargo || !canCollectCargoNow()) return false;
     if (!input || !ship) return false;
 
     if (!AUTO.raidStageClearCargoUntil) {
+      AUTO.raidStageClearCargoStartedAt = Date.now();
       AUTO.raidStageClearCargoUntil = Date.now() + RAID_STAGE_CLEAR_CARGO_MS;
     }
+
+    // Contact scoop first — never sit on leftover loot during stage clear.
+    if (tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear)) return true;
+
+    const leftoverProbe = findRaidStageClearCargo(ship);
     if (Date.now() > AUTO.raidStageClearCargoUntil) {
-      if (AUTO.pendingCombatCargo) {
-        finishCombatCargoCollect(
-          AUTO.cargoCollectInFlightId || AUTO.taskTargetId || AUTO.pendingCollectId,
-          { count: false }
-        );
+      // Soft-extend while allowed cargo still visible — do not leave after partial scoop.
+      if (leftoverProbe && canCollectCargoNow()) {
+        const started = AUTO.raidStageClearCargoStartedAt || Date.now();
+        if (Date.now() - started < RAID_STAGE_CLEAR_CARGO_MAX_MS) {
+          AUTO.raidStageClearCargoUntil =
+            Date.now() + RAID_STAGE_CLEAR_CARGO_EXTEND_MS;
+        } else {
+          // Hard cap: stuck loot cannot block the gate forever.
+          if (AUTO.pendingCombatCargo) {
+            finishCombatCargoCollect(
+              AUTO.cargoCollectInFlightId ||
+                AUTO.taskTargetId ||
+                AUTO.pendingCollectId,
+              { count: false }
+            );
+          }
+          return false;
+        }
+      } else {
+        if (AUTO.pendingCombatCargo) {
+          finishCombatCargoCollect(
+            AUTO.cargoCollectInFlightId || AUTO.taskTargetId || AUTO.pendingCollectId,
+            { count: false }
+          );
+        }
+        return false;
       }
-      return false;
     }
 
+    // Clear→scoop FSM (also handles surround breakout).
+    if (driveRaidCargoSweepTick(input, ship)) return true;
+
     // Active post-kill lifecycle
-    if (AUTO.pendingCombatCargo || AUTO.cargoCollectInFlightId || AUTO.currentTask === "collect") {
+    if (AUTO.pendingCombatCargo || AUTO.cargoCollectInFlightId) {
       if (drivePendingCombatCargoTick(input, ship)) return true;
-      if (AUTO.currentTask === "collect") return true;
+    }
+
+    if (AUTO.currentTask === "collect") {
+      const item = getCollectibleById(AUTO.taskTargetId);
+      if (item) {
+        driveCollect(item);
+        return true;
+      }
+      // Sprite flicker but loot still in state — keep native path alive.
+      const lootId = AUTO.taskTargetId;
+      if (lootId && getGameState()?.loots?.has?.(lootId)) {
+        armNativeCollect(lootId);
+        return true;
+      }
     }
 
     // Leftover cargo still on the ground after the last kill (pending may have been cleared)
-    const leftover = findRaidStageClearCargo(ship);
-    if (leftover && startCollectTask(leftover)) {
-      setStatus(`Raid: raccolgo cargo prima dello stage (${Math.round(leftover.dist)}m)`);
-      return true;
+    const leftover = leftoverProbe || findRaidStageClearCargo(ship);
+    if (leftover) {
+      // Already on it → instant scoop (more aggressive than mid-fight opp scoop).
+      if (isRaidCargoInContactRange(leftover, ship)) {
+        return tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear);
+      }
+      if (isRaidCargoApproachUnsafe(leftover, ship) || isRaidShipThreatenedForCargo(ship)) {
+        armRaidCargoClear(leftover);
+        return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+      }
+      if (
+        AUTO.raidCargoClear?.scoopCooldownUntil &&
+        Date.now() < AUTO.raidCargoClear.scoopCooldownUntil &&
+        !isRaidCargoInContactRange(leftover, ship)
+      ) {
+        armRaidCargoClear(leftover);
+        return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
+      }
+      return beginRaidCargoScoop(leftover, ship);
     }
 
     return false;
   }
 
   function findRaidStageClearCargo(ship) {
-    if (!ship || !AUTO.collectCargo || !canCollectCargoNow()) return null;
-    const entities = getEntities();
-    if (!entities?.lootSprites) return null;
-    let best = null;
-    for (const [id, sprite] of entities.lootSprites) {
-      if (!isCargoLoot(sprite, id)) continue;
-      if (isCargoCollectAlreadyDone(id)) continue;
-      if (isForeignOwnedLoot(id, sprite)) continue;
-      const entry = buildCollectibleEntry(id, sprite, ship);
-      if (!entry) continue;
-      if (!best || entry.dist < best.dist) best = entry;
-    }
-    return best;
+    return findNearestRaidVisibleCargo(ship);
   }
 
   function syncSecurityPanelFromAuto() {
@@ -10357,7 +15417,9 @@
     const coffeeStatusEl = document.getElementById("rg-sec-coffee-status");
     if (coffeeStatusEl) {
       if (AUTO.coffeeBreakUntil && Date.now() < AUTO.coffeeBreakUntil) {
-        coffeeStatusEl.textContent = t("ui.sec.coffee_pause_left", {
+        const pauseKey =
+          AUTO.portalHoldReason === "admin" ? "ui.sec.admin_pause_left" : "ui.sec.coffee_pause_left";
+        coffeeStatusEl.textContent = t(pauseKey, {
           time: formatCountdownSec(secondsUntil(AUTO.coffeeBreakUntil)),
         });
       } else if (AUTO.coffeeBreakIntervalMin > 0 && AUTO.nextCoffeeBreakAt > AUTO.sessionStartedAt) {
@@ -10397,6 +15459,7 @@
     document.getElementById("rg-sec-flee-enemies")?.classList.toggle("selected", AUTO.fleeEnemyPlayers);
     document.getElementById("rg-sec-flee-cloak")?.classList.toggle("selected", AUTO.fleeUseCloak);
     document.getElementById("rg-sec-flee-sap")?.classList.toggle("selected", AUTO.fleeUseSap);
+    document.getElementById("rg-sec-pause-admin")?.classList.toggle("selected", AUTO.pauseOnAdmin);
     document.getElementById("rg-sec-auto-booty-key")?.classList.toggle("selected", AUTO.autoBuyBootyKeys);
     syncTimerCountdownUi();
   }
@@ -10409,10 +15472,12 @@
     const fleeEnemyEl = document.getElementById("rg-sec-flee-enemies");
     const fleeCloakEl = document.getElementById("rg-sec-flee-cloak");
     const fleeSapEl = document.getElementById("rg-sec-flee-sap");
+    const pauseAdminEl = document.getElementById("rg-sec-pause-admin");
     const autoBootyEl = document.getElementById("rg-sec-auto-booty-key");
     const sessionEl = document.getElementById("rg-sec-session-limit");
     const coffeeIntervalEl = document.getElementById("rg-sec-coffee-interval");
     const coffeeDurationEl = document.getElementById("rg-sec-coffee-duration");
+    const coffeeToleranceEl = document.getElementById("rg-sec-coffee-tolerance");
     if (portalEl) portalEl.value = String(AUTO.portalWaitSec);
     if (baseEl) baseEl.value = String(AUTO.baseWaitSec);
     if (deathEl) deathEl.value = String(AUTO.deathLimit);
@@ -10420,10 +15485,12 @@
     if (fleeEnemyEl) fleeEnemyEl.classList.toggle("selected", AUTO.fleeEnemyPlayers);
     if (fleeCloakEl) fleeCloakEl.classList.toggle("selected", AUTO.fleeUseCloak);
     if (fleeSapEl) fleeSapEl.classList.toggle("selected", AUTO.fleeUseSap);
+    if (pauseAdminEl) pauseAdminEl.classList.toggle("selected", AUTO.pauseOnAdmin);
     if (autoBootyEl) autoBootyEl.classList.toggle("selected", AUTO.autoBuyBootyKeys);
     if (sessionEl) sessionEl.value = String(AUTO.sessionLimitMin);
     if (coffeeIntervalEl) coffeeIntervalEl.value = String(AUTO.coffeeBreakIntervalMin);
     if (coffeeDurationEl) coffeeDurationEl.value = String(AUTO.coffeeBreakDurationMin);
+    if (coffeeToleranceEl) coffeeToleranceEl.value = String(AUTO.coffeeBreakToleranceMin);
   }
 
   function bindSecurityNumberInput(id, applyValue, min, max) {
@@ -10471,6 +15538,12 @@
     setStatus(AUTO.fleeUseSap ? "status.flee_sap_on" : "status.flee_sap_off");
   }
 
+  function togglePauseOnAdmin() {
+    AUTO.pauseOnAdmin = !AUTO.pauseOnAdmin;
+    document.getElementById("rg-sec-pause-admin")?.classList.toggle("selected", AUTO.pauseOnAdmin);
+    setStatus(AUTO.pauseOnAdmin ? "status.pause_on_admin_on" : "status.pause_on_admin_off");
+  }
+
   function toggleAutoBuyBootyKeys() {
     AUTO.autoBuyBootyKeys = !AUTO.autoBuyBootyKeys;
     document
@@ -10502,9 +15575,13 @@
     bindSecurityNumberInput("rg-sec-coffee-duration", (v) => {
       AUTO.coffeeBreakDurationMin = Math.max(1, v || 1);
     }, 1, 180);
+    bindSecurityNumberInput("rg-sec-coffee-tolerance", (v) => {
+      AUTO.coffeeBreakToleranceMin = Math.max(0, v || 0);
+    }, 0, 60);
     document.getElementById("rg-sec-flee-enemies")?.addEventListener("click", toggleFleeEnemyPlayers);
     document.getElementById("rg-sec-flee-cloak")?.addEventListener("click", toggleFleeUseCloak);
     document.getElementById("rg-sec-flee-sap")?.addEventListener("click", toggleFleeUseSap);
+    document.getElementById("rg-sec-pause-admin")?.addEventListener("click", togglePauseOnAdmin);
 
     document.getElementById("rg-device-copy")?.addEventListener("click", async () => {
       const id = AUTO.deviceId || (await ensureDeviceId());
@@ -10764,6 +15841,31 @@
     });
   }
 
+  function bindDiscordWebhookInputInteractions() {
+    const input = document.getElementById("rg-discord-webhook-url");
+    if (!input || input.dataset.rgDiscordBound === "1") return;
+    input.dataset.rgDiscordBound = "1";
+    bindPanelFormInput(input);
+
+    input.addEventListener("paste", (ev) => {
+      ev.stopPropagation();
+      const text = ev.clipboardData?.getData("text/plain") || "";
+      if (!text) return;
+      ev.preventDefault();
+      input.value = String(text).trim().replace(/\s+/g, "");
+      AUTO.discordWebhookUrl = input.value;
+      saveDiscordWebhookPrefs();
+    });
+
+    input.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "v") {
+        ev.preventDefault();
+        pasteDiscordWebhookFromClipboard();
+      }
+    });
+  }
+
   async function pasteLicenseFromClipboard() {
     const input = document.getElementById("rg-license-key");
     if (!input) return;
@@ -10783,6 +15885,32 @@
     }
 
     setStatus("status.paste_manual");
+    input.focus();
+  }
+
+  async function pasteDiscordWebhookFromClipboard() {
+    const input = document.getElementById("rg-discord-webhook-url");
+    if (!input) return;
+
+    if (navigator.clipboard?.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          input.value = String(text).trim().replace(/\s+/g, "");
+          AUTO.discordWebhookUrl = input.value;
+          saveDiscordWebhookPrefs();
+          input.focus();
+          setStatus("status.webhook_pasted");
+          setDiscordWebhookStatus(t("status.webhook_pasted"));
+          return;
+        }
+      } catch (_) {
+        /* fallback below */
+      }
+    }
+
+    setStatus("status.paste_manual");
+    setDiscordWebhookStatus(t("status.paste_manual"));
     input.focus();
   }
 
@@ -11079,7 +16207,21 @@
   function shouldSuppressWander() {
     if (AUTO.postDeathRecover || AUTO.healSafeTravel) return true;
     if (AUTO.fleeActive || AUTO.combatSuspendedForFlee) return true;
-    if (AUTO.pendingCombatCargo && canCollectCargoNow()) return true;
+    if (AUTO.pendingCombatCargo && canCollectCargoNow()) {
+      clearPhantomPendingCargoBlockingCombat();
+      // Never freeze the ship mid-attack waiting for phantom cargo.
+      if (
+        AUTO.pendingCombatCargo &&
+        !hasLivingStickyCombat() &&
+        !isNpcStillFightable(AUTO.pendingCombatCargo.npcId) &&
+        !getNpcSprite(AUTO.pendingCombatCargo.npcId)?.alive
+      ) {
+        return true;
+      }
+    }
+    if (AUTO.raidCargoClear && canCollectCargoNow() && !hasLivingStickyCombat()) {
+      return true;
+    }
     // Never wander while a combat task is still open (gap before clearTaskIfDone).
     if (AUTO.currentTask === "combat" && AUTO.taskTargetId) return true;
     if (
@@ -11202,10 +16344,21 @@
     // same tick the NPC disappears (raid already held retarget in clearTaskIfDone).
     clearTaskIfDone();
 
+    // Kill flicker can leave a phantom pending that freezes on "Attendo cargo".
+    // mac40/mac41: confirmed kills + mandatory phase are kept; re-arm so scoop
+    // owns the tick before portal-drift cold heal.
+    if (AUTO.pendingCombatCargo) clearPhantomPendingCargoBlockingCombat();
+    rearmPendingCombatCargoFromRecentKillSite();
+
+    // HARD RULE: mandatory post-kill cargo phase owns the tick before heal/search.
     if (drivePendingCombatCargoTick(input, ship)) return;
+
+    // Raid Gate: clear→scoop every visible cargo before combat search / wander.
+    if (driveRaidCargoSweepTick(input, ship)) return;
 
     if (runCurrentTask()) return;
 
+    // While cargo lifecycle open, pickNewTask is a no-op (blocks heal + next NPC).
     if (pickNewTask() && runCurrentTask()) return;
 
     explainIdleReason();
@@ -11351,10 +16504,19 @@
       setStatus("status.select_npc_attack");
       return;
     }
+    if (!hasPlayObjective()) {
+      setStatus("status.need_play_objective");
+      return;
+    }
+    // No raid selected → never keep a stale pending that would travel to X-7.
+    if (!AUTO.raidGateId) {
+      AUTO.pendingRaidGate = null;
+      NAV.pendingRaidGate = null;
+    }
     if (AUTO.raidGateId) {
       const gateId = resolveRaidGate(AUTO.raidGateId);
       const currentId = getCurrentMapId();
-      // On faction X-1 / X-7 (raid hubs): missing portal → block Play immediately.
+      // On faction X-7 (raid hub): missing portal → block Play immediately.
       if (gateId && isFactionRaidHubMap(currentId) && !isRaidGatePortalAvailable(gateId)) {
         setStatus("status.raid_gate_unavailable", { gate: gateId.toUpperCase() });
         return;
@@ -11384,9 +16546,18 @@
     AUTO.timerId = window.setInterval(mainTick, AUTO.tickMs);
     setPlayControls(true);
 
-    // Always fully heal (Attack+Roam) before any objective travel / work.
-    // If already full on both configs, recover finishes on the first tick with no delay.
-    beginPreObjectiveHeal({ armBaseWait: false });
+    // Abort any leftover navigation from a previous session before cold heal.
+    // stopPlay used to leave NAV.active running (only stopAll cleared it).
+    if (NAV.active) stopNavigation();
+    AUTO.healSafeTravel = false;
+    AUTO.fleeActive = false;
+    AUTO.fleeMode = null;
+    // Snapshot map at Play press: cold resume stays here unless workingMapId differs
+    // (user changed objective while stopped after stopPlay pinned working map).
+    AUTO.coldPlayStayMapId = getCurrentMapId() || "";
+
+    // Cold Play: Attack config only + never leave map for hub heal (see driveHealSafeZoneTravelTick).
+    beginPreObjectiveHeal({ armBaseWait: false, kind: "cold" });
     mainTick();
 
     if (!AUTO.postDeathRecover) {
@@ -11409,7 +16580,9 @@
     AUTO.raidHealMode = false;
     AUTO.raidExecutionerLatched = false;
     AUTO.pendingConfigIndex = null;
+    clearRaidProgressTracking();
     clearPostDeathRecoverState();
+    AUTO.coldPlayStayMapId = "";
     AUTO.raidWaveRepositionUntil = 0;
     AUTO.raidWaveEscapeDir = 0;
     AUTO.raidOrbitExpandUntil = 0;
@@ -11427,27 +16600,44 @@
     AUTO.chasingBonusId = null;
     AUTO.pendingCollectId = null;
     AUTO.pendingCombatCargo = null;
+    AUTO.mandatoryPostKillCargo = null;
     AUTO.cargoCollectInFlightId = null;
     AUTO.lastCargoCollectAttempt = null;
     AUTO.cargoSkipUntilUsedBelow = null;
     AUTO.cargoSkipLatchedAt = 0;
     AUTO.raidStageClearCargoUntil = 0;
+    AUTO.raidStageClearCargoStartedAt = 0;
+    AUTO.raidCargoClear = null;
     AUTO.cargoSettledNpcIds.clear();
     AUTO.recentCargoKillSites = [];
     AUTO.foreignNpcIds.clear();
     AUTO.lootOwnerById.clear();
     AUTO.countedNpcKillIds.clear();
+    // Soft-move / orbit hold memory must not re-assert waypoints after Stop.
+    AUTO.lastMinimapTarget = null;
+    AUTO.lastMinimapMoveAt = 0;
+    AUTO.lastMinimapStickyId = null;
+    AUTO.orbitHumanHoldUntil = 0;
     clearCurrentTask();
     if (AUTO.timerId) {
       clearInterval(AUTO.timerId);
       AUTO.timerId = null;
     }
+    // Stop leftover map/flee/raid nav — otherwise Play can resume a mid-hop to X-1.
+    stopNavigation();
+    // Product: Stop → Play must continue where the ship is. Pin working map to
+    // current so cold heal → finishPostDeathRecoverAndResume cannot beginPlayTravel
+    // to a stale hub (X-1) left in the dropdown / prior objective.
+    syncWorkingMapToCurrentMap("stop");
     uninstallKeepAlive();
     const input = getInputSystem();
     if (input) {
       input.moveTarget = null;
       input.attackMode = false;
+      input.pendingAttackOnLock = null;
     }
+    const K = getGameState();
+    if (K) K.cargoTargetId = null;
     clearLockedTarget();
     setPlayControls(false);
     if (!state.running) setStatus("status.stopped");
@@ -11456,7 +16646,6 @@
   function stopAll() {
     stopPlay();
     stopScript();
-    stopNavigation();
   }
 
   function startAuto() {
@@ -12546,8 +17735,10 @@
             <button id="rg-sec-flee-enemies" type="button" class="rg-mode-toggle">Flee from enemies</button>
             <button id="rg-sec-flee-sap" type="button" class="rg-mode-toggle" data-i18n="ui.sec.flee_sap">Use SAP shield on PvP flee</button>
             <button id="rg-sec-flee-cloak" type="button" class="rg-mode-toggle" data-i18n="ui.sec.flee_cloak">Cloak on PvP flee</button>
+            <button id="rg-sec-pause-admin" type="button" class="rg-mode-toggle" data-i18n="ui.sec.pause_on_admin">Pause if admin detected</button>
           </div>
-          <div class="rg-story-meta" data-i18n="ui.sec.flee_enemies_hint">Enemies: other-faction players → flee to allied portal</div>
+          <div class="rg-story-meta" data-i18n="ui.sec.flee_enemies_hint">Enemies: other-faction players (incl. cloaked/minimap) → flee to allied portal</div>
+          <div class="rg-story-meta" data-i18n="ui.sec.pause_on_admin_hint">Admin/staff in AOI → nearest portal, hold for coffee-break duration</div>
           <div class="rg-field">
             <label for="rg-sec-session-limit" data-i18n="ui.sec.session_limit">Auto-stop timer (min, 0=off)</label>
             <input id="rg-sec-session-limit" type="text" inputmode="numeric" autocomplete="off" value="0" />
@@ -12561,6 +17752,11 @@
             <label for="rg-sec-coffee-duration" data-i18n="ui.sec.coffee_duration">Coffee break duration (min)</label>
             <input id="rg-sec-coffee-duration" type="text" inputmode="numeric" autocomplete="off" value="5" />
           </div>
+          <div class="rg-field">
+            <label for="rg-sec-coffee-tolerance" data-i18n="ui.sec.coffee_tolerance">Pause tolerance (min)</label>
+            <input id="rg-sec-coffee-tolerance" type="text" inputmode="numeric" autocomplete="off" value="2" />
+          </div>
+          <div class="rg-story-meta" data-i18n="ui.sec.coffee_tolerance_hint">Each coffee/admin hold is randomized within duration ± tolerance (min 0.5)</div>
           <div class="rg-story-meta"><span data-i18n="ui.sec.coffee_status">Coffee break: goes to nearest portal and stops —</span> <span id="rg-sec-coffee-status">off</span></div>
           <div class="rg-story-meta" data-i18n="ui.sec.map_flee_hint">Map: flee to nearest allied portal</div>
           <div class="rg-story-meta" data-i18n="ui.sec.raid_flee_hint">Raid: flee to a side, hold until HP 100%, then attack</div>
@@ -12576,6 +17772,30 @@
             <input id="rg-settings-zoom" type="range" min="75" max="125" step="5" value="100" />
           </div>
           <div class="rg-story-meta" id="rg-settings-zoom-hint" data-i18n="ui.settings.ui_zoom_hint">Scales only the Bastion panel — not the game canvas</div>
+        </div>
+        <div class="rg-group">
+          <div class="rg-group-title" data-i18n="ui.settings.discord">Discord webhook</div>
+          <div class="rg-mode-actions">
+            <button id="rg-discord-enabled" type="button" class="rg-mode-toggle" data-i18n="ui.settings.discord_enable">Enable webhook</button>
+            <button id="rg-discord-status-notify" type="button" class="rg-mode-toggle" data-i18n="ui.settings.discord_status_notify">Notify status line</button>
+          </div>
+          <div class="rg-field">
+            <label for="rg-discord-webhook-url" data-i18n="ui.settings.discord_url">Webhook URL</label>
+            <div class="rg-license-actions rg-discord-url-actions">
+              <input id="rg-discord-webhook-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" data-i18n-placeholder="ui.settings.discord_url_placeholder" placeholder="https://discord.com/api/webhooks/…" />
+              <button id="rg-discord-webhook-paste" type="button" class="secondary" data-i18n="ui.paste">Paste</button>
+            </div>
+          </div>
+          <div class="rg-field">
+            <label for="rg-discord-interval" data-i18n="ui.settings.discord_interval">Stats interval (min)</label>
+            <input id="rg-discord-interval" type="number" min="0" max="180" step="1" inputmode="numeric" value="5" />
+          </div>
+          <div class="rg-story-meta" data-i18n="ui.settings.discord_interval_hint">0 = no periodic stats; status notifications still work if enabled</div>
+          <div class="rg-mode-actions" style="margin-top:8px">
+            <button id="rg-discord-test" type="button" class="secondary" data-i18n="ui.settings.discord_test">Test webhook</button>
+          </div>
+          <div id="rg-discord-webhook-status" class="rg-story-meta"></div>
+          <div class="rg-story-meta" data-i18n="ui.settings.discord_hint">Sends status updates and session stats (kills, loot, XP, credits) to your Discord channel</div>
         </div>
         <div id="rg-license-card" class="rg-group rg-license-card">
           <div class="rg-group-title" data-i18n="ui.license">License</div>
@@ -12628,12 +17848,14 @@
     bindSecurityPanelEvents();
     initSecurityPanelValues();
     syncSecurityPanelFromAuto();
+    installSocialChatAdminHook();
 
     document.getElementById("rg-panel-minimize").addEventListener("click", (ev) => {
       ev.stopPropagation();
       togglePanelMinimized();
     });
     initUiZoomControls();
+    initDiscordWebhookControls();
     initPanelOrbDrag();
 
     document.getElementById("rg-orb-play")?.addEventListener("click", (ev) => {
