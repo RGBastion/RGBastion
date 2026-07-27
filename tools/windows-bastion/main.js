@@ -47,7 +47,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.5";
+  return "1.0.6-mac48";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -1202,14 +1202,79 @@ function humanizeUpdateError(err) {
 
 function findInstalledClientExe() {
   const local = process.env.LOCALAPPDATA || "";
+  const roaming = process.env.APPDATA || "";
+  const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+  const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+  const userProfile = process.env.USERPROFILE || "";
+  const portableDir = String(process.env.PORTABLE_EXECUTABLE_DIR || "").trim();
   const candidates = [
+    // Official Tauri per-user install (current).
     path.join(local, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(local, "RedGalaxy", "RedGalaxy.exe"),
+    // Occasional alternate layouts / older builds.
+    path.join(roaming, "RedGalaxy", "redgalaxy-client.exe"),
+    path.join(programFiles, "RedGalaxy", "redgalaxy-client.exe"),
+    path.join(programFilesX86, "RedGalaxy", "redgalaxy-client.exe"),
+    path.join(local, "Programs", "RedGalaxy", "redgalaxy-client.exe"),
+    // Same folder as Bastion portable / Desktop copies of the official client.
+    portableDir ? path.join(portableDir, "redgalaxy-client.exe") : "",
+    portableDir ? path.join(portableDir, "RedGalaxy.exe") : "",
+    userProfile ? path.join(userProfile, "Desktop", "redgalaxy-client.exe") : "",
+    userProfile ? path.join(userProfile, "Desktop", "RedGalaxy.exe") : "",
   ];
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
   }
   return null;
+}
+
+/**
+ * Download official setup and try silent NSIS install.
+ * Returns path to redgalaxy-client.exe when found afterwards (may still be null).
+ */
+async function downloadAndSilentInstallOfficialClient(installerUrl) {
+  setUpdateStatus({
+    phase: "download",
+    percent: 8,
+    message: "Download installer ufficiale…",
+  });
+  const downloads = path.join(app.getPath("userData"), "downloads");
+  fs.mkdirSync(downloads, { recursive: true });
+  const installerPath = path.join(
+    downloads,
+    path.basename(installerUrl) || "RedGalaxy-Setup.exe"
+  );
+  await downloadFile(installerUrl, installerPath, (pct) => {
+    setUpdateStatus({ phase: "download", percent: pct, message: `Download… ${pct}%` });
+  });
+
+  setUpdateStatus({
+    phase: "install",
+    percent: 75,
+    message: "Installazione silenziosa (max 2 min)…",
+  });
+  const stopInstallBeat = startUpdateHeartbeat(
+    "install",
+    75,
+    "Installazione silenziosa…"
+  );
+  try {
+    // Tauri/NSIS: /S. Also try current-user passive flags used by some builds.
+    try {
+      await runCommand(installerPath, ["/S"], { shell: false, timeoutMs: 120000 });
+    } catch (err) {
+      console.warn("Installer /S failed, retrying /S /currentuser:", err.message || err);
+      await runCommand(installerPath, ["/S", "/currentuser"], {
+        shell: false,
+        timeoutMs: 120000,
+      });
+    }
+  } catch (err) {
+    console.warn("Installer failed/timeout (may still have installed):", err.message || err);
+  } finally {
+    stopInstallBeat();
+  }
+  return findInstalledClientExe();
 }
 
 async function applyWindowsGameUpdate({ force = false } = {}) {
@@ -1272,46 +1337,16 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const win = (manifest.platforms && (manifest.platforms["windows-x86_64"] || manifest.platforms.windows)) || {};
     const installerUrl = String(win.url || "https://updates.redgalaxygame.space/RedGalaxy-Setup.exe").trim();
 
+    // Compatible with the official Desktop EXE path:
+    // that Tauri client self-updates into %LOCALAPPDATA%\RedGalaxy\redgalaxy-client.exe.
+    // Bastion should harvest web assets from that binary first — NOT re-download +
+    // silent-reinstall whenever Bastion's AppData web cache is merely behind.
+    // Silent install is only for when the official client is missing, or when an
+    // extract from the installed client is still older than the official manifest.
     let clientExe = findInstalledClientExe();
-    const behindOfficial =
-      !installed || compareVersion(installed, remote) < 0 || !liveOk;
-
-    // Prefer extracting from an already-installed official client.
-    // force:true used to always re-download + silent-install → progress bar hung for minutes
-    // even when the client was already present. Download only when missing or behind.
-    const needFreshInstall = !clientExe || behindOfficial;
-
-    if (needFreshInstall) {
-      setUpdateStatus({
-        phase: "download",
-        percent: 8,
-        message: "Download installer ufficiale…",
-      });
-      const downloads = path.join(app.getPath("userData"), "downloads");
-      fs.mkdirSync(downloads, { recursive: true });
-      const installerPath = path.join(downloads, path.basename(installerUrl) || "RedGalaxy-Setup.exe");
-      await downloadFile(installerUrl, installerPath, (pct) => {
-        setUpdateStatus({ phase: "download", percent: pct, message: `Download… ${pct}%` });
-      });
-
-      setUpdateStatus({
-        phase: "install",
-        percent: 75,
-        message: "Installazione silenziosa (max 2 min)…",
-      });
-      const stopInstallBeat = startUpdateHeartbeat(
-        "install",
-        75,
-        "Installazione silenziosa…"
-      );
-      try {
-        await runCommand(installerPath, ["/S"], { shell: false, timeoutMs: 120000 });
-      } catch (err) {
-        console.warn("Installer failed/timeout (may still have installed):", err.message || err);
-      } finally {
-        stopInstallBeat();
-      }
-      clientExe = findInstalledClientExe() || clientExe;
+    if (!clientExe) {
+      console.warn("Official redgalaxy-client.exe not found — downloading installer.");
+      clientExe = await downloadAndSilentInstallOfficialClient(installerUrl);
     } else {
       setUpdateStatus({
         phase: "extract",
@@ -1322,7 +1357,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
 
     if (!clientExe) {
       throw new Error(
-        "redgalaxy-client.exe non trovato. Installa una volta il client ufficiale RedGalaxy, poi riprova Aggiorna gioco."
+        "redgalaxy-client.exe non trovato. Aggiorna/installa una volta il client ufficiale RedGalaxy (quello sul Desktop), poi riprova Aggiorna gioco in Bastion."
       );
     }
 
@@ -1340,21 +1375,52 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const rawOut = path.join(supportDir(), "extract-raw");
     const stagingOut = path.join(supportDir(), "staging-web");
     const finalOut = userWebRoot();
-    fs.rmSync(rawOut, { recursive: true, force: true });
-    fs.rmSync(stagingOut, { recursive: true, force: true });
-    fs.mkdirSync(rawOut, { recursive: true });
 
-    setUpdateStatus({
-      phase: "extract",
-      percent: 80,
-      message: "Preparazione asset (staging, senza toccare la cache live)…",
-    });
-    await runExtractAndPatch({
+    const runStagingExtract = async (sourceExe, statusMessage) => {
+      fs.rmSync(rawOut, { recursive: true, force: true });
+      fs.rmSync(stagingOut, { recursive: true, force: true });
+      fs.mkdirSync(rawOut, { recursive: true });
+      setUpdateStatus({
+        phase: "extract",
+        percent: 80,
+        message: statusMessage,
+      });
+      await runExtractAndPatch({
+        clientExe: sourceExe,
+        rawOut,
+        finalOut: stagingOut,
+        storySrc: storySrcRoot(),
+      });
+      return readEmbeddedWebVersion(stagingOut);
+    };
+
+    let embeddedStaged = await runStagingExtract(
       clientExe,
-      rawOut,
-      finalOut: stagingOut,
-      storySrc: storySrcRoot(),
-    });
+      "Preparazione asset (staging, senza toccare la cache live)…"
+    );
+
+    // Installed client was stale vs official manifest — refresh via installer once, then re-extract.
+    if (!embeddedStaged || compareVersion(embeddedStaged, remote) < 0) {
+      console.warn(
+        `Installed client extract is ${embeddedStaged || "unknown"} < official ${remote} — downloading installer.`
+      );
+      const refreshed = await downloadAndSilentInstallOfficialClient(installerUrl);
+      clientExe = refreshed || findInstalledClientExe() || clientExe;
+      if (!clientExe) {
+        throw new Error(
+          "redgalaxy-client.exe non trovato dopo l'installazione. Installa il client ufficiale RedGalaxy, poi riprova."
+        );
+      }
+      embeddedStaged = await runStagingExtract(
+        clientExe,
+        "Re-estrazione dopo aggiornamento client ufficiale…"
+      );
+      if (!embeddedStaged || compareVersion(embeddedStaged, remote) < 0) {
+        throw new Error(
+          `Estrazione ancora indietro rispetto all'ufficiale (live=${embeddedStaged || "missing"}, ufficiale=${remote}). Aggiorna il client RedGalaxy sul Desktop e riprova.`
+        );
+      }
+    }
 
     setUpdateStatus({
       phase: "publish",
@@ -1711,7 +1777,7 @@ async function checkUpdatesOnLaunch() {
       detail:
         `Installata: ${installed || "sconosciuta"}\nUfficiale: ${remote}\n\n` +
         "Verranno aggiornati solo gli asset ufficiali. Autopilot/licenza Bastion restano intatti.\n" +
-        "Su Windows serve Python 3 installato (comando py/python) per estrarre gli asset.",
+        "Bastion estrae dal client ufficiale già installato (stesso EXE sul Desktop che si aggiorna da solo).",
     });
     if (response === 0) {
       await triggerGameUpdate();

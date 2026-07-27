@@ -37,7 +37,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.6-mac46";
+  const BASTION_APP_VERSION = "1.0.6-mac48";
 
   const NPC_TYPES = {
     ALIEN10: "-={{Kryll}}=-",
@@ -4689,6 +4689,47 @@
     return false;
   }
 
+  /** True when raid still has a fightable NPC for normal orbit+attack. */
+  function hasRaidFightableNpc() {
+    if (!isInRaidMap()) return false;
+    const preferred =
+      AUTO.combatFocusId ||
+      AUTO.combatTargetId ||
+      (AUTO.currentTask === "combat" ? AUTO.taskTargetId : null);
+    return Boolean(resolveRaidCombatTarget(preferred));
+  }
+
+  /**
+   * mac47 patient cargo: while sticky living OR cargo path blocked and NPCs remain,
+   * keep normal applyCombatOrbit — do NOT arm desperate CLEARING/SCOOP walks.
+   * Contact-on-cargo still scoops. Stage-clear with no fightable NPCs may clear/scoop.
+   */
+  function shouldDeferRaidCargoForCombat(ship = getShipPosition(), cargo = null) {
+    if (!isInRaidMap()) return false;
+    if (hasLivingStickyCombat()) return true;
+    if (cargo && ship && isRaidCargoInContactRange(cargo, ship)) return false;
+    // Between waves with no NPCs left: leftover CLEARING/SCOOP may own the tick.
+    if (getGameState()?.raidStageClear && !hasRaidFightableNpc()) return false;
+    if (!(AUTO.modeAttack && AUTO.combatActive && canEngageFarmCombat())) {
+      return false;
+    }
+    if (!hasRaidFightableNpc()) return false;
+    if (!cargo) {
+      // Pending drop not visible yet — keep fighting rather than freeze/CLEARING thrash.
+      return true;
+    }
+    return (
+      isRaidShipThreatenedForCargo(ship) || isRaidCargoApproachUnsafe(cargo, ship)
+    );
+  }
+
+  /** Abort cargo CLEARING/native walk so combat kite can resume (pending kill drop kept). */
+  function deferRaidBlockedCargoForCombat(cargo = null) {
+    releaseRaidCargoClearForCombat();
+    if (cargo?.id) clearCollectMovement(cargo.id);
+    return true;
+  }
+
   /** Return to patient CLEARING after a blocked/failed scoop (cooldown + no immediate re-dive). */
   function returnToRaidCargoClearing(state, { preferBreakout = false, fromBlockedScoop = false } = {}) {
     if (!state) return;
@@ -4714,8 +4755,9 @@
   /**
    * True when CLEARING may leave for APPROACH/SCOOP.
    * Contact (already on cargo): immediate.
-   * Proven-free cargo (path clear right now): immediate — zero dwell/cooldown.
-   * Patient latch delays apply only while cargo is still blocked.
+   * Never-blocked free cargo: immediate.
+   * After blocked scoop (patientLatch/cooldown): require sustained clear + min dwell
+   * so we never thrash dive→hit→retry every half second.
    */
   function canRaidCargoLeaveClearing(state, ship) {
     if (!state || !ship) return false;
@@ -4729,7 +4771,22 @@
     if (isRaidShipThreatenedForCargo(ship)) return false;
     if (isRaidCargoApproachUnsafe(cargo, ship)) return false;
 
-    // Currently free — drop patient gate/cooldown and leave CLEARING immediately.
+    const now = Date.now();
+    const patient =
+      Boolean(state.patientLatch) ||
+      (state.scoopCooldownUntil && now < state.scoopCooldownUntil);
+    if (patient) {
+      if (state.scoopCooldownUntil && now < state.scoopCooldownUntil) return false;
+      const entered = state.clearingEnteredAt || state.startedAt || 0;
+      if (!entered || now - entered < RAID_CARGO_CLEAR_MIN_DWELL_MS) return false;
+      if (
+        !state.cargoClearSince ||
+        now - state.cargoClearSince < RAID_CARGO_CLEAR_STABLE_MS
+      ) {
+        return false;
+      }
+    }
+
     state.patientLatch = false;
     state.scoopCooldownUntil = 0;
     return true;
@@ -4973,9 +5030,10 @@
    */
   function driveRaidCargoClearMovement(input, ship, state) {
     if (!input || !ship || !state) return false;
-    // Sticky living owns combat kite — never CLEARING/BREAKOUT/APPROACH divert.
-    if (hasLivingStickyCombat()) {
-      releaseRaidCargoClearForCombat();
+    // Sticky living / blocked path with NPCs left → normal combat orbit, not CLEARING thrash.
+    const cargoProbe = { id: state.cargoId, x: state.x, y: state.y };
+    if (shouldDeferRaidCargoForCombat(ship, cargoProbe)) {
+      deferRaidBlockedCargoForCombat(cargoProbe);
       return false;
     }
     const spr = getLootSprite(state.cargoId);
@@ -5270,9 +5328,9 @@
   function beginRaidCargoScoop(cargo, ship = getShipPosition()) {
     if (!cargo?.id) return false;
     if (!canCollectCargoNow()) return false;
-    // Sticky living fight owns kite — remember pending only; scoop after kill.
-    if (hasLivingStickyCombat()) {
-      releaseRaidCargoClearForCombat();
+    // Sticky living / blocked path with NPCs left → combat owns; scoop when clear.
+    if (shouldDeferRaidCargoForCombat(ship, cargo)) {
+      deferRaidBlockedCargoForCombat(cargo);
       return false;
     }
     const inputEarly = getInputSystem();
@@ -5282,7 +5340,7 @@
         return true;
       }
     }
-    // Never arm native scoop while surrounded / latch not ready — clear owns the tick.
+    // Surrounded / path blocked with no fightable NPC left → CLEARING (stage-clear idle).
     // Exception: contact range already handled above.
     if (isRaidShipThreatenedForCargo(ship) || isRaidCargoApproachUnsafe(cargo, ship)) {
       armRaidCargoClear(cargo, { fromBlockedScoop: true });
@@ -5374,10 +5432,20 @@
       return false;
     }
 
-    // Product rule: living sticky fight owns combat kite — zero cargo divert/arm.
-    if (hasLivingStickyCombat()) {
-      releaseRaidCargoClearForCombat();
-      return false;
+    // Product rule: living sticky OR blocked cargo with NPCs left → combat orbit.
+    // Do not arm desperate CLEARING/SCOOP walks that thrash dive→hit→retry.
+    {
+      const deferCargo = AUTO.raidCargoClear
+        ? {
+            id: AUTO.raidCargoClear.cargoId,
+            x: AUTO.raidCargoClear.x,
+            y: AUTO.raidCargoClear.y,
+          }
+        : findNearestRaidVisibleCargo(ship);
+      if (shouldDeferRaidCargoForCombat(ship, deferCargo)) {
+        deferRaidBlockedCargoForCombat(deferCargo);
+        return false;
+      }
     }
 
     // Contact scoop before any CLEARING orbit / patient latch — never sit on loot.
@@ -5420,7 +5488,7 @@
         }
         return false;
       } else if (state.phase === "SCOOP") {
-        // Surrounded while "collecting" far cargo → abort scoop, break out.
+        // Surrounded while "collecting" far cargo → abort scoop.
         // Contact (already on cargo): keep scooping — do not yank back to BREAKOUT.
         const scoopCargo = buildCollectibleEntry(
           state.cargoId,
@@ -5437,6 +5505,10 @@
               ship
             ))
         ) {
+          if (scoopCargo && shouldDeferRaidCargoForCombat(ship, scoopCargo)) {
+            deferRaidBlockedCargoForCombat(scoopCargo);
+            return false;
+          }
           if (scoopCargo) {
             armRaidCargoClear(scoopCargo, { fromBlockedScoop: true });
             return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
@@ -5460,10 +5532,15 @@
     if (AUTO.currentTask === "collect") {
       const tid = AUTO.taskTargetId;
       if (tid && isCargoLoot(getLootSprite(tid), tid)) {
-        // Collecting cargo but surrounded → reclaim tick for breakout.
+        // Collecting cargo but surrounded → combat if NPCs remain, else CLEARING.
         if (isRaidShipThreatenedForCargo(ship)) {
           const item = getCollectibleById(tid);
           if (item) {
+            if (shouldDeferRaidCargoForCombat(ship, item)) {
+              deferRaidBlockedCargoForCombat(item);
+              clearCurrentTask();
+              return false;
+            }
             armRaidCargoClear(item, { fromBlockedScoop: true });
             return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
           }
@@ -5489,6 +5566,11 @@
       if (isRaidCargoInContactRange(cargo, ship)) {
         return tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear);
       }
+      // mac47: NPCs still fightable → keep orbit+attack; scoop only when path clears.
+      if (shouldDeferRaidCargoForCombat(ship, cargo)) {
+        deferRaidBlockedCargoForCombat(cargo);
+        return false;
+      }
       armRaidCargoClear(cargo);
       return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
     }
@@ -5500,6 +5582,10 @@
       Date.now() < AUTO.raidCargoClear.scoopCooldownUntil &&
       !isRaidCargoInContactRange(cargo, ship)
     ) {
+      if (shouldDeferRaidCargoForCombat(ship, cargo)) {
+        deferRaidBlockedCargoForCombat(cargo);
+        return false;
+      }
       armRaidCargoClear(cargo);
       return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
     }
@@ -5572,10 +5658,14 @@
       input.attackMode = false;
       input.pendingAttackOnLock = null;
     }
-    // Raid Gate: NPCs on the drop → kite clear before arming native scoop.
+    // Raid Gate: NPCs on the drop → keep fighting until path is clear (no CLEARING thrash).
     if (isInRaidMap() && isRaidCargoApproachUnsafe(cargo)) {
-      armRaidCargoClear(cargo);
       const shipNow = getShipPosition();
+      if (shouldDeferRaidCargoForCombat(shipNow, cargo)) {
+        deferRaidBlockedCargoForCombat(cargo);
+        return false;
+      }
+      armRaidCargoClear(cargo);
       if (shipNow && input && AUTO.raidCargoClear) {
         return driveRaidCargoClearMovement(input, shipNow, AUTO.raidCargoClear);
       }
@@ -5770,14 +5860,23 @@
     }
 
     // Mid-fight in raid: don't linger forever under fire waiting for invisible cargo.
-    // Visible but NPC-blocked cargo → evasive CLEARING/BREAKOUT instead of abandon.
-    // When the stage is already clear, keep scooping — portal wait is next.
+    // Blocked cargo with NPCs left → yield tick to normal combat (patient scoop later).
+    // Stage-clear / no fightable NPC → CLEARING/BREAKOUT may own movement.
     if (isInRaidMap() && ship && !getGameState()?.raidStageClear) {
       if (
         AUTO.raidCargoClear?.phase === "CLEARING" ||
         AUTO.raidCargoClear?.phase === "BREAKOUT" ||
         AUTO.raidCargoClear?.phase === "APPROACH"
       ) {
+        const clearCargo = {
+          id: AUTO.raidCargoClear.cargoId,
+          x: AUTO.raidCargoClear.x,
+          y: AUTO.raidCargoClear.y,
+        };
+        if (shouldDeferRaidCargoForCombat(ship, clearCargo)) {
+          deferRaidBlockedCargoForCombat(clearCargo);
+          return false;
+        }
         return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
       }
       const threat = getNearestNpcDistance(ship.x, ship.y, getPlayerFireRange() + 220);
@@ -5786,6 +5885,10 @@
           const cargo = findCargoForPendingKill(AUTO.pendingCombatCargo);
           if (cargo) {
             if (isRaidCargoApproachUnsafe(cargo, ship) || isRaidShipThreatenedForCargo(ship)) {
+              if (shouldDeferRaidCargoForCombat(ship, cargo)) {
+                deferRaidBlockedCargoForCombat(cargo);
+                return false;
+              }
               armRaidCargoClear(cargo);
               return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
             }
@@ -10173,7 +10276,26 @@
 
     // HARD RULE: while post-kill cargo lifecycle is open, never start heal / next NPC /
     // bonus — scoop owns the window until collected or full WAIT_MS despawn.
-    if (hasOpenPostKillCargoLifecycle()) return false;
+    // mac47 raid exception: blocked cargo with fightable NPCs → allow combat hunt
+    // (pending stays; scoop resumes when path is clear). Standard maps unchanged.
+    if (hasOpenPostKillCargoLifecycle()) {
+      if (isInRaidMap() && AUTO.modeAttack && AUTO.combatActive) {
+        const shipNow = getShipPosition();
+        let cargoProbe = null;
+        if (AUTO.pendingCombatCargo) {
+          cargoProbe = findCargoForPendingKill(AUTO.pendingCombatCargo);
+        }
+        if (!cargoProbe) cargoProbe = findNearestRaidVisibleCargo(shipNow);
+        if (shouldDeferRaidCargoForCombat(shipNow, cargoProbe)) {
+          deferRaidBlockedCargoForCombat(cargoProbe);
+          // Fall through to combat task start below.
+        } else {
+          return false;
+        }
+      } else {
+        return false;
+      }
+    }
 
     // Living sticky fight owns combat kite — never start cargo clear/scoop first.
     // (mac28 left this ungated: brief currentTask=null → cargo dive → closer stand-off.)
@@ -10190,6 +10312,7 @@
     }
 
     // Raid Gate: sweep every visible cargo before hunting the next NPC.
+    // mac47: blocked cargo → do NOT arm CLEARING (steals combat kite); fight first.
     if (isInRaidMap() && AUTO.collectCargo && canCollectCargoNow()) {
       const raidCargo = findNearestRaidVisibleCargo(getShipPosition());
       if (raidCargo) {
@@ -10198,11 +10321,23 @@
           isRaidCargoApproachUnsafe(raidCargo, shipNow) ||
           isRaidShipThreatenedForCargo(shipNow)
         ) {
-          armRaidCargoClear(raidCargo);
-          // driveRaidCargoSweepTick owns BREAKOUT/CLEARING on the next tick.
-          return false;
-        }
-        if (startCollectTask(raidCargo)) {
+          if (isRaidCargoInContactRange(raidCargo, shipNow)) {
+            if (startCollectTask(raidCargo)) {
+              setStatus("status.raid_cargo_sweep", {
+                dist: Math.round(raidCargo.dist),
+              });
+              return true;
+            }
+          }
+          if (shouldDeferRaidCargoForCombat(shipNow, raidCargo)) {
+            deferRaidBlockedCargoForCombat(raidCargo);
+            // Fall through to combat / wander — scoop when path clears.
+          } else {
+            armRaidCargoClear(raidCargo);
+            // driveRaidCargoSweepTick owns BREAKOUT/CLEARING on the next tick.
+            return false;
+          }
+        } else if (startCollectTask(raidCargo)) {
           AUTO.raidCargoClear = {
             cargoId: raidCargo.id,
             x: raidCargo.x,
@@ -10987,9 +11122,10 @@
         finishCombatCargoCollect(item.id);
         return;
       }
-      // Raid Gate: surrounded OR NPCs on cargo → breakout/clear before diving.
+      // Raid Gate: surrounded OR NPCs on cargo → yield to combat until path is clear.
       // Critical: never sit still mid-pack with "raccolgo cargo" on a far drop.
       // Exception: already on the cargo entity → scoop immediately (contact rule).
+      // Stage-clear / no fightable NPC: CLEARING may own movement.
       if (
         isInRaidMap() &&
         (isRaidShipThreatenedForCargo(ship) || isRaidCargoApproachUnsafe(item, ship))
@@ -10997,6 +11133,12 @@
         if (isRaidCargoInContactRange(item, ship)) {
           armNativeCollect(item.id, { keepAttack: true });
           // Fall through to normal collect drive (do not clear→orbit away).
+        } else if (shouldDeferRaidCargoForCombat(ship, item)) {
+          deferRaidBlockedCargoForCombat(item);
+          if (AUTO.currentTask === "collect" && AUTO.taskTargetId === item.id) {
+            clearCurrentTask();
+          }
+          return;
         } else {
           armRaidCargoClear(item, { fromBlockedScoop: true });
           clearCollectMovement(item.id);
@@ -15428,6 +15570,10 @@
         return tryContactRaidCargoScoop(input, ship, AUTO.raidCargoClear);
       }
       if (isRaidCargoApproachUnsafe(leftover, ship) || isRaidShipThreatenedForCargo(ship)) {
+        if (shouldDeferRaidCargoForCombat(ship, leftover)) {
+          deferRaidBlockedCargoForCombat(leftover);
+          return false;
+        }
         armRaidCargoClear(leftover);
         return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
       }
@@ -15436,6 +15582,10 @@
         Date.now() < AUTO.raidCargoClear.scoopCooldownUntil &&
         !isRaidCargoInContactRange(leftover, ship)
       ) {
+        if (shouldDeferRaidCargoForCombat(ship, leftover)) {
+          deferRaidBlockedCargoForCombat(leftover);
+          return false;
+        }
         armRaidCargoClear(leftover);
         return driveRaidCargoClearMovement(input, ship, AUTO.raidCargoClear);
       }

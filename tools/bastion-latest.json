@@ -1,7 +1,7 @@
 {
-  "version": "1.0.5",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.5/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.5/RedGalaxy-Bastion.exe",
-  "notes": "Sticky finish-kill (niente cambio NPC a metà attacco); deriva portale e correzioni di coesistenza combat.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.5"
+  "version": "1.0.6-mac48",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.6-mac48/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.6-mac48/RedGalaxy-Bastion.exe",
+  "notes": "Windows: Aggiorna gioco estrae dal client ufficiale già aggiornato sul Desktop; installazione silenziosa solo se manca o è indietro.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.6-mac48"
 }
