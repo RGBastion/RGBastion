@@ -1024,7 +1024,7 @@
 - (NSString *)bastionAppVersion {
     NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     v = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return v.length > 0 ? v : @"1.0.5";
+    return v.length > 0 ? v : @"1.0.0";
 }
 
 - (NSString *)playerSafeBastionNotes:(NSString *)notes {

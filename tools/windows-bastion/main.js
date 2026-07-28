@@ -47,7 +47,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.7-mac49";
+  return "1.0.0";
 }
 
 function playerSafeBastionNotes(notes) {
