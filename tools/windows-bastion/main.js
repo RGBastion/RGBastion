@@ -47,7 +47,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.6-mac48";
+  return "1.0.7-mac49";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -635,13 +635,31 @@ function downloadFile(url, destPath, onProgress) {
   });
 }
 
+/**
+ * Parse Bastion/game version strings into numeric parts.
+ * Handles `1.0.6-mac43` style stamps (mac build is a trailing component).
+ * Without this, `1.0.6-mac43` and `1.0.6-mac48` both collapse to [1,0,6].
+ */
+function parseVersionParts(raw) {
+  const s = String(raw || "")
+    .trim()
+    .replace(/^v/i, "");
+  if (!s) return [0];
+  const macMatch = s.match(/^(.*)-mac(\d+)$/i);
+  const base = macMatch ? macMatch[1] : s;
+  const macNum = macMatch ? parseInt(macMatch[2], 10) || 0 : 0;
+  const parts = String(base)
+    .split(/[^0-9]+/)
+    .filter((x) => x.length > 0)
+    .map((x) => parseInt(x, 10) || 0);
+  if (!parts.length) parts.push(0);
+  parts.push(macNum);
+  return parts;
+}
+
 function compareVersion(a, b) {
-  const left = String(a || "")
-    .split(".")
-    .map((x) => parseInt(x, 10) || 0);
-  const right = String(b || "")
-    .split(".")
-    .map((x) => parseInt(x, 10) || 0);
+  const left = parseVersionParts(a);
+  const right = parseVersionParts(b);
   const n = Math.max(left.length, right.length);
   for (let i = 0; i < n; i++) {
     const lv = left[i] || 0;

@@ -685,13 +685,48 @@
     return nil;
 }
 
+- (NSArray<NSNumber *> *)parseVersionParts:(NSString *)raw {
+    // Handles Bastion stamps like 1.0.6-mac43 so mac43 < mac48 (plain "." split cannot).
+    NSString *s = [[raw ?: @"" stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+    if ([s.lowercaseString hasPrefix:@"v"] && s.length > 1) {
+        s = [s substringFromIndex:1];
+    }
+    if (s.length == 0) {
+        return @[@0];
+    }
+    NSInteger macNum = 0;
+    NSRegularExpression *macRe =
+        [NSRegularExpression regularExpressionWithPattern:@"^(.*)-mac(\\d+)$"
+                                                 options:NSRegularExpressionCaseInsensitive
+                                                   error:nil];
+    NSTextCheckingResult *macMatch = [macRe firstMatchInString:s options:0 range:NSMakeRange(0, s.length)];
+    NSString *base = s;
+    if (macMatch && macMatch.numberOfRanges >= 3) {
+        base = [s substringWithRange:[macMatch rangeAtIndex:1]];
+        macNum = [[s substringWithRange:[macMatch rangeAtIndex:2]] integerValue];
+    }
+    NSMutableArray<NSNumber *> *parts = [NSMutableArray array];
+    NSCharacterSet *nonDigits = [[NSCharacterSet decimalDigitCharacterSet] invertedSet];
+    for (NSString *token in [base componentsSeparatedByCharactersInSet:nonDigits]) {
+        if (token.length == 0) {
+            continue;
+        }
+        [parts addObject:@([token integerValue])];
+    }
+    if (parts.count == 0) {
+        [parts addObject:@0];
+    }
+    [parts addObject:@(macNum)];
+    return parts;
+}
+
 - (NSInteger)compareVersion:(NSString *)left to:(NSString *)right {
-    NSArray<NSString *> *leftParts = [left componentsSeparatedByString:@"."];
-    NSArray<NSString *> *rightParts = [right componentsSeparatedByString:@"."];
+    NSArray<NSNumber *> *leftParts = [self parseVersionParts:left];
+    NSArray<NSNumber *> *rightParts = [self parseVersionParts:right];
     NSUInteger count = MAX(leftParts.count, rightParts.count);
     for (NSUInteger i = 0; i < count; i++) {
-        NSInteger leftValue = i < leftParts.count ? [leftParts[i] integerValue] : 0;
-        NSInteger rightValue = i < rightParts.count ? [rightParts[i] integerValue] : 0;
+        NSInteger leftValue = i < leftParts.count ? leftParts[i].integerValue : 0;
+        NSInteger rightValue = i < rightParts.count ? rightParts[i].integerValue : 0;
         if (leftValue < rightValue) {
             return -1;
         }
