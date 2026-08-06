@@ -6,10 +6,10 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 WEB_DIR="$PROJECT_DIR/artifacts/redgalaxy-native-web"
 DIST_DIR="$PROJECT_DIR/dist"
 BUILD_DIR="$DIST_DIR/build"
-APP_DIR="$DIST_DIR/RedGalaxy Native.app"
+APP_DIR="$DIST_DIR/RedUniverse.app"
 DMG_ROOT="$DIST_DIR/dmg-root"
-DMG_RW="$BUILD_DIR/RedGalaxy-Native.rw.dmg"
-DMG_PATH="$DIST_DIR/RedGalaxy-Native.dmg"
+DMG_RW="$BUILD_DIR/RedUniverse.rw.dmg"
+DMG_PATH="$DIST_DIR/RedUniverse.dmg"
 SERVER_SRC="$SCRIPT_DIR/redgalaxy_native_server.c"
 SERVER_BIN="$BUILD_DIR/redgalaxy-native-server"
 HOST_OBJC_SRC="$SCRIPT_DIR/redgalaxy_native_host.m"
@@ -17,7 +17,7 @@ HOST_SWIFT_SRC="$SCRIPT_DIR/redgalaxy_native_host.swift"
 HOST_BIN="$BUILD_DIR/redgalaxy-native-host"
 ICON_ICNS="$BUILD_DIR/RedGalaxy.icns"
 BG_PNG="$BUILD_DIR/dmg-background.png"
-VOLUME_NAME="RedGalaxy Native"
+VOLUME_NAME="RedUniverse"
 
 [[ -f "$WEB_DIR/index.html" ]] || {
   echo "Missing web assets: $WEB_DIR/index.html" >&2
@@ -32,10 +32,11 @@ chmod +x "$SCRIPT_DIR/make_redgalaxy_icon.sh" "$SCRIPT_DIR/make_dmg_background.s
 "$SCRIPT_DIR/make_dmg_background.sh"
 
 echo "Compiling native server..."
-if cc -O2 -Wall -Wextra -std=c11 -mmacosx-version-min=11.0 -arch arm64 -arch x86_64 "$SERVER_SRC" -o "$SERVER_BIN" 2>/dev/null; then
+if cc -O2 -Wall -Wextra -std=c11 -mmacosx-version-min=11.0 -arch arm64 -arch x86_64 \
+  -DBASTION_BRAND_REDUNIVERSE=1 "$SERVER_SRC" -o "$SERVER_BIN" 2>/dev/null; then
   echo "Built universal arm64/x86_64 server."
 else
-  cc -O2 -Wall -Wextra -std=c11 "$SERVER_SRC" -o "$SERVER_BIN"
+  cc -O2 -Wall -Wextra -std=c11 -DBASTION_BRAND_REDUNIVERSE=1 "$SERVER_SRC" -o "$SERVER_BIN"
   echo "Built native-architecture server."
 fi
 
@@ -43,6 +44,7 @@ HOST_BUILT=0
 if [[ -f "$HOST_OBJC_SRC" ]]; then
   if cc -O2 -Wall -Wextra -fobjc-arc -mmacosx-version-min=11.0 \
     -arch arm64 -arch x86_64 \
+    -DBASTION_BRAND_REDUNIVERSE=1 \
     -framework Cocoa -framework WebKit \
     "$HOST_OBJC_SRC" -o "$HOST_BIN"; then
     echo "Built universal arm64/x86_64 host."
@@ -55,6 +57,7 @@ fi
 if [[ "$HOST_BUILT" == "0" ]] && command -v xcrun >/dev/null 2>&1 && [[ -f "$HOST_SWIFT_SRC" ]]; then
   if CLANG_MODULE_CACHE_PATH="$BUILD_DIR/module-cache-swift" xcrun swiftc -O \
     -framework Foundation -framework Cocoa -framework WebKit \
+    -DBASTION_BRAND_REDUNIVERSE \
     -target "$(uname -m)-apple-macos11.0" \
     "$HOST_SWIFT_SRC" -o "$HOST_BIN"; then
     echo "Built native-architecture Swift host."
@@ -92,23 +95,23 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDisplayName</key>
-  <string>RedGalaxy Native</string>
+  <string>RedUniverse</string>
   <key>CFBundleExecutable</key>
   <string>$APP_EXECUTABLE</string>
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
-  <string>local.redgalaxy.native</string>
+  <string>local.reduniverse.native</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
-  <string>RedGalaxy Native</string>
+  <string>RedUniverse</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
+  <string>1.0.1</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>mac82</string>
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
   <key>NSHighResolutionCapable</key>
@@ -166,7 +169,7 @@ on run argv
       try
         set background picture of theViewOptions to bgFile
       end try
-      set position of item "RedGalaxy Native.app" of container window to {170, 210}
+      set position of item "RedUniverse.app" of container window to {170, 210}
       set position of item "Applications" of container window to {470, 210}
       close
       open

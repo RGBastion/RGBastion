@@ -2,6 +2,10 @@ import Foundation
 import Cocoa
 import WebKit
 
+#if !defined(BASTION_BRAND_REDUNIVERSE) && !defined(BASTION_BRAND_REDGALAXY)
+#error "Define BASTION_BRAND_REDGALAXY or BASTION_BRAND_REDUNIVERSE at compile time"
+#endif
+
 final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var window: NSWindow?
     private var webView: WKWebView?
@@ -10,6 +14,30 @@ final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
     private var hasLoaded = false
     private var detectedPort = false
     private var outputBuffer = ""
+
+    private var isRedUniverseBrand: Bool {
+        #if BASTION_BRAND_REDUNIVERSE
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    private var productDisplayName: String {
+        if isRedUniverseBrand {
+            return "RedUniverse"
+        }
+        return "RedGalaxy Native"
+    }
+
+    private var nativeServerExecutableName: String {
+        #if BASTION_BRAND_REDUNIVERSE
+        return "reduniverse-bastion-server"
+        #else
+        return "redgalaxy-bastion-server"
+        #endif
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -39,7 +67,7 @@ final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
             backing: .buffered,
             defer: false
         )
-        window.title = "RedGalaxy Native"
+        window.title = productDisplayName
         window.minSize = NSSize(width: 960, height: 540)
         window.center()
         window.delegate = self
@@ -60,7 +88,7 @@ final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     private func launchServer() {
         guard let serverPath = serverExecutablePath() else {
-            NSLog("RedGalaxy native server not found in app bundle.")
+            NSLog("%@ native server not found in app bundle.", productDisplayName)
             stopApplication()
             return
         }
@@ -141,11 +169,17 @@ final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
 
     private func serverExecutablePath() -> String? {
         let bundleRoot = URL(fileURLWithPath: Bundle.main.bundlePath)
-        let candidate = bundleRoot
-            .appendingPathComponent("Contents")
-            .appendingPathComponent("MacOS")
-            .appendingPathComponent("redgalaxy-native-server")
-        return FileManager.default.isExecutableFile(atPath: candidate.path) ? candidate.path : nil
+        let names = [nativeServerExecutableName, "redgalaxy-native-server"]
+        for name in names {
+            let candidate = bundleRoot
+                .appendingPathComponent("Contents")
+                .appendingPathComponent("MacOS")
+                .appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) {
+                return candidate.path
+            }
+        }
+        return nil
     }
 
     private func resolveUserWebRoot() -> String? {
@@ -153,18 +187,27 @@ final class RedGalaxyHostApp: NSObject, NSApplicationDelegate, NSWindowDelegate 
         guard let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             return nil
         }
-        let root = appSupport
-            .appendingPathComponent("RedGalaxy Native", isDirectory: true)
-            .appendingPathComponent("web", isDirectory: true)
-        let index = root.appendingPathComponent("index.html")
-        var isDir: ObjCBool = false
-        guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
-            return nil
+        let candidates: [String]
+        if isRedUniverseBrand {
+            candidates = ["RedUniverse", "RedUniverse Native"]
+        } else {
+            candidates = ["RedGalaxy Native", "RedGalaxy"]
         }
-        guard fm.fileExists(atPath: index.path) else {
-            return nil
+        for name in candidates {
+            let root = appSupport
+                .appendingPathComponent(name, isDirectory: true)
+                .appendingPathComponent("web", isDirectory: true)
+            let index = root.appendingPathComponent("index.html")
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else {
+                continue
+            }
+            guard fm.fileExists(atPath: index.path) else {
+                continue
+            }
+            return root.path
         }
-        return root.path
+        return nil
     }
 
     private func stopServer() {

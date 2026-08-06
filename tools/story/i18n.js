@@ -1,5 +1,5 @@
 /**
- * RedGalaxy Bastion Autopilot — UI translations
+ * RedUniverse Bastion Autopilot — UI translations
  * Default locale: en
  */
 (function () {
@@ -20,7 +20,7 @@
 
   const STRINGS = {
     en: {
-      "app.title": "RedGalaxy Bastion",
+      "app.title": "RedUniverse Bastion",
       "ui.loading": "Loading...",
       "ui.play": "Play",
       "ui.pause": "Pause",
@@ -140,7 +140,7 @@
       "ui.device_id": "Device ID",
       "ui.device_id_hint": "Send this ID when purchasing a license. Each key works on one device only.",
       "ui.game_update": "Game update",
-      "ui.game_update_hint": "Downloads official RedGalaxy web assets. Bastion autopilot/license stay under Bastion control.",
+      "ui.game_update_hint": "Downloads official RedUniverse web assets. Bastion autopilot/license stay under Bastion control.",
       "ui.game_update_btn": "Update game",
       "ui.game_update_started": "Update started via host…",
       "ui.game_update_unavailable": "In-app update unavailable here — use menu Gioco → Aggiorna gioco (Mac) or rebuild.",
@@ -237,6 +237,10 @@
       "status.login_map": "Login and enter a map...",
       "status.paused": "Paused",
       "status.resumed": "Resumed",
+      "status.raid_pause_wait_wave": "Raid pause: finishing current wave…",
+      "status.raid_pause_collect_cargo": "Raid pause: scooping leftover cargo…",
+      "status.raid_pause_to_center": "Raid pause: moving to center…",
+      "status.raid_paused_center": "Paused at raid center — press Play to continue",
       "status.death_counted": "Death recorded ({count}{limit})",
       "status.death_pause": "Auto-pause: {count}/{limit} deaths",
       "status.base_wait": "Base wait {sec}s after death...",
@@ -335,7 +339,7 @@
       "status.npc_requires_attack": "Enable Attack NPC to select NPCs",
     },
     it: {
-      "app.title": "RedGalaxy Bastion",
+      "app.title": "RedUniverse Bastion",
       "ui.loading": "Caricamento...",
       "ui.play": "Play",
       "ui.pause": "Pausa",
@@ -455,7 +459,7 @@
       "ui.device_id": "ID dispositivo",
       "ui.device_id_hint": "Invia questo ID per acquistare la licenza. Ogni chiave vale per un solo dispositivo.",
       "ui.game_update": "Aggiornamento gioco",
-      "ui.game_update_hint": "Scarica gli asset ufficiali RedGalaxy. Autopilot e licenza Bastion restano sotto controllo Bastion.",
+      "ui.game_update_hint": "Scarica gli asset ufficiali RedUniverse. Autopilot e licenza Bastion restano sotto controllo Bastion.",
       "ui.game_update_btn": "Aggiorna gioco",
       "ui.game_update_started": "Aggiornamento avviato dall'host…",
       "ui.game_update_unavailable": "Aggiornamento in-app non disponibile qui — usa menu Gioco → Aggiorna gioco (Mac) oppure ricostruisci.",
@@ -552,6 +556,10 @@
       "status.login_map": "Login e entra in mappa...",
       "status.paused": "In pausa",
       "status.resumed": "Ripreso",
+      "status.raid_pause_wait_wave": "Pausa raid: finisco l'ondata in corso…",
+      "status.raid_pause_collect_cargo": "Pausa raid: raccolgo il cargo rimasto…",
+      "status.raid_pause_to_center": "Pausa raid: vado al centro…",
+      "status.raid_paused_center": "In pausa al centro raid — premi Play per continuare",
       "status.death_counted": "Morte registrata ({count}{limit})",
       "status.death_pause": "Pausa automatica: {count}/{limit} morti",
       "status.base_wait": "Attesa base {sec}s dopo morte...",
@@ -650,7 +658,7 @@
       "status.npc_requires_attack": "Attiva Attacca NPC per selezionare gli NPC",
     },
     es: {
-      "app.title": "RedGalaxy Bastion",
+      "app.title": "RedUniverse Bastion",
       "ui.loading": "Cargando...",
       "ui.play": "Play",
       "ui.pause": "Pausa",
@@ -770,7 +778,7 @@
       "ui.device_id": "ID de dispositivo",
       "ui.device_id_hint": "Envía este ID al comprar. Cada clave funciona en un solo dispositivo.",
       "ui.game_update": "Actualización del juego",
-      "ui.game_update_hint": "Descarga los assets oficiales de RedGalaxy. Autopilot y licencia Bastion siguen bajo control Bastion.",
+      "ui.game_update_hint": "Descarga los assets oficiales de RedUniverse. Autopilot y licencia Bastion siguen bajo control Bastion.",
       "ui.game_update_btn": "Actualizar juego",
       "ui.game_update_started": "Actualización iniciada por el host…",
       "ui.game_update_unavailable": "Actualización in-app no disponible aquí — usa el menú o reconstruye.",
@@ -867,6 +875,10 @@
       "status.login_map": "Inicia sesión y entra en mapa...",
       "status.paused": "En pausa",
       "status.resumed": "Reanudado",
+      "status.raid_pause_wait_wave": "Pausa raid: terminando la oleada…",
+      "status.raid_pause_collect_cargo": "Pausa raid: recogiendo el cargo restante…",
+      "status.raid_pause_to_center": "Pausa raid: yendo al centro…",
+      "status.raid_paused_center": "En pausa en el centro del raid — pulsa Play para continuar",
       "status.death_counted": "Muerte registrada ({count}{limit})",
       "status.death_pause": "Pausa automática: {count}/{limit} muertes",
       "status.base_wait": "Espera base {sec}s tras muerte...",
@@ -969,6 +981,27 @@
   // Fallback: copy English for locales without full translation yet
   for (const loc of ["fr", "de", "pt", "ru", "zh", "ja", "ko"]) {
     if (!STRINGS[loc]) STRINGS[loc] = { ...STRINGS.en };
+  }
+
+  // Host injects __BASTION_* at document-start (and index.html bake). Prefer those
+  // so the launched product name always wins even if a stale App Support overlay lags.
+  if (typeof window !== "undefined" && window.__BASTION_PRODUCT_NAME__) {
+    const product = String(window.__BASTION_PRODUCT_NAME__);
+    const base = String(window.__BASTION_BASE_NAME__ || product.replace(/\s+Bastion$/, ""));
+    for (const loc of Object.keys(STRINGS)) {
+      const table = STRINGS[loc];
+      if (!table || typeof table !== "object") continue;
+      table["app.title"] = product;
+      if (typeof table["ui.game_update_hint"] === "string") {
+        table["ui.game_update_hint"] = table["ui.game_update_hint"].replace(
+          /RedUniverse|RedGalaxy/g,
+          base
+        );
+      }
+    }
+    try {
+      document.title = product;
+    } catch (_) {}
   }
 
   window.RG_STORY_I18N = {

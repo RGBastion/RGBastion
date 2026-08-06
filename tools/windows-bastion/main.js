@@ -7,8 +7,16 @@ const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const PREFERRED_PORT = 8765;
-const WINDOW_TITLE = "RedGalaxy Bastion";
-const UPDATE_MANIFEST_URL = "https://updates.redgalaxygame.space/latest.json";
+const PKG = (() => {
+  try {
+    return require("./package.json");
+  } catch {
+    return {};
+  }
+})();
+const WINDOW_TITLE =
+  (PKG.build && PKG.build.productName) || PKG.productName || "Bastion";
+const UPDATE_MANIFEST_URL = "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json";
 /**
  * Bastion self-update manifest (separate from game asset updates).
  * Override with env BASTION_UPDATE_MANIFEST_URL if needed.
@@ -21,7 +29,7 @@ const BASTION_UPDATE_MANIFEST_URL = (
   "https://github.com/RGBastion/RGBastion/releases/latest/download/bastion-latest.json"
 ).trim();
 const UPDATE_USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) RedGalaxy-Bastion-Updater/1.0";
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ${String(WINDOW_TITLE).replace(/\s+/g, "-")}-Updater/1.0`;
 
 let mainWindow = null;
 let server = null;
@@ -47,7 +55,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.0";
+  return "1.0.1";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -232,38 +240,70 @@ function webRootLooksValid(webRoot, requireStory) {
  * Complete Bastion overlay: story files + index markers + game/net hooks.
  * story/ alone on a raw extract is NOT enough (features appear "missing").
  */
+const intactCache = new Map();
+
+function fileContainsAllMarkers(filePath, markers) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(1024 * 1024);
+    let carry = "";
+    const found = new Set();
+    for (;;) {
+      const n = fs.readSync(fd, buf, 0, buf.length, null);
+      if (n <= 0) break;
+      const chunk = carry + buf.toString("utf8", 0, n);
+      for (const marker of markers) {
+        if (!found.has(marker) && chunk.includes(marker)) found.add(marker);
+      }
+      if (found.size === markers.length) return true;
+      carry = chunk.length > 96 ? chunk.slice(-96) : chunk;
+    }
+    return found.size === markers.length;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function bastionWebRootIsIntact(webRoot) {
   if (!webRoot) return false;
+  if (intactCache.has(webRoot)) return intactCache.get(webRoot);
+
   const indexPath = path.join(webRoot, "index.html");
   const autopilot = path.join(webRoot, "story", "autopilot.js");
   const i18n = path.join(webRoot, "story", "i18n.js");
-  if (!fs.existsSync(indexPath) || !fs.existsSync(autopilot) || !fs.existsSync(i18n)) {
-    return false;
+  let ok = false;
+  if (fs.existsSync(indexPath) && fs.existsSync(autopilot) && fs.existsSync(i18n)) {
+    let html = "";
+    try {
+      html = fs.readFileSync(indexPath, "utf8");
+    } catch {
+      html = "";
+    }
+    if (
+      html.includes("__RG_STORY_MODE__") &&
+      html.includes("/story/i18n.js") &&
+      html.includes("/story/autopilot.js")
+    ) {
+      const m = html.match(/\/assets\/(index-[^"' ]+\.js)/);
+      if (m) {
+        const assetPath = path.join(webRoot, "assets", m[1]);
+        if (fs.existsSync(assetPath)) {
+          try {
+            ok = fileContainsAllMarkers(assetPath, ["__RG_GAME__", "__RG_NET__"]);
+          } catch {
+            ok = false;
+          }
+        }
+      }
+    }
   }
-  let html;
-  try {
-    html = fs.readFileSync(indexPath, "utf8");
-  } catch {
-    return false;
-  }
-  if (
-    !html.includes("__RG_STORY_MODE__") ||
-    !html.includes("/story/i18n.js") ||
-    !html.includes("/story/autopilot.js")
-  ) {
-    return false;
-  }
-  const m = html.match(/\/assets\/(index-[^"' ]+\.js)/);
-  if (!m) return false;
-  const assetPath = path.join(webRoot, "assets", m[1]);
-  if (!fs.existsSync(assetPath)) return false;
-  let js;
-  try {
-    js = fs.readFileSync(assetPath, "utf8");
-  } catch {
-    return false;
-  }
-  return js.includes("__RG_GAME__") && js.includes("__RG_NET__");
+  intactCache.set(webRoot, ok);
+  return ok;
+}
+
+function invalidateIntactCache(webRoot) {
+  if (webRoot) intactCache.delete(webRoot);
+  else intactCache.clear();
 }
 
 function filesEqual(a, b) {
@@ -290,7 +330,12 @@ function storyStampMatches(bundleStory, userStory) {
 }
 
 function storyOverlayMatchesBundle(bundleStory, userStory) {
-  if (!storyStampMatches(bundleStory, userStory)) return false;
+  // Prefer .bastion-stamp: when present and equal, trust it (avoids reading ~1MB
+  // of story JS on every cold start). Fall back to byte compares for older bundles.
+  const bundleStamp = path.join(bundleStory, BASTION_STAMP_NAME);
+  if (fs.existsSync(bundleStamp)) {
+    return storyStampMatches(bundleStory, userStory);
+  }
   const critical = ["autopilot.js", "i18n.js", "map_graph.json"];
   return critical.every((name) => {
     const bundlePath = path.join(bundleStory, name);
@@ -365,6 +410,7 @@ async function ensureBastionOverlayInUserWeb() {
     return { repaired: false, reason: "repair-failed", error: String(err && err.message ? err.message : err) };
   }
 
+  invalidateIntactCache(userWeb);
   if (!bastionWebRootIsIntact(userWeb)) {
     return { repaired: false, reason: "still-incomplete" };
   }
@@ -701,15 +747,17 @@ function readVersionFile() {
 }
 
 /**
- * Source of truth: live game web embed. version.txt alone can claim a newer
- * server version after a skipped/partial extract.
+ * Prefer version.txt (Tauri/manifest, e.g. 1.0.12). Game JS still embeds
+ * redgalaxy-client@0.6.x which is NOT the official installer version.
  */
 function readInstalledVersion() {
+  const recorded = readVersionFile();
+  if (recorded) return recorded;
   for (const root of [userWebRoot(), bundledWebRoot()]) {
     const embedded = readEmbeddedWebVersion(root);
     if (embedded) return embedded;
   }
-  return readVersionFile();
+  return "";
 }
 
 function gameWebIsComplete(webRoot) {
@@ -734,6 +782,24 @@ function gameWebIsComplete(webRoot) {
       return false;
     }
     if (!hasWoff2) return false;
+    // Spine/libGDX .atlas sheets required to draw ships/NPCs (HUD can work without → black world).
+    let atlasCount = 0;
+    const countAtlas = (dir, depth = 0) => {
+      if (depth > 6) return;
+      let names;
+      try {
+        names = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of names) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) countAtlas(full, depth + 1);
+        else if (ent.name.endsWith(".atlas")) atlasCount += 1;
+      }
+    };
+    countAtlas(webRoot);
+    if (atlasCount < 20) return false;
     // Fused extract path leftovers = corrupt game assets.
     const walk = (dir, depth = 0) => {
       if (depth > 6) return false;
@@ -766,6 +832,8 @@ function gameClientMatchesRemote(remote) {
   if (!gameWebIsComplete(web)) return false;
   const embedded = readEmbeddedWebVersion(web);
   if (!embedded) return false;
+  const recorded = readVersionFile();
+  if (recorded && recorded === remote) return true;
   if (embedded === remote) return true;
   return compareVersion(embedded, remote) >= 0;
 }
@@ -1032,7 +1100,7 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
     }
     if (!gameWebIsComplete(rawOut)) {
       throw new Error(
-        "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedGalaxy."
+        "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedUniverse."
       );
     }
     fs.rmSync(finalOut, { recursive: true, force: true });
@@ -1081,7 +1149,7 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
   }
   if (!gameWebIsComplete(rawOut)) {
     throw new Error(
-      "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedGalaxy."
+      "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedUniverse."
     );
   }
   fs.rmSync(finalOut, { recursive: true, force: true });
@@ -1153,6 +1221,9 @@ async function publishUserWebRoot(stagingOut, liveOut) {
   // Brief settle so Windows releases ReadStream handles from the old root.
   await new Promise((r) => setTimeout(r, 250));
 
+  invalidateIntactCache(liveOut);
+  invalidateIntactCache(stagingOut);
+
   const previous = path.join(supportDir(), `web-previous-${process.pid}-${Date.now()}`);
   fs.rmSync(previous, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(liveOut), { recursive: true });
@@ -1207,7 +1278,7 @@ function humanizeUpdateError(err) {
     return raw;
   }
   if (/updater scripts missing|script di aggiornamento mancanti/i.test(lower)) {
-    return "Pacchetto Bastion incompleto (mancano extract/patch). Scarica di nuovo RedGalaxy-Bastion.exe.";
+    return "Scarica di nuovo il portable Bastion (.exe) dal release ufficiale.";
   }
   if (/enonet|enoent/i.test(lower) && /brotli|extract/i.test(lower)) {
     return `Estrazione fallita (brotli/asset): ${raw}`;
@@ -1226,15 +1297,26 @@ function findInstalledClientExe() {
   const userProfile = process.env.USERPROFILE || "";
   const portableDir = String(process.env.PORTABLE_EXECUTABLE_DIR || "").trim();
   const candidates = [
-    // Official Tauri per-user install (current).
+    // Official Tauri per-user install (RedUniverse).
+    path.join(local, "RedUniverse", "reduniverse-pc-client.exe"),
+    path.join(local, "RedUniverse", "reduniverse-client.exe"),
+    path.join(local, "RedUniverse", "RedUniverse.exe"),
+    path.join(roaming, "RedUniverse", "reduniverse-pc-client.exe"),
+    path.join(programFiles, "RedUniverse", "reduniverse-pc-client.exe"),
+    path.join(programFilesX86, "RedUniverse", "reduniverse-pc-client.exe"),
+    path.join(local, "Programs", "RedUniverse", "reduniverse-pc-client.exe"),
+    // Same folder as Bastion portable / Desktop copies of the official client.
+    portableDir ? path.join(portableDir, "reduniverse-pc-client.exe") : "",
+    portableDir ? path.join(portableDir, "RedUniverse.exe") : "",
+    userProfile ? path.join(userProfile, "Desktop", "reduniverse-pc-client.exe") : "",
+    userProfile ? path.join(userProfile, "Desktop", "RedUniverse.exe") : "",
+    // Legacy RedGalaxy paths (twin client).
     path.join(local, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(local, "RedGalaxy", "RedGalaxy.exe"),
-    // Occasional alternate layouts / older builds.
     path.join(roaming, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(programFiles, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(programFilesX86, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(local, "Programs", "RedGalaxy", "redgalaxy-client.exe"),
-    // Same folder as Bastion portable / Desktop copies of the official client.
     portableDir ? path.join(portableDir, "redgalaxy-client.exe") : "",
     portableDir ? path.join(portableDir, "RedGalaxy.exe") : "",
     userProfile ? path.join(userProfile, "Desktop", "redgalaxy-client.exe") : "",
@@ -1260,7 +1342,7 @@ async function downloadAndSilentInstallOfficialClient(installerUrl) {
   fs.mkdirSync(downloads, { recursive: true });
   const installerPath = path.join(
     downloads,
-    path.basename(installerUrl) || "RedGalaxy-Setup.exe"
+    path.basename(installerUrl) || "RedUniverse-Setup.exe"
   );
   await downloadFile(installerUrl, installerPath, (pct) => {
     setUpdateStatus({ phase: "download", percent: pct, message: `Download… ${pct}%` });
@@ -1317,10 +1399,9 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const installed = readInstalledVersion();
     const recorded = readVersionFile();
     const liveOk = gameClientMatchesRemote(remote);
-    const versionFileLie = recorded && installed && recorded !== installed;
 
-    if (!force && installed && compareVersion(installed, remote) >= 0 && liveOk && !versionFileLie) {
-      writeInstalledVersion(installed);
+    if (!force && installed && compareVersion(installed, remote) >= 0 && liveOk) {
+      writeInstalledVersion(remote);
       const storySynced = syncBundledStoryOverlayIntoUserWeb();
       const heal = await ensureBastionOverlayInUserWeb();
       setUpdateStatus({
@@ -1353,17 +1434,17 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     }
 
     const win = (manifest.platforms && (manifest.platforms["windows-x86_64"] || manifest.platforms.windows)) || {};
-    const installerUrl = String(win.url || "https://updates.redgalaxygame.space/RedGalaxy-Setup.exe").trim();
+    const installerUrl = String(win.url || "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/RedUniverse_1.0.12_x64-setup.exe").trim();
 
     // Compatible with the official Desktop EXE path:
-    // that Tauri client self-updates into %LOCALAPPDATA%\RedGalaxy\redgalaxy-client.exe.
+    // that Tauri client self-updates into %LOCALAPPDATA%\RedUniverse\reduniverse-pc-client.exe.
     // Bastion should harvest web assets from that binary first — NOT re-download +
     // silent-reinstall whenever Bastion's AppData web cache is merely behind.
     // Silent install is only for when the official client is missing, or when an
     // extract from the installed client is still older than the official manifest.
     let clientExe = findInstalledClientExe();
     if (!clientExe) {
-      console.warn("Official redgalaxy-client.exe not found — downloading installer.");
+      console.warn("Official reduniverse-pc-client.exe not found — downloading installer.");
       clientExe = await downloadAndSilentInstallOfficialClient(installerUrl);
     } else {
       setUpdateStatus({
@@ -1375,7 +1456,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
 
     if (!clientExe) {
       throw new Error(
-        "redgalaxy-client.exe non trovato. Aggiorna/installa una volta il client ufficiale RedGalaxy (quello sul Desktop), poi riprova Aggiorna gioco in Bastion."
+        "reduniverse-pc-client.exe non trovato. Aggiorna/installa una volta il client ufficiale RedUniverse (quello sul Desktop), poi riprova Aggiorna gioco in Bastion."
       );
     }
 
@@ -1417,25 +1498,26 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       "Preparazione asset (staging, senza toccare la cache live)…"
     );
 
-    // Installed client was stale vs official manifest — refresh via installer once, then re-extract.
-    if (!embeddedStaged || compareVersion(embeddedStaged, remote) < 0) {
+    // Tauri manifest (1.0.x) != game embed (redgalaxy-client@0.6.x). A successful
+    // extract with a valid embed is enough; only reinstall if extract failed.
+    if (!embeddedStaged || !gameWebIsComplete(stagingOut)) {
       console.warn(
-        `Installed client extract is ${embeddedStaged || "unknown"} < official ${remote} — downloading installer.`
+        `Installed client extract incomplete (embed=${embeddedStaged || "unknown"}) — downloading installer.`
       );
       const refreshed = await downloadAndSilentInstallOfficialClient(installerUrl);
       clientExe = refreshed || findInstalledClientExe() || clientExe;
       if (!clientExe) {
         throw new Error(
-          "redgalaxy-client.exe non trovato dopo l'installazione. Installa il client ufficiale RedGalaxy, poi riprova."
+          "reduniverse-pc-client.exe non trovato dopo l'installazione. Installa il client ufficiale RedUniverse, poi riprova."
         );
       }
       embeddedStaged = await runStagingExtract(
         clientExe,
         "Re-estrazione dopo aggiornamento client ufficiale…"
       );
-      if (!embeddedStaged || compareVersion(embeddedStaged, remote) < 0) {
+      if (!embeddedStaged || !gameWebIsComplete(stagingOut)) {
         throw new Error(
-          `Estrazione ancora indietro rispetto all'ufficiale (live=${embeddedStaged || "missing"}, ufficiale=${remote}). Aggiorna il client RedGalaxy sul Desktop e riprova.`
+          `Estrazione incompleta dopo installazione (embed=${embeddedStaged || "missing"}, ufficiale=${remote}). Aggiorna il client RedUniverse sul Desktop e riprova.`
         );
       }
     }
@@ -1446,7 +1528,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       message: "Pubblicazione cache di gioco…",
     });
     const embeddedAfter = await publishUserWebRoot(stagingOut, finalOut);
-    writeInstalledVersion(embeddedAfter);
+    writeInstalledVersion(remote);
     fs.rmSync(rawOut, { recursive: true, force: true });
     fs.rmSync(stagingOut, { recursive: true, force: true });
 
@@ -1454,7 +1536,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       running: false,
       phase: "done",
       percent: 100,
-      message: `Aggiornato al client di gioco ${embeddedAfter}`,
+      message: `Aggiornato a ${remote} (embed ${embeddedAfter})`,
     });
     return { updated: true, installed, remote, webRoot: finalOut, embedded: embeddedAfter };
   } catch (err) {
@@ -1627,7 +1709,7 @@ async function applyBastionSelfUpdate() {
     });
     const downloads = path.join(app.getPath("userData"), "bastion-updates");
     fs.mkdirSync(downloads, { recursive: true });
-    const fileName = path.basename(new URL(exeUrl).pathname) || `RedGalaxy-Bastion-${remote}.exe`;
+    const fileName = path.basename(new URL(exeUrl).pathname) || `RedUniverse-Bastion-${remote}.exe`;
     const destPath = path.join(downloads, fileName);
     await downloadFile(exeUrl, destPath, (pct) => {
       setUpdateStatus({
@@ -1845,7 +1927,7 @@ async function start() {
   const port = await listenNearPort(server, PREFERRED_PORT);
   const startUrl = `http://127.0.0.1:${port}/`;
 
-  console.log(`RedGalaxy Bastion is serving ${activeWebRoot}`);
+  console.log(`${WINDOW_TITLE} is serving ${activeWebRoot}`);
   console.log(`Open ${startUrl}`);
 
   powerSaveId = powerSaveBlocker.start("prevent-app-suspension");
@@ -1874,10 +1956,24 @@ function shutdown() {
 ipcMain.handle("bastion-update-game", async () => triggerGameUpdate());
 ipcMain.handle("bastion-update-bastion", async () => triggerBastionSelfUpdate());
 
-app.whenReady().then(start).catch((err) => {
-  console.error(err);
+// Portable unpack dir is shared across launches — refuse a second instance so two
+// extractors cannot clobber %LOCALAPPDATA%\<unpackDirName>.
+const gotBastionLock = app.requestSingleInstanceLock();
+if (!gotBastionLock) {
   app.quit();
-});
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+
+  app.whenReady().then(start).catch((err) => {
+    console.error(err);
+    app.quit();
+  });
+}
 
 app.on("window-all-closed", () => {
   shutdown();

@@ -1,4 +1,4 @@
-# RedGalaxy Bastion / Autopilot
+# RedUniverse Bastion / Autopilot
 
 Variante DMG con bot **autonomo** che gioca da solo mentre usi il Mac.
 
@@ -10,7 +10,7 @@ Variante DMG con bot **autonomo** che gioca da solo mentre usi il Mac.
 ./tools/build_redgalaxy_story_dmg.sh
 ```
 
-Output: `dist/RedGalaxy-Bastion.dmg`
+Output: `dist/RedUniverse-Bastion.dmg`
 
 ### Windows .exe / .zip
 
@@ -20,7 +20,7 @@ Output: `dist/RedGalaxy-Bastion.dmg`
 # .\tools\build_redgalaxy_bastion_exe.ps1
 ```
 
-Output tipico: `dist/RedGalaxy-Bastion-*-x64.zip` e, se disponibile, `dist/RedGalaxy-Bastion.exe`.
+Output tipico: `dist/RedUniverse-Bastion-*-x64.zip` e, se disponibile, `dist/RedUniverse-Bastion.exe`.
 
 Vedi `tools/windows-bastion/README.md`.
 
@@ -38,15 +38,15 @@ Bastion può scaricare gli **asset web ufficiali** RedGalaxy e riapplicare i lay
 Asset aggiornati (scrivibili, fuori dal bundle):
 
 ```text
-macOS:  ~/Library/Application Support/RedGalaxy Bastion/web
-Windows: %APPDATA%/redgalaxy-bastion/game-web/web
+macOS:  ~/Library/Application Support/RedUniverse Bastion/web
+Windows: %APPDATA%/reduniverse-bastion/game-web/web
 ```
 
 Se l'update fallisce, l'app continua con gli asset inclusi nel bundle.
 
 ### Uso (utente)
 
-1. Apri **RedGalaxy Bastion**
+1. Apri **RedUniverse Bastion**
 2. All'avvio, se c'è una versione ufficiale più nuova → dialogo **Aggiorna ora**
 3. Oppure: menu **Gioco → Aggiorna gioco…** (Mac) / tab **Sicurezza → Aggiorna gioco**
 4. Dopo l'update Mac ricarica da solo; su Windows serve Python 3 (`py`/`python`) + brotli per l'estrazione
@@ -64,7 +64,7 @@ REDGALAXY_BASTION=1 ./bin/redgalaxy-mac-runner update-bastion --yes --silent
 Manifest ufficiale:
 
 ```text
-https://updates.redgalaxygame.space/latest.json
+https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json
 ```
 
 ### Rebuild completo (solo se cambi host/autopilot/licenza)
@@ -85,7 +85,7 @@ Comportamento base:
 
 ### Uso
 
-1. Installa `RedGalaxy Bastion.app`
+1. Installa `RedUniverse Bastion.app`
 2. Fai login ed entra in mappa
 3. Clicca **Play** nel pannello
 4. Puoi passare ad altre app: il bot continua a lavorare
@@ -106,7 +106,7 @@ L'autopilot applica un keep-alive che:
 - forza `resume()` se Phaser va in pausa
 - continua a inviare `sendMove` al server
 
-**Consiglio pratico:** lascia `RedGalaxy Bastion.app` aperta (anche dietro altre finestre). Non chiuderla. Su macOS funziona bene in background; se minimizzi troppo a lungo il sistema può rallentare i timer, ma non dovrebbe fermarsi del tutto.
+**Consiglio pratico:** lascia `RedUniverse Bastion.app` aperta (anche dietro altre finestre). Non chiuderla. Su macOS funziona bene in background; se minimizzi troppo a lungo il sistema può rallentare i timer, ma non dovrebbe fermarsi del tutto.
 
 ## Pannello
 
@@ -137,7 +137,13 @@ L'app **non parte più da sola**. Dopo login in mappa:
 
 ## NPC e combattimento
 
-Elenco completo tipi NPC (Raidon, Elite, Commander, ecc.). Clicca per **selezionare/deselezionare** più tipi. Pulsante **✕** azzera la selezione.
+Elenco tipi NPC ordinato per **forza crescente**: base → Elite per famiglia, poi tutti i Commander nello stesso ordine, infine boss speciali. Clicca per **selezionare/deselezionare** più tipi. Pulsante **✕** azzera la selezione.
+
+## Mappa / Sector X / refresh galattico
+
+- I portali diretti tra fazioni nemiche (ex x-3 H/N/O) sono rimossi: per raggiungere una mappa nemica il path passa da **Sector X**.
+- All’avvio dopo un aggiornamento Bastion, e a ogni cambio mappa, l’autopilot unisce i **portali live** del client in `MAP_GRAPH` (senza reintrodurre scorciatoie cross-faction).
+- Per un refresh “galattico” completo servirebbe visitare le mappe (o un export ufficiale del grafo): fino ad allora il grafo statico + harden runtime + merge portali è sufficiente al travel.
 
 ## Bonus
 

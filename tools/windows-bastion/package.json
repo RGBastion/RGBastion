@@ -1,9 +1,9 @@
 {
-  "name": "redgalaxy-bastion",
-  "version": "1.0.0",
-  "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
+  "name": "reduniverse-bastion",
+  "version": "1.0.1",
+  "description": "RedUniverse Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
-  "author": "RedGalaxy Bastion",
+  "author": "RedUniverse Bastion",
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
@@ -15,9 +15,9 @@
     "pack:win": "electron-builder --win zip portable --x64"
   },
   "build": {
-    "appId": "local.redgalaxy.bastion",
-    "productName": "RedGalaxy Bastion",
-    "copyright": "RedGalaxy Bastion",
+    "appId": "local.reduniverse.bastion",
+    "productName": "RedUniverse Bastion",
+    "copyright": "RedUniverse Bastion",
     "directories": {
       "output": "../../dist/windows-bastion",
       "buildResources": "build"
@@ -28,7 +28,7 @@
     ],
     "extraResources": [
       {
-        "from": "../../artifacts/redgalaxy-story-web",
+        "from": "../../artifacts/redgalaxy-story-web-reduniverse",
         "to": "web",
         "filter": [
           "**/*"
@@ -72,11 +72,12 @@
         }
       ],
       "icon": "build/icon.png",
-      "artifactName": "RedGalaxy-Bastion-${version}-${arch}.${ext}",
-      "executableName": "RedGalaxy-Bastion"
+      "artifactName": "RedUniverse-Bastion-${version}-${arch}.${ext}",
+      "executableName": "RedUniverse-Bastion"
     },
     "portable": {
-      "artifactName": "RedGalaxy-Bastion.${ext}"
+      "artifactName": "RedUniverse-Bastion.${ext}",
+      "unpackDirName": "RedUniverseBastionPortable"
     },
     "nsis": {
       "oneClick": true,
@@ -84,10 +85,10 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "RedGalaxy Bastion",
-      "artifactName": "RedGalaxy-Bastion-Setup.${ext}"
+      "shortcutName": "RedUniverse Bastion",
+      "artifactName": "RedUniverse-Bastion-Setup.${ext}"
     },
-    "compression": "maximum"
+    "compression": "normal"
   },
   "devDependencies": {
     "electron": "^33.2.1",

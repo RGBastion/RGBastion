@@ -1,4 +1,4 @@
-# Build RedGalaxy Bastion for Windows (.exe / .zip) via Electron.
+# Build RedUniverse Bastion for Windows (.exe / .zip) via Electron.
 # Prefer Git Bash or WSL so prepare_redgalaxy_story_web.sh can run.
 param(
   [ValidateSet("auto", "zip", "portable", "nsis", "dir", "all")]
@@ -68,15 +68,15 @@ finally {
 
 Write-Host "==> Publishing convenience copies under dist/"
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-Get-ChildItem -Path $OutDir -Filter "RedGalaxy-Bastion*" -File -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -Path $OutDir -Filter "RedUniverse-Bastion*" -File -ErrorAction SilentlyContinue | ForEach-Object {
   Copy-Item -Force $_.FullName (Join-Path $DistDir $_.Name)
   Write-Host "Copied: $(Join-Path $DistDir $_.Name)"
 }
 
-$portable = Join-Path $OutDir "RedGalaxy-Bastion.exe"
+$portable = Join-Path $OutDir "RedUniverse-Bastion.exe"
 if (Test-Path $portable) {
-  Copy-Item -Force $portable (Join-Path $DistDir "RedGalaxy-Bastion.exe")
-  Write-Host "Copied: $(Join-Path $DistDir 'RedGalaxy-Bastion.exe')"
+  Copy-Item -Force $portable (Join-Path $DistDir "RedUniverse-Bastion.exe")
+  Write-Host "Copied: $(Join-Path $DistDir 'RedUniverse-Bastion.exe')"
 }
 
 Write-Host ""

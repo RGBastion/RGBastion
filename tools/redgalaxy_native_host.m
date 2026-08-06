@@ -2,6 +2,21 @@
 #import <WebKit/WebKit.h>
 #import <unistd.h>
 
+/*
+ * Product brand switch (compile-time REQUIRED):
+ *   cc ... -DBASTION_BRAND_REDGALAXY=1   → RedGalaxy Bastion / Native
+ *   cc ... -DBASTION_BRAND_REDUNIVERSE=1 → RedUniverse Bastion / Native
+ * No runtime default-to-RU: a misbuilt binary without a brand define fails to compile.
+ */
+#if !defined(BASTION_BRAND_REDGALAXY) && !defined(BASTION_BRAND_REDUNIVERSE)
+#error "Define BASTION_BRAND_REDGALAXY=1 or BASTION_BRAND_REDUNIVERSE=1 at compile time"
+#endif
+
+typedef NS_ENUM(NSInteger, BastionProductBrand) {
+    BastionProductBrandRedGalaxy = 0,
+    BastionProductBrandRedUniverse = 1,
+};
+
 @interface RedGalaxyHostApp : NSObject <NSApplicationDelegate, NSWindowDelegate, WKScriptMessageHandler>
 @property(strong) NSWindow *window;
 @property(strong) WKWebView *webView;
@@ -29,14 +44,76 @@
     return self;
 }
 
+- (BastionProductBrand)productBrand {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return BastionProductBrandRedUniverse;
+#else
+    return BastionProductBrandRedGalaxy;
+#endif
+}
+
+- (BOOL)isRedUniverseBrand {
+    return [self productBrand] == BastionProductBrandRedUniverse;
+}
+
 - (BOOL)isStoryBundle {
     NSString *bundleId = [[NSBundle mainBundle] bundleIdentifier];
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return [bundleId isEqualToString:@"local.reduniverse.bastion"];
+#else
     return [bundleId isEqualToString:@"local.redgalaxy.bastion"]
         || [bundleId isEqualToString:@"local.redgalaxy.story"];
+#endif
+}
+
+- (NSString *)productBaseName {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return @"RedUniverse";
+#else
+    return @"RedGalaxy";
+#endif
+}
+
+- (NSString *)productDisplayName {
+    if ([self isStoryBundle]) {
+        return [NSString stringWithFormat:@"%@ Bastion", [self productBaseName]];
+    }
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return @"RedUniverse";
+#else
+    return @"RedGalaxy Native";
+#endif
 }
 
 - (NSString *)supportAppName {
-    return [self isStoryBundle] ? @"RedGalaxy Bastion" : @"RedGalaxy Native";
+    return [self productDisplayName];
+}
+
+- (NSString *)productAppFileName {
+    return [NSString stringWithFormat:@"%@.app", [self productDisplayName]];
+}
+
+- (NSString *)nativeHostExecutableName {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return @"reduniverse-bastion-host";
+#else
+    return @"redgalaxy-bastion-host";
+#endif
+}
+
+- (NSString *)nativeServerExecutableName {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    return @"reduniverse-bastion-server";
+#else
+    return @"redgalaxy-bastion-server";
+#endif
+}
+
+- (NSString *)updaterUserAgent {
+    NSString *token = [self isStoryBundle]
+        ? [NSString stringWithFormat:@"%@-Bastion-Updater/1.0", [self productBaseName]]
+        : [NSString stringWithFormat:@"%@-Updater/1.0", [self productBaseName]];
+    return [NSString stringWithFormat:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) %@", token];
 }
 
 - (NSString *)bundleWebRoot {
@@ -48,7 +125,26 @@
     if (dirs.count == 0) {
         return nil;
     }
-    return [[dirs[0] stringByAppendingPathComponent:[self supportAppName]] stringByAppendingPathComponent:@"web"];
+    NSString *primary = [[dirs[0] stringByAppendingPathComponent:[self supportAppName]] stringByAppendingPathComponent:@"web"];
+    if ([self webRootLooksValid:primary requireStory:[self isStoryBundle]]) {
+        return primary;
+    }
+    // Never fall across brands (RG must not load RU web, and vice versa).
+    // Native hosts may use a same-brand legacy folder only.
+    if (![self isStoryBundle]) {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+        NSArray<NSString *> *legacyNames = @[ @"RedUniverse Native" ];
+#else
+        NSArray<NSString *> *legacyNames = @[ @"RedGalaxy" ];
+#endif
+        for (NSString *legacyName in legacyNames) {
+            NSString *legacy = [[dirs[0] stringByAppendingPathComponent:legacyName] stringByAppendingPathComponent:@"web"];
+            if ([self webRootLooksValid:legacy requireStory:NO]) {
+                return legacy;
+            }
+        }
+    }
+    return primary;
 }
 
 - (BOOL)webRootLooksValid:(NSString *)webRoot requireStory:(BOOL)requireStory {
@@ -61,12 +157,58 @@
     if (!( [fm fileExistsAtPath:webRoot isDirectory:&isDir] && isDir && [fm fileExistsAtPath:index] )) {
         return NO;
     }
+    // Reject twin-game extracts sitting under this brand's App Support folder.
+    if (![self webRootMatchesProductGame:webRoot]) {
+        NSLog(@"Ignoring web root %@ — game payload does not match %@ brand", webRoot, [self productBaseName]);
+        return NO;
+    }
     if (requireStory) {
         // Preferring App Support requires a *complete* Bastion overlay, not just
         // story/autopilot.js sitting on an unpatched game extract.
         return [self bastionWebRootIsIntact:webRoot];
     }
     return YES;
+}
+
+/**
+ * True when the Vite entry chunk talks to this brand's live game APIs.
+ * Package id remains "redgalaxy-client@" for both products — domain is the signal.
+ */
+- (BOOL)webRootMatchesProductGame:(NSString *)webRoot {
+    if (webRoot.length == 0) {
+        return NO;
+    }
+    NSString *indexPath = [webRoot stringByAppendingPathComponent:@"index.html"];
+    NSString *html = [NSString stringWithContentsOfFile:indexPath encoding:NSUTF8StringEncoding error:nil];
+    if (html.length == 0) {
+        return NO;
+    }
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"/assets/(index-[^\"']+\\.js)"
+                                                                        options:0
+                                                                          error:nil];
+    NSTextCheckingResult *match = [re firstMatchInString:html options:0 range:NSMakeRange(0, html.length)];
+    if (!match || match.numberOfRanges < 2) {
+        return NO;
+    }
+    NSString *assetName = [html substringWithRange:[match rangeAtIndex:1]];
+    NSString *assetPath = [[webRoot stringByAppendingPathComponent:@"assets"] stringByAppendingPathComponent:assetName];
+    NSString *js = [NSString stringWithContentsOfFile:assetPath encoding:NSUTF8StringEncoding error:nil];
+    if (js.length == 0) {
+        return NO;
+    }
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    if ([js rangeOfString:@"aws-prod-api.redgalaxygame.space"].location != NSNotFound ||
+        [js rangeOfString:@"aws-api.redgalaxygame.space"].location != NSNotFound) {
+        return NO;
+    }
+    return [js rangeOfString:@"reduniverse.space"].location != NSNotFound;
+#else
+    if ([js rangeOfString:@"aws-prod-api.reduniverse.space"].location != NSNotFound ||
+        [js rangeOfString:@"aws-test-api.reduniverse.space"].location != NSNotFound) {
+        return NO;
+    }
+    return [js rangeOfString:@"redgalaxygame.space"].location != NSNotFound;
+#endif
 }
 
 /**
@@ -248,12 +390,15 @@
 
     NSTask *task = [[NSTask alloc] init];
     task.launchPath = @"/usr/bin/env";
-    task.arguments = @[ @"python3", patcher, @"--in-place", userWeb, @"--story-src", bundleStory ];
+    NSString *brandArg = [self isRedUniverseBrand] ? @"reduniverse" : @"redgalaxy";
+    task.arguments = @[ @"python3", patcher, @"--in-place", userWeb, @"--story-src", bundleStory, @"--brand", brandArg ];
     NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
     if (env == nil) {
         env = [NSMutableDictionary dictionary];
     }
     env[@"PATH"] = [self augmentedUpdaterPATH];
+    env[@"BASTION_BRAND"] = brandArg;
+    env[@"PRODUCT_BRAND"] = brandArg;
     task.environment = env;
     task.standardOutput = [NSPipe pipe];
     task.standardError = task.standardOutput;
@@ -293,7 +438,7 @@
     }
     NSActivityOptions options = NSActivityUserInitiatedAllowingIdleSystemSleep | NSActivityLatencyCritical;
     self.backgroundActivity = [[NSProcessInfo processInfo] beginActivityWithOptions:options
-                                                                             reason:@"RedGalaxy Bastion autopilot"];
+                                                                             reason:[NSString stringWithFormat:@"%@ autopilot", [self productDisplayName]]];
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
@@ -323,6 +468,12 @@
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     (void)notification;
+    if (self.webView != nil) {
+        @try {
+            [self.webView removeObserver:self forKeyPath:@"title"];
+        } @catch (__unused NSException *ex) {
+        }
+    }
     if (self.backgroundActivity != nil) {
         [[NSProcessInfo processInfo] endActivity:self.backgroundActivity];
         self.backgroundActivity = nil;
@@ -335,7 +486,7 @@
     NSMenuItem *appItem = [[NSMenuItem alloc] init];
     [menubar addItem:appItem];
     NSMenu *appMenu = [[NSMenu alloc] init];
-    NSString *quitTitle = [NSString stringWithFormat:@"Esci da %@", [self isStoryBundle] ? @"RedGalaxy Bastion" : @"RedGalaxy Native"];
+    NSString *quitTitle = [NSString stringWithFormat:@"Esci da %@", [self productDisplayName]];
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:quitTitle
                                                       action:@selector(terminate:)
                                                keyEquivalent:@"q"];
@@ -383,7 +534,7 @@
                                               styleMask:style
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
-    self.window.title = [self isStoryBundle] ? @"RedGalaxy Bastion" : @"RedGalaxy Native";
+    self.window.title = [self productDisplayName];
     self.window.minSize = NSMakeSize(960, 540);
     self.window.delegate = self;
     [self.window center];
@@ -392,11 +543,53 @@
     config.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
     [config.userContentController addScriptMessageHandler:self name:@"bastionHost"];
 
+    // Bake brand into every page load so story UI cannot drift to the twin product.
+    NSString *brandKey = [self isRedUniverseBrand] ? @"reduniverse" : @"redgalaxy";
+    NSString *brandBootstrap = [NSString stringWithFormat:
+        @"window.__BASTION_BRAND__=%@;"
+        @"window.__BASTION_BASE_NAME__=%@;"
+        @"window.__BASTION_PRODUCT_NAME__=%@;"
+        @"try{document.title=window.__BASTION_PRODUCT_NAME__;}catch(e){}"
+        @"document.addEventListener('DOMContentLoaded',function(){"
+        @"try{document.title=window.__BASTION_PRODUCT_NAME__;}catch(e){}"
+        @"});",
+        [self jsStringLiteral:brandKey],
+        [self jsStringLiteral:[self productBaseName]],
+        [self jsStringLiteral:[self productDisplayName]]];
+    WKUserScript *brandScript = [[WKUserScript alloc] initWithSource:brandBootstrap
+                                                       injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                    forMainFrameOnly:YES];
+    [config.userContentController addUserScript:brandScript];
+
     NSView *contentView = self.window.contentView;
     self.webView = [[WKWebView alloc] initWithFrame:contentView.bounds configuration:config];
     self.webView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+    // Prevent WKWebView page <title> (or misbranded story chrome) from renaming the app window.
+    [self.webView addObserver:self forKeyPath:@"title" options:NSKeyValueObservingOptionNew context:NULL];
     self.window.contentView = self.webView;
     [self.window makeKeyAndOrderFront:nil];
+}
+
+- (NSString *)jsStringLiteral:(NSString *)value {
+    NSString *escaped = [[value stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"]
+        stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+    return [NSString stringWithFormat:@"'%@'", escaped];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context {
+    (void)change;
+    (void)context;
+    if (object == self.webView && [keyPath isEqualToString:@"title"]) {
+        NSString *wanted = [self productDisplayName];
+        if (![self.window.title isEqualToString:wanted]) {
+            self.window.title = wanted;
+        }
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
 }
 
 - (void)userContentController:(WKUserContentController *)userContentController
@@ -426,11 +619,28 @@
     }
 }
 
-- (void)launchServerWithWebRoot:(NSString *)webRoot {
+- (NSString *)resolvedNativeServerPath {
     NSString *bundlePath = [[NSBundle mainBundle] bundlePath];
-    NSString *serverPath = [bundlePath stringByAppendingPathComponent:@"Contents/MacOS/redgalaxy-native-server"];
-    if (![[NSFileManager defaultManager] isExecutableFileAtPath:serverPath]) {
-        NSLog(@"RedGalaxy native server not found: %@", serverPath);
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray<NSString *> *names = @[
+        [self nativeServerExecutableName],
+        // Legacy shared name from pre-split builds.
+        @"redgalaxy-native-server",
+    ];
+    for (NSString *name in names) {
+        NSString *path = [bundlePath stringByAppendingPathComponent:
+            [NSString stringWithFormat:@"Contents/MacOS/%@", name]];
+        if ([fm isExecutableFileAtPath:path]) {
+            return path;
+        }
+    }
+    return nil;
+}
+
+- (void)launchServerWithWebRoot:(NSString *)webRoot {
+    NSString *serverPath = [self resolvedNativeServerPath];
+    if (serverPath.length == 0) {
+        NSLog(@"%@ native server not found (expected %@)", [self productDisplayName], [self nativeServerExecutableName]);
         [NSApp terminate:nil];
         return;
     }
@@ -667,7 +877,14 @@
 }
 
 - (NSString *)installedClientVersion {
-    // Live game web embed is source of truth — version.txt can lie after partial updates.
+    // Prefer version.txt: RedUniverse Tauri wrapper version (e.g. 1.0.12) differs from
+    // the still-embedded redgalaxy-client@0.6.x package id in game JS.
+    NSString *versionFile = [self versionFilePath];
+    NSString *stored = [NSString stringWithContentsOfFile:versionFile encoding:NSUTF8StringEncoding error:nil];
+    stored = [[stored stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+    if (stored.length > 0) {
+        return stored;
+    }
     NSString *fromUser = [self versionFromAssetsInWebRoot:[self userWebRoot]];
     if (fromUser.length > 0) {
         return fromUser;
@@ -675,12 +892,6 @@
     NSString *fromBundle = [self versionFromAssetsInWebRoot:[self bundleWebRoot]];
     if (fromBundle.length > 0) {
         return fromBundle;
-    }
-    NSString *versionFile = [self versionFilePath];
-    NSString *stored = [NSString stringWithContentsOfFile:versionFile encoding:NSUTF8StringEncoding error:nil];
-    stored = [[stored stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
-    if (stored.length > 0) {
-        return stored;
     }
     return nil;
 }
@@ -738,14 +949,18 @@
 }
 
 - (NSString *)fetchLatestClientVersion {
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    NSURL *url = [NSURL URLWithString:@"https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json"];
+#else
     NSURL *url = [NSURL URLWithString:@"https://updates.redgalaxygame.space/latest.json"];
+#endif
     if (!url) {
         return nil;
     }
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"GET";
-    [request setValue:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedGalaxy-Bastion-Updater/1.0" forHTTPHeaderField:@"User-Agent"];
+    [request setValue:[self updaterUserAgent] forHTTPHeaderField:@"User-Agent"];
     request.timeoutInterval = 20.0;
 
     __block NSData *payload = nil;
@@ -800,7 +1015,7 @@
     alert.alertStyle = NSAlertStyleInformational;
     alert.messageText = [self isStoryBundle]
         ? @"Aggiornamento gioco disponibile"
-        : @"Aggiornamento RedGalaxy disponibile";
+        : [NSString stringWithFormat:@"Aggiornamento %@ disponibile", [self productBaseName]];
     NSString *extra = [self isStoryBundle]
         ? @"\n\nVerranno aggiornati solo gli asset ufficiali del gioco. Autopilot, licenza e UI Bastion restano intatti."
         : @"";
@@ -891,7 +1106,9 @@
         alert.messageText = @"Aggiornamento non disponibile";
         alert.informativeText = [self isStoryBundle]
             ? @"Questa copia di Bastion non contiene lo strumento di aggiornamento. Ricostruisci il DMG o esegui: REDGALAXY_BASTION=1 ./bin/redgalaxy-mac-runner update-bastion --yes --silent"
-            : @"Questa copia di RedGalaxy Native non contiene lo strumento di aggiornamento. Ricostruisci il DMG o esegui: ./bin/redgalaxy-mac-runner update-native --yes --silent";
+            : [NSString stringWithFormat:
+                @"Questa copia di %@ non contiene lo strumento di aggiornamento. Ricostruisci il DMG o esegui: ./bin/redgalaxy-mac-runner update-native --yes --silent",
+                [self productDisplayName]];
         [alert runModal];
         return;
     }
@@ -945,9 +1162,16 @@
     env[@"PATH"] = [self augmentedUpdaterPATH];
     // Do not force BROTLI=bundled here: the runner smoke-tests candidates and
     // prefers a working Homebrew/system brotli over a broken bundle copy.
+    NSString *brandKey = [self isRedUniverseBrand] ? @"reduniverse" : @"redgalaxy";
+    env[@"BASTION_BRAND"] = brandKey;
+    env[@"PRODUCT_BRAND"] = brandKey;
+    if ([self isRedUniverseBrand]) {
+        env[@"REDUNIVERSE_BASTION"] = @"1";
+    } else {
+        env[@"REDGALAXY_BASTION"] = @"1";
+    }
     if ([self isStoryBundle]) {
         self.updateTask.arguments = @[runner, @"update-bastion", @"--yes", @"--silent"];
-        env[@"REDGALAXY_BASTION"] = @"1";
     } else {
         self.updateTask.arguments = @[runner, @"update-native", @"--yes", @"--silent"];
     }
@@ -989,9 +1213,9 @@
                 alert.alertStyle = NSAlertStyleWarning;
                 alert.messageText = @"Aggiornamento non riuscito";
                 NSString *shortError = [weakSelf shortErrorFromUpdaterOutput:weakSelf.updateOutputBuffer];
-                NSString *logHint = [weakSelf isStoryBundle]
-                    ? @"Dettagli nei log: ~/Library/Logs/RedGalaxy Bastion. L'app continua a usare gli asset inclusi nel bundle."
-                    : @"Dettagli nei log: ~/Library/Logs/RedGalaxy Native. L'app continua a usare gli asset inclusi nel bundle.";
+                NSString *logHint = [NSString stringWithFormat:
+                    @"Dettagli nei log: ~/Library/Logs/%@. L'app continua a usare gli asset inclusi nel bundle.",
+                    [weakSelf productDisplayName]];
                 if (shortError.length > 0) {
                     alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@", shortError, logHint];
                 } else {
@@ -1024,7 +1248,7 @@
 - (NSString *)bastionAppVersion {
     NSString *v = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
     v = [v stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return v.length > 0 ? v : @"1.0.0";
+    return v.length > 0 ? v : @"1.0.1";
 }
 
 - (NSString *)playerSafeBastionNotes:(NSString *)notes {
@@ -1061,7 +1285,7 @@
     NSString *parent = [bundlePath stringByDeletingLastPathComponent];
     NSString *appName = [bundlePath lastPathComponent];
     if (appName.length == 0) {
-        appName = @"RedGalaxy Bastion.app";
+        appName = [self productAppFileName];
     }
 
     if (![self pathLooksLikeMountedDiskImage:bundlePath] && [self directoryIsWritable:parent]) {
@@ -1070,15 +1294,15 @@
 
     NSString *applications = @"/Applications";
     if ([self directoryIsWritable:applications]) {
-        return [applications stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+        return [applications stringByAppendingPathComponent:[self productAppFileName]];
     }
 
     NSArray<NSString *> *userApps = NSSearchPathForDirectoriesInDomains(NSApplicationDirectory, NSUserDomainMask, YES);
     if (userApps.count > 0 && [self directoryIsWritable:userApps[0]]) {
-        return [userApps[0] stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+        return [userApps[0] stringByAppendingPathComponent:[self productAppFileName]];
     }
 
-    return [applications stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+    return [applications stringByAppendingPathComponent:[self productAppFileName]];
 }
 
 - (NSString *)runShellCommand:(NSString *)launchPath arguments:(NSArray<NSString *> *)arguments output:(NSString **)outOutput {
@@ -1176,13 +1400,24 @@
         return nil;
     }
     NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *preferred = [root stringByAppendingPathComponent:@"RedGalaxy Bastion.app"];
+    NSString *preferred = [root stringByAppendingPathComponent:[self productAppFileName]];
     if ([fm fileExistsAtPath:preferred]) {
         return preferred;
     }
 
+    NSString *brandToken = [self productBaseName].lowercaseString;
     NSDirectoryEnumerator *enumerator = [fm enumeratorAtPath:root];
     NSString *relative = nil;
+    while ((relative = [enumerator nextObject])) {
+        if ([relative.pathExtension.lowercaseString isEqualToString:@"app"] &&
+            [relative.lastPathComponent.lowercaseString containsString:@"bastion"] &&
+            [relative.lastPathComponent.lowercaseString containsString:brandToken]) {
+            [enumerator skipDescendants];
+            return [root stringByAppendingPathComponent:relative];
+        }
+    }
+
+    enumerator = [fm enumeratorAtPath:root];
     while ((relative = [enumerator nextObject])) {
         if ([relative.pathExtension.lowercaseString isEqualToString:@"app"] &&
             [relative.lastPathComponent.lowercaseString containsString:@"bastion"]) {
@@ -1214,7 +1449,7 @@
         [self unmountBastionVolume:mountPoint];
         if (outError) {
             *outError = [NSError errorWithDomain:@"BastionUpdate" code:6 userInfo:@{
-                NSLocalizedDescriptionKey: @"Nel DMG non c'è RedGalaxy Bastion.app"
+                NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Nel DMG non c'è %@", [self productAppFileName]]
             }];
         }
         return NO;
@@ -1350,8 +1585,7 @@
     }
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
     request.HTTPMethod = @"GET";
-    [request setValue:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedGalaxy-Bastion-Updater/1.0"
-    forHTTPHeaderField:@"User-Agent"];
+    [request setValue:[self updaterUserAgent] forHTTPHeaderField:@"User-Agent"];
     request.timeoutInterval = 20.0;
 
     __block NSData *payload = nil;
@@ -1389,8 +1623,7 @@
     [[NSFileManager defaultManager] removeItemAtPath:partial error:nil];
 
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
-    [request setValue:@"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedGalaxy-Bastion-Updater/1.0"
-    forHTTPHeaderField:@"User-Agent"];
+    [request setValue:[self updaterUserAgent] forHTTPHeaderField:@"User-Agent"];
     request.timeoutInterval = 300.0;
 
     __block NSData *payload = nil;
@@ -1521,14 +1754,15 @@
 
     NSArray<NSString *> *dirs = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
     NSString *cacheRoot = dirs.count > 0 ? dirs[0] : NSTemporaryDirectory();
-    NSString *downloads = [cacheRoot stringByAppendingPathComponent:@"RedGalaxyBastionUpdates"];
+    NSString *downloads = [cacheRoot stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"%@BastionUpdates", [self productBaseName]]];
     [[NSFileManager defaultManager] createDirectoryAtPath:downloads
                               withIntermediateDirectories:YES
                                                attributes:nil
                                                     error:nil];
     NSString *fileName = [[NSURL URLWithString:dmg] lastPathComponent];
     if (fileName.length == 0) {
-        fileName = [NSString stringWithFormat:@"RedGalaxy-Bastion-%@.dmg", remote];
+        fileName = [NSString stringWithFormat:@"%@-Bastion-%@.dmg", [self productBaseName], remote];
     }
     NSString *destPath = [downloads stringByAppendingPathComponent:fileName];
 
@@ -1552,8 +1786,9 @@
         alert.alertStyle = NSAlertStyleWarning;
         alert.messageText = @"Installazione automatica non riuscita";
         alert.informativeText = [NSString stringWithFormat:
-            @"%@\n\nHo aperto il DMG scaricato. Copia RedGalaxy Bastion.app nella cartella Applicazioni e riavvia.",
-            installError.localizedDescription ?: @"Errore sconosciuto"];
+            @"%@\n\nHo aperto il DMG scaricato. Copia %@ nella cartella Applicazioni e riavvia.",
+            installError.localizedDescription ?: @"Errore sconosciuto",
+            [self productAppFileName]];
         [alert runModal];
         return;
     }

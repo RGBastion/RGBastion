@@ -1,10 +1,10 @@
-# RedGalaxy Mac Runner
+# RedUniverse Mac Runner (ex RedGalaxy)
 
 Runner gratuito per installare e testare `~/Desktop/RedGalaxy-Setup.exe` su macOS senza CrossOver, abbonamenti o wrapper commerciali.
 
 ## Modalita principale: native-web
 
-Il client RedGalaxy installato dall'EXE e' una app Tauri/WebView2. Su questo Mac il runtime Windows parte con Wine, ma WebView2 crasha durante l'inizializzazione Vulkan/MoltenVK. Per evitarlo, il runner estrae HTML, JS, CSS, immagini, font e lingue direttamente da `redgalaxy-client.exe`, poi li serve in locale dal browser del Mac.
+Il client RedGalaxy installato dall'EXE e' una app Tauri/WebView2. Su questo Mac il runtime Windows parte con Wine, ma WebView2 crasha durante l'inizializzazione Vulkan/MoltenVK. Per evitarlo, il runner estrae HTML, JS, CSS, immagini, font e lingue direttamente da `reduniverse-pc-client.exe`, poi li serve in locale dal browser del Mac.
 
 Avvio consigliato:
 
@@ -15,8 +15,8 @@ Avvio consigliato:
 Oppure doppio clic su:
 
 ```text
-~/Desktop/Apri RedGalaxy.command
-RedGalaxy Native Web.command
+~/Desktop/Apri RedUniverse.command
+RedUniverse Native Web.command
 ```
 
 URL locale:
@@ -40,14 +40,14 @@ Ho aggiunto anche una app nativa macOS, senza Wine e senza Python sul Mac di des
 DMG generato:
 
 ```text
-dist/RedGalaxy-Native.dmg
+dist/RedUniverse-Native.dmg
 ```
 
-Dentro al DMG c'e' `RedGalaxy Native.app`. Trascinala in `Applications` e aprila: sceglie `127.0.0.1:8765` se libero, altrimenti prova le porte successive, e apre una finestra dedicata della app (embed) con il gioco.
+Dentro al DMG c'e' `RedUniverse Native.app`. Trascinala in `Applications` e aprila: sceglie `127.0.0.1:8765` se libero, altrimenti prova le porte successive, e apre una finestra dedicata della app (embed) con il gioco.
 
 Se al momento del build manca Swift/Xcode, l'app torna automaticamente al launcher legacy (che apre il browser esterno), altrimenti viene usata la shell WebView integrata.
 
-Il file `RedGalaxy Native Web.command` ora lancia l'app solo se disponibile l'host embed (`redgalaxy-native-host`); altrimenti usa il launcher CLI in `serve-web-foreground`.
+Il file `RedUniverse Native Web.command` ora lancia l'app solo se disponibile l'host embed (`redgalaxy-native-host`); altrimenti usa il launcher CLI in `serve-web-foreground`.
 
 Per rigenerare il DMG:
 
@@ -67,7 +67,7 @@ Esiste una DMG macOS per **guidare la nave in autonomia**:
 ./tools/build_redgalaxy_story_dmg.sh
 ```
 
-Output: `dist/RedGalaxy-Bastion.dmg` con `RedGalaxy Bastion.app`.
+Output: `dist/RedUniverse-Bastion.dmg` con `RedUniverse Bastion.app`.
 
 Avvio bot dopo login: `http://127.0.0.1:8765/?auto=1`
 
@@ -88,8 +88,8 @@ Stesso contenuto story/autopilot, host Electron (finestra nativa + server HTTP l
 Artifact tipici:
 
 ```text
-dist/RedGalaxy-Bastion.exe              # portable single-file (anche buildabile da macOS)
-dist/RedGalaxy-Bastion-1.0.2-x64.zip    # cartella Electron unpackata
+dist/RedUniverse-Bastion.exe              # portable single-file (anche buildabile da macOS)
+dist/RedUniverse-Bastion-1.0.2-x64.zip    # cartella Electron unpackata
 dist/windows-bastion/                   # output completo electron-builder
 ```
 
@@ -100,12 +100,12 @@ Licenza prodotto: `redgalaxy-story` (invariata). Dettagli: `tools/windows-bastio
 Entrambe le app Mac controllano all’avvio il manifest ufficiale e offrono **Gioco → Aggiorna gioco…**:
 
 ```text
-https://updates.redgalaxygame.space/latest.json
+https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json
 ```
 
 L’updater scarica l’installer ufficiale, estrae il client web (brotli incluso nel `.app`) e scrive in Application Support. Se l’update fallisce, resta il web incluso nel bundle.
 
-### RedGalaxy Native (solo gioco ufficiale)
+### RedUniverse Native (solo gioco ufficiale)
 
 Nessuna patch Bastion/story: solo gli asset ufficiali del gioco. Dopo l’update l’app ricarica da sola.
 
@@ -120,11 +120,11 @@ Da CLI:
 
 | | Path |
 |--|------|
-| Asset aggiornati | `~/Library/Application Support/RedGalaxy Native/web` |
-| Log update | `~/Library/Logs/RedGalaxy Native/` |
-| Fallback | web in `RedGalaxy Native.app/Contents/Resources/web` |
+| Asset aggiornati | `~/Library/Application Support/RedUniverse Native/web` |
+| Log update | `~/Library/Logs/RedUniverse Native/` |
+| Fallback | web in `RedUniverse Native.app/Contents/Resources/web` |
 
-### RedGalaxy Bastion (stesso flusso + patch story)
+### RedUniverse Bastion (stesso flusso + patch story)
 
 Bastion aggiorna gli asset **ufficiali** del gioco e riapplica autopilot/hook Bastion.
 
@@ -136,8 +136,8 @@ Oppure dall’app: all’avvio (dialogo) / menu **Gioco → Aggiorna gioco…** 
 
 | | Path |
 |--|------|
-| Asset aggiornati | `~/Library/Application Support/RedGalaxy Bastion/web` |
-| Log update | `~/Library/Logs/RedGalaxy Bastion/` |
+| Asset aggiornati | `~/Library/Application Support/RedUniverse Bastion/web` |
+| Log update | `~/Library/Logs/RedUniverse Bastion/` |
 | Fallback | web incluso nel `.app` |
 
 Dettagli: `tools/story/README.md`.
@@ -175,7 +175,7 @@ Avvia solo il server locale in primo piano, senza aprire il browser:
 Installazione Windows completata. Client installato:
 
 ```text
-~/Library/Application Support/RedGalaxy Mac Runner/prefix/drive_c/users/andersonguillin/AppData/Local/RedGalaxy/redgalaxy-client.exe
+~/Library/Application Support/RedUniverse Mac Runner/prefix/drive_c/users/andersonguillin/AppData/Local/RedGalaxy/reduniverse-pc-client.exe
 ```
 
 Estrazione native-web completata in:
@@ -191,8 +191,8 @@ Verifiche eseguite:
 - `redgalaxy.png`: HTTP 200.
 - `lang/tr.json`: HTTP 200 e JSON valido.
 - Browser locale: titolo `RedGalaxy`, canvas presente, schermata login tradotta, nessuna immagine rotta, nessun errore console.
-- DMG `dist/RedGalaxy-Native.dmg`: creato e verificato con checksum valido.
-- Server nativo dentro `RedGalaxy Native.app`: `index.html` e `assets/index-uwR9Xy88.js` testati con HTTP 200.
+- DMG `dist/RedUniverse-Native.dmg`: creato e verificato con checksum valido.
+- Server nativo dentro `RedUniverse Native.app`: `index.html` e `assets/index-uwR9Xy88.js` testati con HTTP 200.
 - API esterne `aws-prod-api.redgalaxygame.space` e `aws-api.redgalaxygame.space`: raggiungibili via HTTPS.
 - Server realtime `aws-prod-game.redgalaxygame.space:2567` e `aws-game.redgalaxygame.space:2567`: porta TCP raggiungibile.
 
@@ -202,7 +202,7 @@ Non ho inviato credenziali ne' eseguito login su server esterni.
 
 - `python3`, gia' disponibile su macOS in questo ambiente.
 - `brotli`, installato con Homebrew per decomprimere gli asset Tauri.
-- Wine locale gratuito solo per eseguire l'installer Windows e ottenere `redgalaxy-client.exe`; non e' usato per giocare nella modalita `native-web`.
+- Wine locale gratuito solo per eseguire l'installer Windows e ottenere `reduniverse-pc-client.exe`; non e' usato per giocare nella modalita `native-web`.
 
 ## AntiBot Lab
 

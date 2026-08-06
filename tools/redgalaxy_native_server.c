@@ -48,7 +48,8 @@ static bool file_exists(const char *path) {
 }
 
 static bool try_set_user_web_root(void) {
-    const char *env_root = getenv("REDGALAXY_WEB_ROOT");
+    const char *env_root = getenv("REDUNIVERSE_WEB_ROOT");
+    if (!env_root || !env_root[0]) env_root = getenv("REDGALAXY_WEB_ROOT");
     if (env_root && env_root[0]) {
         snprintf(g_root, sizeof(g_root), "%s", env_root);
         return true;
@@ -58,15 +59,35 @@ static bool try_set_user_web_root(void) {
     if (!home || !home[0]) return false;
 
     char candidate[PATH_MAX];
-    snprintf(candidate, sizeof(candidate), "%s/Library/Application Support/RedGalaxy Native/web", home);
-    if (!dir_exists(candidate)) return false;
+    /* Brand-specific App Support only — never cross RG ↔ RU.
+     * Compile-time brand is required (see BASTION_BRAND_*). */
+#if defined(BASTION_BRAND_REDUNIVERSE)
+    const char *support_names[] = {
+        "RedUniverse Bastion",
+        "RedUniverse",
+        "RedUniverse Native",
+    };
+#elif defined(BASTION_BRAND_REDGALAXY)
+    const char *support_names[] = {
+        "RedGalaxy Bastion",
+        "RedGalaxy Native",
+        "RedGalaxy",
+    };
+#else
+#error "Define BASTION_BRAND_REDGALAXY=1 or BASTION_BRAND_REDUNIVERSE=1 at compile time"
+#endif
+    for (size_t i = 0; i < sizeof(support_names) / sizeof(support_names[0]); i++) {
+        snprintf(candidate, sizeof(candidate), "%s/Library/Application Support/%s/web", home, support_names[i]);
+        if (!dir_exists(candidate)) continue;
 
-    char index_path[PATH_MAX];
-    snprintf(index_path, sizeof(index_path), "%s/index.html", candidate);
-    if (!file_exists(index_path)) return false;
+        char index_path[PATH_MAX];
+        snprintf(index_path, sizeof(index_path), "%s/index.html", candidate);
+        if (!file_exists(index_path)) continue;
 
-    snprintf(g_root, sizeof(g_root), "%s", candidate);
-    return true;
+        snprintf(g_root, sizeof(g_root), "%s", candidate);
+        return true;
+    }
+    return false;
 }
 
 static void die(const char *fmt, ...) {
@@ -368,7 +389,7 @@ int main(int argc, char **argv) {
         die("Cannot bind local server near port %d: %s", preferred_port, strerror(errno));
     }
 
-    printf("RedGalaxy Native is serving %s\n", g_root_real);
+    printf("Bastion native server is serving %s\n", g_root_real);
     printf("Open http://127.0.0.1:%d/\n", port);
     fflush(stdout);
 

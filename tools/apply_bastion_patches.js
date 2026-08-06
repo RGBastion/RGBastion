@@ -124,21 +124,27 @@ function patchIndexHtml(root) {
   console.log(`Patched: ${indexPath}`);
 }
 
+// Minified identifiers change between builds (0.6.23: Mt→Ct, K→W, bonus T→S).
 const GAME_HOOK_RE =
-  /(const e=new Mt\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(e\))/;
+  /(const e=new \w+\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(e\))/;
 const NET_HOOK_RE =
   /const (\w+)=new (\w+),(\w+)=Object\.freeze\(Object\.defineProperty/;
 const NET_HOOK_ALREADY_RE =
   /const (\w+)=new (\w+);window\.__RG_NET__=\1;const (\w+)=Object\.freeze\(Object\.defineProperty/;
 const NET_HOOK_BROKEN_RE =
   /const (\w+)=new (\w+);window\.__RG_NET__=\1,(\w+)=Object\.freeze\(Object\.defineProperty/;
-const STATE_HOOK_RE = /const K=(\w+)\(\),(\w+)=new Set/;
-const STATE_HOOK_ALREADY_RE = /const K=\w+\(\);window\.__RG_STATE__=K;const \w+=new Set/;
+const STATE_HOOK_RE =
+  /(preservedLocalSlow:null\}\})const (\w+)=(\w+)\(\),(\w+)=new Set/;
+const STATE_HOOK_FALLBACK_RE =
+  /const (\w+)=(\w+)\(\),(\w+)=new Set;function (\w+)\((\w+)\)\{\3\.add/;
+const STATE_HOOK_ALREADY_RE =
+  /const (\w+)=\w+\(\);window\.__RG_STATE__=\1;const \w+=new Set/;
 const BONUS_HOOK_RE =
-  /(\w+)\.onMessage\("bonusBoxCollected",T=>\{e\.onBonusBoxCollected\(T\)\}\)/;
+  /(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{e\.onBonusBoxCollected\(\2\)\}\)/;
 const MAP_DIMS_RE =
-  /e\.map_width&&\(K\.mapWidth=e\.map_width\),e\.map_height&&\(K\.mapHeight=e\.map_height\)/;
+  /(\w+)\.map_width&&\((\w+)\.mapWidth=\1\.map_width\),\1\.map_height&&\(\2\.mapHeight=\1\.map_height\)/;
 const MAP_DIMS_ALREADY = "window.__RG_MAP_W__";
+const GAME_BOOTSTRAP_RE = /new \w+\.Game\(/;
 
 function patchGameHook(text) {
   if (text.includes("window.__RG_GAME__=e") && !GAME_HOOK_RE.test(text)) {
@@ -170,36 +176,50 @@ function patchNetHook(text) {
 function patchStateHook(text) {
   if (STATE_HOOK_ALREADY_RE.test(text)) return [text, "already"];
   const m = text.match(STATE_HOOK_RE);
-  if (!m) return [text, null];
-  const [, factory, setVar] = m;
-  const repl = `const K=${factory}();window.__RG_STATE__=K;const ${setVar}=new Set`;
-  return [text.replace(m[0], repl), "patched"];
+  if (m) {
+    const [, prefix, stateVar, factory, setVar] = m;
+    const repl =
+      `${prefix}const ${stateVar}=${factory}();` +
+      `window.__RG_STATE__=${stateVar};const ${setVar}=new Set`;
+    return [text.replace(m[0], repl), "patched"];
+  }
+  const fb = text.match(STATE_HOOK_FALLBACK_RE);
+  if (!fb) return [text, null];
+  const [, stateVar, factory, setVar, fnName, arg] = fb;
+  const repl =
+    `const ${stateVar}=${factory}();window.__RG_STATE__=${stateVar};` +
+    `const ${setVar}=new Set;function ${fnName}(${arg}){${setVar}.add`;
+  return [text.replace(fb[0], repl), "patched"];
 }
 
 function patchBonusHook(text) {
   if (text.includes("window.__RG_STORY_ON_BONUS__")) return [text, "already"];
   const m = text.match(BONUS_HOOK_RE);
   if (!m) return [text, null];
-  const netVar = m[1];
+  const [, netVar, arg] = m;
   const repl =
-    `${netVar}.onMessage("bonusBoxCollected",T=>{e.onBonusBoxCollected(T),` +
-    "window.__RG_STORY_ON_BONUS__?.(T)})";
-  return [text.replace(BONUS_HOOK_RE, repl), "patched"];
+    `${netVar}.onMessage("bonusBoxCollected",${arg}=>{e.onBonusBoxCollected(${arg}),` +
+    `window.__RG_STORY_ON_BONUS__?.(${arg})})`;
+  return [text.replace(m[0], repl), "patched"];
 }
 
 function patchMapDims(text) {
   if (text.includes(MAP_DIMS_ALREADY)) return [text, "already"];
-  if (!MAP_DIMS_RE.test(text)) return [text, null];
+  const m = text.match(MAP_DIMS_RE);
+  if (!m) return [text, null];
+  const [, msgVar, stateVar] = m;
   const repl =
-    "e.map_width&&(K.mapWidth=e.map_width,window.__RG_MAP_W__=e.map_width)," +
-    "e.map_height&&(K.mapHeight=e.map_height,window.__RG_MAP_H__=e.map_height)";
-  return [text.replace(MAP_DIMS_RE, repl), "patched"];
+    `${msgVar}.map_width&&(${stateVar}.mapWidth=${msgVar}.map_width,` +
+    `window.__RG_MAP_W__=${msgVar}.map_width),` +
+    `${msgVar}.map_height&&(${stateVar}.mapHeight=${msgVar}.map_height,` +
+    `window.__RG_MAP_H__=${msgVar}.map_height)`;
+  return [text.replace(m[0], repl), "patched"];
 }
 
 function patchOneAsset(jsPath) {
   let text = fs.readFileSync(jsPath, "utf8");
   if (
-    !text.includes("new Mt.Game(") &&
+    !GAME_BOOTSTRAP_RE.test(text) &&
     !text.includes("bonusBoxCollected") &&
     !text.includes("map_width")
   ) {

@@ -1,19 +1,69 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="RedGalaxy Mac Runner"
+APP_NAME="RedUniverse Mac Runner"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_MODE=0
 BASTION_MODE=0
-if [[ "$SCRIPT_DIR" == *"/RedGalaxy Bastion.app/Contents/Resources" ]]; then
+# Product brand: redgalaxy | reduniverse. Detected from .app path when bundled;
+# overridable via BASTION_BRAND / PRODUCT_BRAND env.
+PRODUCT_BRAND="${BASTION_BRAND:-${PRODUCT_BRAND:-}}"
+if [[ "$SCRIPT_DIR" == *"/RedUniverse Bastion.app/Contents/Resources" ]] || [[ "$SCRIPT_DIR" == *"/RedGalaxy Bastion.app/Contents/Resources" ]]; then
   BUNDLE_MODE=1
   BASTION_MODE=1
-elif [[ "$SCRIPT_DIR" == *"/RedGalaxy Native.app/Contents/Resources" ]]; then
+elif [[ "$SCRIPT_DIR" == *"/RedUniverse.app/Contents/Resources" ]] || [[ "$SCRIPT_DIR" == *"/RedUniverse Native.app/Contents/Resources" ]] || [[ "$SCRIPT_DIR" == *"/RedGalaxy Native.app/Contents/Resources" ]]; then
   BUNDLE_MODE=1
 fi
-if [[ "${REDGALAXY_BASTION:-0}" == "1" ]]; then
+if [[ "${REDGALAXY_BASTION:-0}" == "1" ]] || [[ "${REDUNIVERSE_BASTION:-0}" == "1" ]]; then
   BASTION_MODE=1
 fi
+
+if [[ -z "$PRODUCT_BRAND" ]]; then
+  if [[ "$SCRIPT_DIR" == *"/RedGalaxy Bastion.app/"* ]] || [[ "$SCRIPT_DIR" == *"/RedGalaxy Native.app/"* ]] || [[ "${REDGALAXY_BASTION:-0}" == "1" ]]; then
+    PRODUCT_BRAND="redgalaxy"
+  elif [[ "$SCRIPT_DIR" == *"/RedUniverse Bastion.app/"* ]] || [[ "$SCRIPT_DIR" == *"/RedUniverse.app/"* ]] || [[ "$SCRIPT_DIR" == *"/RedUniverse Native.app/"* ]] || [[ "${REDUNIVERSE_BASTION:-0}" == "1" ]]; then
+    PRODUCT_BRAND="reduniverse"
+  else
+    # Dev/tree default follows the twin-client installer currently on Desktop.
+    PRODUCT_BRAND="reduniverse"
+  fi
+fi
+
+case "$PRODUCT_BRAND" in
+  redgalaxy|rg)
+    PRODUCT_BRAND="redgalaxy"
+    PRODUCT_BASE_NAME="RedGalaxy"
+    PRODUCT_NATIVE_NAME="RedGalaxy Native"
+    PRODUCT_BASTION_NAME="RedGalaxy Bastion"
+    DEFAULT_EXE_CANDIDATES=(
+      "$HOME/Desktop/RedGalaxy-Setup.exe"
+      "$HOME/Desktop/RedGalaxy_0.6.23_x64-setup.exe"
+    )
+    BRAND_OFFICIAL_SITE="https://www.redgalaxygame.space"
+    BRAND_UPDATE_MANIFEST_URL="https://updates.redgalaxygame.space/latest.json"
+    BRAND_UPDATE_INSTALLER_URL="https://updates.redgalaxygame.space/RedGalaxy-Setup.exe"
+    BRAND_SETUP_GLOBS=('RedGalaxy*setup*.exe' 'redgalaxy*setup*.exe')
+    ;;
+  reduniverse|ru)
+    PRODUCT_BRAND="reduniverse"
+    PRODUCT_BASE_NAME="RedUniverse"
+    PRODUCT_NATIVE_NAME="RedUniverse"
+    PRODUCT_BASTION_NAME="RedUniverse Bastion"
+    DEFAULT_EXE_CANDIDATES=(
+      "$HOME/Desktop/RedUniverse_1.0.12_x64-setup.exe"
+      "$HOME/Desktop/RedUniverse-Setup.exe"
+    )
+    BRAND_OFFICIAL_SITE="https://reduniverse.space"
+    BRAND_UPDATE_MANIFEST_URL="https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json"
+    BRAND_UPDATE_INSTALLER_URL="https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/RedUniverse_1.0.12_x64-setup.exe"
+    BRAND_SETUP_GLOBS=('RedUniverse*setup*.exe' 'reduniverse*setup*.exe')
+    ;;
+  *)
+    echo "Unknown PRODUCT_BRAND='$PRODUCT_BRAND' (use redgalaxy|reduniverse)" >&2
+    exit 1
+    ;;
+esac
+APP_NAME="$PRODUCT_BASE_NAME Mac Runner"
 
 # GUI-launched apps inherit a minimal PATH without Homebrew. Prepend common
 # locations and any brotli shipped inside the .app Resources tree.
@@ -47,29 +97,39 @@ augment_tool_path() {
 augment_tool_path
 
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-DEFAULT_EXE="$HOME/Desktop/RedGalaxy-Setup.exe"
-OFFICIAL_SITE="${REDGALAXY_OFFICIAL_SITE:-https://www.redgalaxygame.space}"
-UPDATE_MANIFEST_URL="${REDGALAXY_UPDATE_MANIFEST_URL:-https://updates.redgalaxygame.space/latest.json}"
-UPDATE_INSTALLER_URL="${REDGALAXY_UPDATE_INSTALLER_URL:-https://updates.redgalaxygame.space/RedGalaxy-Setup.exe}"
-UPDATE_USER_AGENT="${REDGALAXY_UPDATE_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) RedGalaxy-Bastion-Updater/1.0}"
-NATIVE_SUPPORT_DIR="$HOME/Library/Application Support/RedGalaxy Native"
-BASTION_SUPPORT_DIR="$HOME/Library/Application Support/RedGalaxy Bastion"
+DEFAULT_EXE=""
+for _cand in "${DEFAULT_EXE_CANDIDATES[@]}"; do
+  if [[ -f "$_cand" ]]; then
+    DEFAULT_EXE="$_cand"
+    break
+  fi
+done
+if [[ -z "$DEFAULT_EXE" ]]; then
+  DEFAULT_EXE="${DEFAULT_EXE_CANDIDATES[0]}"
+fi
+OFFICIAL_SITE="${REDGALAXY_OFFICIAL_SITE:-${REDUNIVERSE_OFFICIAL_SITE:-$BRAND_OFFICIAL_SITE}}"
+UPDATE_MANIFEST_URL="${REDGALAXY_UPDATE_MANIFEST_URL:-${REDUNIVERSE_UPDATE_MANIFEST_URL:-$BRAND_UPDATE_MANIFEST_URL}}"
+UPDATE_INSTALLER_URL="${REDGALAXY_UPDATE_INSTALLER_URL:-${REDUNIVERSE_UPDATE_INSTALLER_URL:-$BRAND_UPDATE_INSTALLER_URL}}"
+UPDATE_USER_AGENT="${REDGALAXY_UPDATE_USER_AGENT:-${REDUNIVERSE_UPDATE_USER_AGENT:-Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ${PRODUCT_BASE_NAME}-Bastion-Updater/1.0}}"
+NATIVE_SUPPORT_DIR="$HOME/Library/Application Support/$PRODUCT_NATIVE_NAME"
+BASTION_SUPPORT_DIR="$HOME/Library/Application Support/$PRODUCT_BASTION_NAME"
 NATIVE_APP_WEB_DIR="$NATIVE_SUPPORT_DIR/web"
 BASTION_APP_WEB_DIR="$BASTION_SUPPORT_DIR/web"
 NATIVE_VERSION_FILE="$NATIVE_SUPPORT_DIR/version.txt"
 BASTION_VERSION_FILE="$BASTION_SUPPORT_DIR/version.txt"
 NATIVE_DOWNLOAD_DIR="$NATIVE_SUPPORT_DIR/downloads"
 BASTION_DOWNLOAD_DIR="$BASTION_SUPPORT_DIR/downloads"
-DATA_DIR="${REDGALAXY_DATA_DIR:-$HOME/Library/Application Support/RedGalaxy Mac Runner}"
+DATA_DIR="${REDGALAXY_DATA_DIR:-${REDUNIVERSE_DATA_DIR:-$HOME/Library/Application Support/$PRODUCT_BASE_NAME Mac Runner}}"
 PREFIX_DIR="${REDGALAXY_WINEPREFIX:-$DATA_DIR/prefix}"
-LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Mac Runner}"
+LOG_DIR="${REDGALAXY_LOG_DIR:-${REDUNIVERSE_LOG_DIR:-$HOME/Library/Logs/$PRODUCT_BASE_NAME Mac Runner}}"
 STATE_DIR="$DATA_DIR/state"
 LAST_EXE_FILE="$STATE_DIR/last-game-exe.txt"
 WEB_PID_FILE="$STATE_DIR/native-web.pid"
 RUNTIME_DIR="$PROJECT_DIR/runtimes"
 LOCAL_WINE_APP="$RUNTIME_DIR/Wine Stable.app"
 LOCAL_WINE_BIN="$LOCAL_WINE_APP/Contents/Resources/wine/bin/wine"
-WEB_DIR="$PROJECT_DIR/artifacts/redgalaxy-native-web"
+# Brand-separated extract trees — never share one game payload across RG/RU.
+WEB_DIR="$PROJECT_DIR/artifacts/redgalaxy-native-web-$PRODUCT_BRAND"
 WEB_PORT="${REDGALAXY_WEB_PORT:-8765}"
 WEB_URL="http://127.0.0.1:$WEB_PORT/"
 EXTRACTOR="$PROJECT_DIR/tools/extract_redgalaxy_web.py"
@@ -79,7 +139,7 @@ STORY_SRC="$PROJECT_DIR/tools/story"
 configure_bundle_paths() {
   if [[ "$BUNDLE_MODE" != "1" ]]; then
     if [[ "$BASTION_MODE" == "1" ]]; then
-      APP_NAME="RedGalaxy Bastion Updater"
+      APP_NAME="$PRODUCT_BASTION_NAME Updater"
       NATIVE_SUPPORT_DIR="$BASTION_SUPPORT_DIR"
       NATIVE_APP_WEB_DIR="$BASTION_APP_WEB_DIR"
       NATIVE_VERSION_FILE="$BASTION_VERSION_FILE"
@@ -87,7 +147,7 @@ configure_bundle_paths() {
       WEB_DIR="$BASTION_APP_WEB_DIR"
       DATA_DIR="${REDGALAXY_DATA_DIR:-$BASTION_SUPPORT_DIR}"
       PREFIX_DIR="${REDGALAXY_WINEPREFIX:-$DATA_DIR/prefix}"
-      LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Bastion}"
+      LOG_DIR="${REDGALAXY_LOG_DIR:-${REDUNIVERSE_LOG_DIR:-$HOME/Library/Logs/$PRODUCT_BASTION_NAME}}"
       STATE_DIR="$DATA_DIR/state"
       LAST_EXE_FILE="$STATE_DIR/last-game-exe.txt"
       RUNTIME_DIR="$BASTION_SUPPORT_DIR/runtimes"
@@ -98,19 +158,19 @@ configure_bundle_paths() {
   fi
 
   if [[ "$BASTION_MODE" == "1" ]]; then
-    APP_NAME="RedGalaxy Bastion Updater"
+    APP_NAME="$PRODUCT_BASTION_NAME Updater"
     NATIVE_SUPPORT_DIR="$BASTION_SUPPORT_DIR"
     NATIVE_APP_WEB_DIR="$BASTION_APP_WEB_DIR"
     NATIVE_VERSION_FILE="$BASTION_VERSION_FILE"
     NATIVE_DOWNLOAD_DIR="$BASTION_DOWNLOAD_DIR"
-    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Bastion}"
+    LOG_DIR="${REDGALAXY_LOG_DIR:-${REDUNIVERSE_LOG_DIR:-$HOME/Library/Logs/$PRODUCT_BASTION_NAME}}"
     STORY_SRC="$SCRIPT_DIR/web/story"
     if [[ ! -d "$STORY_SRC" ]]; then
       STORY_SRC="$SCRIPT_DIR/story"
     fi
   else
-    APP_NAME="RedGalaxy Native Updater"
-    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Native}"
+    APP_NAME="$PRODUCT_NATIVE_NAME Updater"
+    LOG_DIR="${REDGALAXY_LOG_DIR:-${REDUNIVERSE_LOG_DIR:-$HOME/Library/Logs/$PRODUCT_NATIVE_NAME}}"
   fi
 
   EXTRACTOR="$SCRIPT_DIR/extract_redgalaxy_web.py"
@@ -142,7 +202,7 @@ OPEN_BROWSER=auto
 
 usage() {
   cat <<'USAGE'
-RedGalaxy Mac Runner
+RedUniverse Mac Runner
 
 Usage:
   redgalaxy-mac-runner doctor [--exe PATH]
@@ -338,19 +398,21 @@ resolve_setup_exe() {
     return 0
   fi
 
-  if [[ -f "$DEFAULT_EXE" ]]; then
+  if [[ -n "$DEFAULT_EXE" && -f "$DEFAULT_EXE" ]]; then
     printf '%s\n' "$DEFAULT_EXE"
     return 0
   fi
 
-  local found=""
-  found="$(find "$HOME/Desktop" -maxdepth 1 -type f -iname 'redgalaxy*setup*.exe' -print -quit 2>/dev/null || true)"
-  if [[ -n "$found" ]]; then
-    printf '%s\n' "$found"
-    return 0
-  fi
+  local found="" glob=""
+  for glob in "${BRAND_SETUP_GLOBS[@]}"; do
+    found="$(find "$HOME/Desktop" -maxdepth 1 -type f -iname "$glob" -print -quit 2>/dev/null || true)"
+    if [[ -n "$found" ]]; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  done
 
-  die "Could not find RedGalaxy installer on Desktop. Use --exe /path/to/file.exe"
+  die "Could not find $PRODUCT_BASE_NAME installer on Desktop. Use --exe /path/to/file.exe"
 }
 
 rosetta_installed() {
@@ -630,9 +692,24 @@ score_exe() {
   lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
   local score=0
 
-  [[ "$lower" == *"redgalaxy-client.exe" ]] && score=$((score + 250))
-  [[ "$lower" == *"/appdata/local/redgalaxy/"* ]] && score=$((score + 180))
-  [[ "$lower" == *"redgalaxy"* || "$lower" == *"red galaxy"* ]] && score=$((score + 100))
+  if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+    [[ "$lower" == *"reduniverse-pc-client.exe" ]] && score=$((score + 280))
+    [[ "$lower" == *"reduniverse-client.exe" ]] && score=$((score + 275))
+    [[ "$lower" == *"redgalaxy-client.exe" ]] && score=$((score + 120))
+    [[ "$lower" == *"/appdata/local/reduniverse/"* ]] && score=$((score + 185))
+    [[ "$lower" == *"reduniverse"* || "$lower" == *"red universe"* ]] && score=$((score + 110))
+    [[ "$lower" == *"/appdata/local/redgalaxy/"* ]] && score=$((score + 40))
+    [[ "$lower" == *"redgalaxy"* || "$lower" == *"red galaxy"* ]] && score=$((score + 30))
+  else
+    [[ "$lower" == *"redgalaxy-client.exe" ]] && score=$((score + 280))
+    [[ "$lower" == *"/appdata/local/redgalaxy/"* ]] && score=$((score + 185))
+    [[ "$lower" == *"redgalaxy"* || "$lower" == *"red galaxy"* ]] && score=$((score + 110))
+    # Never prefer an RU client when extracting for RedGalaxy.
+    [[ "$lower" == *"reduniverse-pc-client.exe" ]] && score=$((score - 400))
+    [[ "$lower" == *"reduniverse-client.exe" ]] && score=$((score - 400))
+    [[ "$lower" == *"/appdata/local/reduniverse/"* ]] && score=$((score - 300))
+    [[ "$lower" == *"reduniverse"* || "$lower" == *"red universe"* ]] && score=$((score - 200))
+  fi
   [[ "$lower" == *"/program files/"* || "$lower" == *"/program files (x86)/"* ]] && score=$((score + 25))
   [[ "$lower" == *"game"* ]] && score=$((score + 10))
   [[ "$lower" == *"launcher"* ]] && score=$((score + 8))
@@ -665,9 +742,14 @@ find_installed_game_exe() {
 
 write_launcher() {
   local game_exe="$1"
-  local launcher="$DATA_DIR/Launch RedGalaxy.command"
-  local native_app="/Applications/RedGalaxy Native.app"
-  local project_native_app="$PROJECT_DIR/dist/RedGalaxy Native.app"
+  local launcher="$DATA_DIR/Launch $PRODUCT_BASE_NAME.command"
+  local native_app="/Applications/${PRODUCT_NATIVE_NAME}.app"
+  local project_native_app="$PROJECT_DIR/dist/${PRODUCT_NATIVE_NAME}.app"
+  if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+    # Canonical RU native app name is RedUniverse.app
+    native_app="/Applications/RedUniverse.app"
+    project_native_app="$PROJECT_DIR/dist/RedUniverse.app"
+  fi
 
   mkdirs
   printf '%s\n' "$game_exe" >"$LAST_EXE_FILE"
@@ -689,14 +771,14 @@ fi
 if [[ -x "\$RUNNER" ]]; then
   exec "\$RUNNER" native-web-foreground
 fi
-/usr/bin/osascript -e 'display alert "RedGalaxy" message "Installazione completata, ma il .exe Windows non puo avviarsi sotto Wine su macOS. Usa RedGalaxy Native.app." as critical'
+/usr/bin/osascript -e 'display alert "RedUniverse" message "Installazione completata, ma il .exe Windows non puo avviarsi sotto Wine su macOS. Usa RedUniverse.app." as critical'
 exit 1
 EOF
   chmod +x "$launcher"
   log "Game executable: $game_exe"
   log "Launcher created (native-web): $launcher"
   warn "The Windows client cannot run under free Wine on macOS (WebView2 page fault)."
-  warn "Wine install is still useful for updates. Play with RedGalaxy Native.app or native-web."
+  warn "Wine install is still useful for updates. Play with ${PRODUCT_BASTION_NAME}.app or native-web."
 }
 
 install_game() {
@@ -712,7 +794,7 @@ install_game() {
     game_exe="$(find_installed_game_exe || true)"
     if [[ -n "$game_exe" ]]; then
       write_launcher "$game_exe"
-      log "Installation complete. To play on macOS open RedGalaxy Native.app."
+      log "Installation complete. To play on macOS open ${PRODUCT_BASTION_NAME}.app."
       log "If the Windows installer tried to launch the game at the end, ignore any Wine crash dialog."
     else
       warn "Could not identify the installed game executable automatically."
@@ -739,7 +821,7 @@ install_game() {
 launch_game() {
   local requested="${1:-}"
   warn "Launching the Windows .exe under Wine is unsupported on macOS (WebView2 crash)."
-  warn "Use RedGalaxy Native.app or: $(basename "$0") native-web-foreground"
+  warn "Use RedUniverse.app or: $(basename "$0") native-web-foreground"
   if [[ "$BUNDLE_MODE" != "1" ]] && confirm "Open native-web mode instead?"; then
     extract_web_assets
     serve_web_foreground
@@ -797,7 +879,7 @@ find_web_client_exe() {
   if [[ -z "$game_exe" || ! -f "$game_exe" ]]; then
     game_exe="$(find_installed_game_exe || true)"
   fi
-  [[ -n "$game_exe" && -f "$game_exe" ]] || die "Installed RedGalaxy client not found. Run: $(basename "$0") install --silent"
+  [[ -n "$game_exe" && -f "$game_exe" ]] || die "Installed $PRODUCT_BASE_NAME client not found. Run: $(basename "$0") install --silent"
   printf '%s\n' "$game_exe"
 }
 
@@ -827,6 +909,28 @@ validate_extracted_web_root() {
   local js_hit=""
   js_hit="$(compgen -G "$root/assets/index-*.js" | head -1 || true)"
   [[ -n "$js_hit" && -s "$js_hit" ]] || die "Extraction produced empty assets/index-*.js (brotli decompress likely failed)"
+
+  # Prefer the entry chunk referenced by index.html (leftover index-*.js can lie).
+  local entry=""
+  entry="$(grep -oE 'assets/index-[^\"'\'']+\.js' "$root/index.html" 2>/dev/null | head -1 || true)"
+  if [[ -n "$entry" && -s "$root/$entry" ]]; then
+    js_hit="$root/$entry"
+  fi
+  if [[ "$PRODUCT_BRAND" == "redgalaxy" ]]; then
+    if grep -q 'aws-prod-api\.reduniverse\.space\|aws-test-api\.reduniverse\.space' "$js_hit"; then
+      die "Extracted web is RedUniverse (reduniverse.space APIs) but PRODUCT_BRAND=redgalaxy. Use RedGalaxy-Setup.exe."
+    fi
+    if ! grep -q 'redgalaxygame\.space' "$js_hit"; then
+      die "Extracted web missing redgalaxygame.space — not a RedGalaxy game client."
+    fi
+  else
+    if grep -q 'aws-prod-api\.redgalaxygame\.space\|aws-api\.redgalaxygame\.space' "$js_hit"; then
+      die "Extracted web is RedGalaxy (redgalaxygame.space APIs) but PRODUCT_BRAND=reduniverse. Use RedUniverse setup."
+    fi
+    if ! grep -q 'reduniverse\.space' "$js_hit"; then
+      die "Extracted web missing reduniverse.space — not a RedUniverse game client."
+    fi
+  fi
 }
 
 extract_web_assets_to() {
@@ -909,6 +1013,10 @@ game_web_is_complete() {
   if ! compgen -G "$web/assets/"*.woff2 >/dev/null; then
     return 1
   fi
+  # Spine/libGDX .atlas sheets are required to draw ships/NPCs (HUD can work without them → black world).
+  local atlas_count=0
+  atlas_count="$(find "$web" -type f -name '*.atlas' 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "${atlas_count:-0}" -ge 20 ]] || return 1
   # Fused extract paths (extractor bug leftovers) indicate corrupt game assets.
   if find "$web" \( -name '*atlasships*' -o -name '*jsonships*' -o -name '*webpships*' \) 2>/dev/null | grep -q .; then
     return 1
@@ -917,13 +1025,19 @@ game_web_is_complete() {
 }
 
 # True when live game web matches the official remote version and looks complete.
+# RedUniverse: Tauri wrapper version (manifest, e.g. 1.0.12) differs from the still-
+# embedded redgalaxy-client@0.6.x game package id. Prefer version.txt (manifest)
+# after a successful extract; fall back to legacy embed==remote matching.
 game_client_matches_remote() {
   local remote="$1"
   local web="$NATIVE_APP_WEB_DIR"
   local embedded=""
+  local recorded=""
   game_web_is_complete "$web" || return 1
   embedded="$(read_embedded_web_version "$web" || true)"
   [[ -n "$embedded" ]] || return 1
+  recorded="$(read_version_file || true)"
+  [[ -n "$recorded" && "$recorded" == "$remote" ]] && return 0
   [[ "$embedded" == "$remote" ]] && return 0
   # Allow embedded slightly ahead of manifest; never accept embedded behind remote.
   if version_is_newer "$embedded" "$remote"; then
@@ -934,7 +1048,12 @@ game_client_matches_remote() {
 
 cached_installer_matches_remote() {
   local remote="$1"
-  local cached="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  local cached=""
+  if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+    cached="$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe"
+  else
+    cached="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  fi
   [[ -e "$cached" ]] || return 1
   local target=""
   target="$(readlink "$cached" 2>/dev/null || true)"
@@ -1031,14 +1150,15 @@ apply_bastion_overlay() {
   mkdir -p "$NATIVE_SUPPORT_DIR"
 
   if [[ "$game_web" == "$out_web" ]]; then
-    log "Applying Bastion overlays in place: $out_web"
-    "$python_bin" "$BASTION_PATCHER" --in-place "$out_web" --story-src "$story_dir"
+    log "Applying Bastion overlays in place: $out_web (brand=$PRODUCT_BRAND)"
+    "$python_bin" "$BASTION_PATCHER" --in-place "$out_web" --story-src "$story_dir" --brand "$PRODUCT_BRAND"
   else
     log "Building Bastion web root from official assets"
     log "Game source: $game_web"
     log "Story source: $story_dir"
     log "Output: $out_web"
-    "$python_bin" "$BASTION_PATCHER" --game-src "$game_web" --story-src "$story_dir" --out "$staging"
+    log "Brand: $PRODUCT_BRAND"
+    "$python_bin" "$BASTION_PATCHER" --game-src "$game_web" --story-src "$story_dir" --out "$staging" --brand "$PRODUCT_BRAND"
     rm -rf "$out_web"
     mkdir -p "$(dirname "$out_web")"
     mv "$staging" "$out_web"
@@ -1088,8 +1208,8 @@ ensure_bastion_overlay() {
       local python_bin
       python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
       [[ -f "$BASTION_PATCHER" ]] || die "Bastion patcher not found: $BASTION_PATCHER"
-      log "Refreshing Bastion story overlay in place (version up to date): $web"
-      "$python_bin" "$BASTION_PATCHER" --in-place "$web" --story-src "$story_dir"
+      log "Refreshing Bastion story overlay in place (version up to date, brand=$PRODUCT_BRAND): $web"
+      "$python_bin" "$BASTION_PATCHER" --in-place "$web" --story-src "$story_dir" --brand "$PRODUCT_BRAND"
     else
       log "Bastion overlay intact at $web"
     fi
@@ -1148,15 +1268,25 @@ download_official_installer() {
   installer_url="$(fetch_remote_installer_url)"
   local basename
   basename="$(basename "$installer_url")"
-  [[ -n "$basename" ]] || basename="RedGalaxy-Setup.exe"
+  if [[ -z "$basename" ]]; then
+    if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+      basename="RedUniverse-Setup.exe"
+    else
+      basename="RedGalaxy-Setup.exe"
+    fi
+  fi
 
   local destination="$NATIVE_DOWNLOAD_DIR/$basename"
   local partial="$destination.part"
   log "Downloading latest installer from: $installer_url"
-  curl -fL -A "$UPDATE_USER_AGENT" "$installer_url" -o "$partial"
+  curl -fL -A "$UPDATE_USER_AGENT" -e "$OFFICIAL_SITE/" "$installer_url" -o "$partial"
   mv "$partial" "$destination"
-  # Keep a stable alias for cached reuse.
-  ln -sfn "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" 2>/dev/null || cp -f "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  # Stable alias for this brand only — never cross-link RG ↔ RU installers.
+  if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+    ln -sfn "$destination" "$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe" 2>/dev/null || cp -f "$destination" "$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe"
+  else
+    ln -sfn "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" 2>/dev/null || cp -f "$destination" "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  fi
   DOWNLOADED_INSTALLER="$destination"
   log "Installer saved to: $destination"
 }
@@ -1221,13 +1351,13 @@ update_native_app_assets() {
 
   # version.txt is written by update_from_web from the live embed after this returns.
   if [[ "$BASTION_MODE" == "1" ]]; then
-    log "Updated RedGalaxy Bastion assets at: $NATIVE_APP_WEB_DIR"
+    log "Updated ${PRODUCT_BASTION_NAME} assets at: $NATIVE_APP_WEB_DIR"
     log "Official game web refreshed; Bastion story/autopilot re-applied on top."
-    log "Restart RedGalaxy Bastion.app to load the updated assets."
+    log "Restart ${PRODUCT_BASTION_NAME}.app to load the updated assets."
   else
-    log "Updated RedGalaxy Native.app assets at: $NATIVE_APP_WEB_DIR"
+    log "Updated ${PRODUCT_NATIVE_NAME}.app assets at: $NATIVE_APP_WEB_DIR"
     log "Official game web only (no Bastion/story patches)."
-    log "Restart RedGalaxy Native.app (or let the host reload) to use these assets."
+    log "Restart ${PRODUCT_NATIVE_NAME}.app (or let the host reload) to use these assets."
   fi
 
   rmdir "$lock_dir" 2>/dev/null || true
@@ -1238,7 +1368,7 @@ update_native() {
   BASTION_MODE=0
   configure_bundle_paths
   if [[ "$BUNDLE_MODE" != "1" ]]; then
-    LOG_DIR="${REDGALAXY_LOG_DIR:-$HOME/Library/Logs/RedGalaxy Native}"
+    LOG_DIR="${REDGALAXY_LOG_DIR:-${REDUNIVERSE_LOG_DIR:-$HOME/Library/Logs/$PRODUCT_NATIVE_NAME}}"
   fi
   update_from_web
 }
@@ -1268,38 +1398,38 @@ update_from_web() {
   log "Live web embed version: ${installed:-unknown}"
   log "Recorded version.txt: ${recorded:-none}"
 
-  if [[ -n "$recorded" && -n "$installed" && "$recorded" != "$installed" ]]; then
-    warn "version.txt ($recorded) disagrees with live game web ($installed) — will refresh game assets."
-    need_refresh=1
-  fi
-
+  # Embed (redgalaxy-client@0.6.x) may differ from Tauri manifest (1.0.x). Only
+  # treat version.txt as a lie when it claims remote but web is incomplete.
   if ! game_client_matches_remote "$remote"; then
-    warn "Game web incomplete or behind official $remote (live=${installed:-missing}) — will refresh."
+    warn "Game web incomplete or not yet on official $remote (embed=${installed:-missing}, recorded=${recorded:-none}) — will refresh."
     need_refresh=1
   fi
 
-  if [[ "$need_refresh" != "1" && -n "$installed" ]] && ! version_is_newer "$remote" "$installed"; then
-    log "Already up to date: live game web is $installed (official $remote)."
-    # Keep version.txt honest with the live embed.
-    write_installed_client_version "$installed"
+  if [[ "$need_refresh" != "1" ]]; then
+    log "Already up to date: official $remote (embed=${installed:-unknown}, recorded=${recorded:-none})."
+    write_installed_client_version "$remote"
     if [[ "$BASTION_MODE" == "1" ]]; then
       ensure_bastion_overlay
     fi
     return 0
   fi
 
-  if [[ -n "$installed" ]]; then
-    log "Updating RedGalaxy game client: $installed -> $remote"
+  if [[ -n "$recorded" || -n "$installed" ]]; then
+    log "Updating $PRODUCT_BASE_NAME game client: ${recorded:-$installed} -> $remote"
   else
-    log "Installing RedGalaxy game client version $remote"
+    log "Installing $PRODUCT_BASE_NAME game client version $remote"
   fi
 
   # Never reuse a cached installer that does not match the official remote version.
-  if [[ -z "$EXE_PATH" && -f "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" ]] && cached_installer_matches_remote "$remote"; then
-    EXE_PATH="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+  if [[ -z "$EXE_PATH" ]] && cached_installer_matches_remote "$remote"; then
+    if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
+      EXE_PATH="$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe"
+    else
+      EXE_PATH="$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe"
+    fi
     log "Using cached installer matching $remote: $EXE_PATH"
   elif [[ -z "$EXE_PATH" ]]; then
-    if [[ -e "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" ]]; then
+    if [[ -e "$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe" || -e "$NATIVE_DOWNLOAD_DIR/RedGalaxy-Setup.exe" ]]; then
       warn "Cached installer does not match official $remote — downloading fresh."
     fi
     download_official_installer
@@ -1321,15 +1451,15 @@ update_from_web() {
   if [[ -z "$embedded_after" ]]; then
     die "Update finished but live game web has no redgalaxy-client@version embed."
   fi
-  if [[ "$embedded_after" != "$remote" ]] && version_is_newer "$remote" "$embedded_after"; then
-    warn "Live web is $embedded_after after update; official manifest is $remote. Recording live embed (not the newer manifest claim)."
+  if [[ "$embedded_after" != "$remote" ]]; then
+    log "Live web embed is redgalaxy-client@$embedded_after; recording official Tauri/manifest version $remote."
   fi
-  write_installed_client_version "$embedded_after"
+  write_installed_client_version "$remote"
 
   if [[ "$BASTION_MODE" == "1" ]]; then
-    log "Update complete. Restart RedGalaxy Bastion.app to use game client $embedded_after (or let the host reload)."
+    log "Update complete. Restart ${PRODUCT_BASTION_NAME}.app (official $remote, embed $embedded_after)."
   else
-    log "Update complete. Restart RedGalaxy Native.app to use game client $embedded_after."
+    log "Update complete. Restart ${PRODUCT_NATIVE_NAME}.app (official $remote, embed $embedded_after)."
   fi
 }
 

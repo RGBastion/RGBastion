@@ -33,13 +33,13 @@ KNOWN_PATH_EXTS = (
 PATH_RE = re.compile(
     rb"(?:/)?(?:assets|ui|lang|ships|box|drones|equip|extras|maps|missiles|ore|"
     rb"portals|ranks|corps|base|audio|shop|icons|turrets|resources|textures|sprites)"
-    rb"[A-Za-z0-9_./@+\-]*\.(?:json|html|css|js|png|svg|webp|jpg|jpeg|woff2?|ogg|wav|atlas)"
+    rb"[A-Za-z0-9_./@+\- ]*\.(?:json|html|css|js|png|svg|webp|jpg|jpeg|woff2?|ogg|wav|atlas)"
     rb"|/index\.html|redgalaxy\.png"
 )
 REF_RE = re.compile(
     r"(?:/)?(?:assets|ui|lang|ships|box|drones|equip|extras|maps|missiles|ore|"
     r"portals|ranks|corps|base|audio|shop|icons|turrets|resources|textures|sprites)"
-    r"[A-Za-z0-9_./@+\-]*\.(?:json|html|css|js|png|svg|webp|jpg|jpeg|woff2?|ogg|wav|atlas)"
+    r"[A-Za-z0-9_./@+\- ]*\.(?:json|html|css|js|png|svg|webp|jpg|jpeg|woff2?|ogg|wav|atlas)"
     r"|/index\.html|redgalaxy\.png"
 )
 
@@ -62,11 +62,91 @@ def normalize_path(raw: str) -> str:
     return "/".join(parts)
 
 
+def canonical_asset_rel(rel: str) -> str:
+    """Strip Windows duplicate suffixes: ' - Copy' / ' - Kopya' / ' - Copia'."""
+    norm = normalize_path(rel)
+    if not norm:
+        return ""
+    return re.sub(r" - (?:Copy|Kopya|Copia)(\.[A-Za-z0-9]+)$", r"\1", norm, flags=re.IGNORECASE)
+
+
+def path_search_variants(rel_or_path: str) -> list[str]:
+    raw = str(rel_or_path or "")
+    with_slash = raw if raw.startswith("/") else f"/{raw}"
+    no_slash = with_slash[1:]
+    canon = canonical_asset_rel(no_slash)
+    out: list[str] = []
+    seen: set[str] = set()
+    variants = [no_slash, canon]
+    if canon:
+        for suf in (" - Copy", " - Kopya", " - Copia"):
+            variants.append(re.sub(r"(\.[A-Za-z0-9]+)$", rf"{suf}\1", canon))
+    for r in variants:
+        if not r:
+            continue
+        for variant in (r, f"/{r}"):
+            if variant not in seen:
+                seen.add(variant)
+                out.append(variant)
+    return out
+
+
+# RedUniverse Tauri embeds large binaries with 4-byte splice markers
+# (b"\xfc\xff\x9f\x08") every 0x140000 payload bytes. Desplice only when that
+# marker is present. Clean RedGalaxy streams have no markers — copy verbatim.
+# Never skip bytes unconditionally (old `i += 3` fallback corrupted large RG assets).
+EMBED_SPLICE_PERIOD = 0x140000
+EMBED_SPLICE_MARKER = b"\xfc\xff\x9f\x08"
+
+
+def desplice_embedded_payload(raw: bytes, target_len: int | None = None) -> bytes | None:
+    if not raw:
+        return None
+    limit = len(raw) if target_len is None else target_len
+    # No RU splice markers anywhere → clean embed; never invent skips.
+    if EMBED_SPLICE_MARKER not in raw:
+        if target_len is None:
+            return bytes(raw)
+        return bytes(raw[: min(len(raw), target_len)])
+    out = bytearray()
+    i = 0
+    while i < len(raw) and len(out) < limit:
+        room = EMBED_SPLICE_PERIOD - (len(out) % EMBED_SPLICE_PERIOD)
+        take = min(room, len(raw) - i, limit - len(out))
+        out.extend(raw[i : i + take])
+        i += take
+        if len(out) > 0 and len(out) % EMBED_SPLICE_PERIOD == 0 and i < len(raw) and len(out) < limit:
+            # Only skip a proven RU marker; never unconditional i += 3.
+            if raw[i : i + 4] == EMBED_SPLICE_MARKER:
+                i += 4
+    return bytes(out) if out else None
+
+
+def is_valid_png_buffer(buf: bytes) -> bool:
+    if len(buf) < 24 or not buf.startswith(b"\x89PNG\r\n\x1a\n"):
+        return False
+    i = 8
+    while i + 8 <= len(buf):
+        length = int.from_bytes(buf[i : i + 4], "big")
+        typ = buf[i + 4 : i + 8]
+        if length > 16_000_000 or i + 8 + length + 4 > len(buf):
+            return False
+        if not all(65 <= c <= 90 or 97 <= c <= 122 for c in typ):
+            return False
+        i += 8 + length + 4
+        if typ == b"IEND":
+            return True
+    return False
+
+
 def expand_path_candidates(raw: str) -> set[str]:
     rel = normalize_path(raw)
     if not rel:
         return set()
     candidates = {rel}
+    canon = canonical_asset_rel(rel)
+    if canon:
+        candidates.add(canon)
     for ext in KNOWN_PATH_EXTS:
         start = 0
         while True:
@@ -84,6 +164,9 @@ def expand_path_candidates(raw: str) -> set[str]:
             candidate = rel[: found + len(ext)]
             if candidate:
                 candidates.add(candidate)
+                c_canon = canonical_asset_rel(candidate)
+                if c_canon:
+                    candidates.add(c_canon)
             start = found + 1
     return {
         candidate
@@ -139,10 +222,15 @@ def write_file(out_dir: Path, rel: str, payload: bytes) -> bool:
 def extract_png(data: bytes, start: int) -> bytes | None:
     if not data.startswith(b"\x89PNG\r\n\x1a\n", start):
         return None
-    end = data.find(b"IEND\xaeB\x60\x82", start)
+    slop = min(len(data), start + 20_000_000)
+    max_ins = (slop - start) // EMBED_SPLICE_PERIOD + 2
+    spliced = data[start : min(len(data), slop + max_ins * 4)]
+    fixed = desplice_embedded_payload(spliced) or spliced
+    end = fixed.find(b"IEND\xaeB\x60\x82")
     if end < 0:
         return None
-    return data[start : end + 8]
+    png = fixed[: end + 8]
+    return png if is_valid_png_buffer(png) else None
 
 
 def extract_jpeg(data: bytes, start: int) -> bytes | None:
@@ -158,9 +246,25 @@ def extract_riff(data: bytes, start: int) -> bytes | None:
     if not data.startswith(b"RIFF", start) or start + 8 > len(data):
         return None
     size = struct.unpack_from("<I", data, start + 4)[0] + 8
-    if size <= 12 or start + size > len(data):
+    if size <= 12:
         return None
-    return data[start : start + size]
+    max_ins = size // EMBED_SPLICE_PERIOD + 1
+    slop_end = min(len(data), start + size + max_ins * 4 + 8)
+    if slop_end <= start + 12:
+        return None
+    spliced = data[start:slop_end]
+    fixed = desplice_embedded_payload(spliced, size)
+    if not fixed or len(fixed) < 12:
+        if start + size > len(data):
+            return None
+        fixed = data[start : start + size]
+    fixed = bytearray(fixed)
+    struct.pack_into("<I", fixed, 4, len(fixed) - 8)
+    if not fixed.startswith(b"RIFF"):
+        return None
+    if fixed[8:12] not in (b"WEBP", b"WAVE"):
+        return None
+    return bytes(fixed)
 
 
 def extract_woff(data: bytes, start: int) -> bytes | None:
@@ -199,6 +303,25 @@ def extract_json_text(data: bytes, start: int) -> bytes | None:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def looks_like_atlas_text(payload: bytes) -> bool:
+    if not payload or len(payload) < 24 or len(payload) >= 2_000_000:
+        return False
+    probe = payload[: min(512, len(payload))]
+    if b"\x00" in probe:
+        return False
+    if any(b < 0x09 or (0x0D < b < 0x20) for b in probe):
+        return False
+    head = payload[: min(4096, len(payload))]
+    head_l = head.lower()
+    return (
+        b"\nsize:" in head
+        or b"\nformat:" in head_l
+        or b"\nrepeat:" in head_l
+        or b"rotate:" in head_l
+        or b"\nfilter:" in head_l
+    )
+
+
 def extract_text_until_marker(data: bytes, start: int, ext: str) -> bytes | None:
     if ext == ".json":
         payload = extract_json_text(data, start)
@@ -208,7 +331,7 @@ def extract_text_until_marker(data: bytes, start: int, ext: str) -> bytes | None
         end = data.find(b"\x00", start)
         if end > start:
             payload = data[start:end]
-            if b"\n" in payload[:2048] and len(payload) < 2_000_000:
+            if looks_like_atlas_text(payload):
                 return payload
     return None
 
@@ -246,6 +369,15 @@ def _accept_brotli_output(out: bytes, ext: str) -> bytes | None:
             return decoded
     if ext == ".json":
         return extract_json_text(out, 0)
+    # Spine/libGDX atlas text has no `{` / JS markers — previously rejected → black world.
+    if ext == ".atlas":
+        return out if looks_like_atlas_text(out) else None
+    if ext in {".jpg", ".jpeg"} and out.startswith(b"\xff\xd8\xff"):
+        return out
+    if ext == ".png" and out.startswith(b"\x89PNG"):
+        return out
+    if ext == ".webp" and out.startswith(b"RIFF"):
+        return out
     if ext in {".woff", ".woff2"} and out.startswith((b"wOFF", b"wOF2")):
         return out
     if any(
@@ -659,10 +791,66 @@ def is_valid_json(path: Path) -> bool:
 
 def is_valid_webp(path: Path) -> bool:
     try:
-        head = path.read_bytes()[:16]
+        buf = path.read_bytes()
     except OSError:
         return False
-    return head.startswith(b"RIFF") and b"WEBP" in head[:16]
+    if len(buf) < 16 or not buf.startswith(b"RIFF") or b"WEBP" not in buf[:16]:
+        return False
+    declared = struct.unpack_from("<I", buf, 4)[0] + 8
+    return abs(declared - len(buf)) <= 16
+
+
+def is_valid_png(path: Path) -> bool:
+    try:
+        return is_valid_png_buffer(path.read_bytes())
+    except OSError:
+        return False
+
+
+def atlas_page_file_name(atlas_text: str) -> str:
+    for line in atlas_text.splitlines():
+        if not line or line.startswith(" ") or ":" in line:
+            continue
+        return line.strip()
+    return ""
+
+
+def atlas_page_is_broken(atlas_path: Path) -> bool:
+    try:
+        text = atlas_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return True
+    if not looks_like_atlas_text(text.encode("utf-8", errors="ignore")):
+        return True
+    page = atlas_page_file_name(text)
+    if not page or "/" in page or page.count(".") > 1:
+        return True
+    return not (atlas_path.parent / page).exists()
+
+
+def rewrite_atlas_page_name(atlas_text: str, new_page: str) -> str:
+    lines = atlas_text.splitlines()
+    rewritten = False
+    out: list[str] = []
+    for idx, line in enumerate(lines):
+        if rewritten:
+            out.append(line)
+            continue
+        if not line or line.startswith(" ") or ":" in line:
+            out.append(line)
+            continue
+        if idx == 0 or all(not l.strip() for l in lines[:idx]):
+            out.append(new_page)
+            rewritten = True
+            continue
+        if re.search(r"\.(webp|png)$", line.strip(), re.I):
+            out.append(new_page)
+            rewritten = True
+            continue
+        out.append(line)
+    if not rewritten:
+        out.insert(0, new_page)
+    return "\n".join(out) + ("\n" if atlas_text.endswith("\n") else "")
 
 
 def copy_asset_alias(out_dir: Path, source: str, target: str) -> bool:
@@ -676,11 +864,57 @@ def copy_asset_alias(out_dir: Path, source: str, target: str) -> bool:
             return False
         if ext == ".webp" and is_valid_webp(target_path):
             return False
-        if ext not in {".json", ".webp"}:
+        if ext == ".png" and is_valid_png(target_path):
+            return False
+        if ext == ".atlas":
+            if not atlas_page_is_broken(target_path):
+                return False
+        elif ext not in {".json", ".webp", ".png"}:
             return False
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    if ext == ".atlas":
+        try:
+            text = source_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        want_webp = f"{target_path.stem}.webp"
+        want_png = f"{target_path.stem}.png"
+        page_name = want_webp if (target_path.parent / want_webp).exists() else want_png
+        body = rewrite_atlas_page_name(text, page_name)
+        if not body.endswith("\n"):
+            body += "\n"
+        target_path.write_text(body, encoding="utf-8")
+        return True
     shutil.copy2(source_path, target_path)
     return True
+
+
+def ensure_missing_ship_atlases(out_dir: Path) -> None:
+    roots = [out_dir / "ships" / "player", out_dir / "ships" / "alien", out_dir / "ships" / "system"]
+    template = None
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for atlas in sorted(root.glob("*.atlas")):
+            try:
+                text = atlas.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if looks_like_atlas_text(text.encode("utf-8", errors="ignore")):
+                template = text
+                break
+        if template:
+            break
+    if not template:
+        return
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for img in list(root.glob("*.webp")) + list(root.glob("*.png")):
+            atlas_path = root / f"{img.stem}.atlas"
+            if atlas_path.exists():
+                continue
+            atlas_path.write_text(rewrite_atlas_page_name(template, img.name), encoding="utf-8")
 
 
 def ensure_runtime_asset_aliases(out_dir: Path) -> None:
@@ -694,9 +928,64 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
         "ships/alien/voxion1.json": "ships/alien/voxion.json",
         "ships/alien/froston1.json": "ships/alien/froston.json",
         "ships/alien/froston1.webp": "ships/alien/froston.webp",
+        "ships/alien/froston1.atlas": "ships/alien/froston.atlas",
+        "ships/alien/alien21.atlas": "ships/alien/alien20.atlas",
+        "ships/alien/alien31.atlas": "ships/alien/alien30.atlas",
+        "ships/alien/alien41.atlas": "ships/alien/alien40.atlas",
+        "ships/alien/noxon1.atlas": "ships/alien/noxon.atlas",
+        "ships/alien/raidon1.atlas": "ships/alien/raidon.atlas",
+        "ships/alien/talon1.atlas": "ships/alien/talon.atlas",
+        "ships/alien/voxion1.atlas": "ships/alien/voxion.atlas",
+        # Do NOT alias ship100.atlas → ship10.atlas (RedUniverse packs real Wraith as " - Copy").
+        "ships/alien/froston.webp": "ships/alien/froston1.webp",
+        "ships/alien/froston.json": "ships/alien/froston1.json",
+        "ships/alien/raidon.webp": "ships/alien/raidon1.webp",
+        "ships/alien/raidon.json": "ships/alien/raidon1.json",
+        "ships/alien/voxion.webp": "ships/alien/voxion1.webp",
+        "ships/alien/voxion.json": "ships/alien/voxion1.json",
+        "ships/alien/alien20.json": "ships/alien/alien21.json",
+        "ships/alien/alien30.json": "ships/alien/alien31.json",
+        "ships/alien/noxon.json": "ships/alien/noxon1.json",
+        "ships/alien/talon.json": "ships/alien/talon1.json",
+        # Booty atlas page is typo'd "bootyy.webp" in RU 1.0.12.
+        "box/bootyy.webp": "box/booty.webp",
+        # RU packs Wraith config only under ship103; runtime still requests ship100.json.
+        "ships/player/ship100.json": "ships/player/ship103.json",
     }
-    for target, source in aliases.items():
-        copy_asset_alias(out_dir, source, target)
+    for _ in range(2):
+        for target, source in aliases.items():
+            copy_asset_alias(out_dir, source, target)
+    ensure_missing_ship_atlases(out_dir)
+    fix_ship_atlas_page_names(out_dir)
+
+
+def fix_ship_atlas_page_names(out_dir: Path) -> None:
+    roots = [out_dir / "ships" / "player", out_dir / "ships" / "alien", out_dir / "ships" / "system"]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for atlas_path in sorted(root.glob("*.atlas")):
+            want_webp = f"{atlas_path.stem}.webp"
+            want_png = f"{atlas_path.stem}.png"
+            if (root / want_webp).exists():
+                page_name = want_webp
+            elif (root / want_png).exists():
+                page_name = want_png
+            else:
+                continue
+            try:
+                text = atlas_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not looks_like_atlas_text(text.encode("utf-8", errors="ignore")):
+                continue
+            page = atlas_page_file_name(text)
+            if page == page_name and (root / page).exists():
+                continue
+            body = rewrite_atlas_page_name(text, page_name)
+            if not body.endswith("\n"):
+                body += "\n"
+            atlas_path.write_text(body, encoding="utf-8")
 
 
 def extract_payload(data: bytes, path: str, offset: int, brotli_bin: str | None) -> bytes | None:
@@ -704,9 +993,26 @@ def extract_payload(data: bytes, path: str, offset: int, brotli_bin: str | None)
     start = offset + len(raw_path)
     ext = Path(path).suffix.lower()
 
-    for delta in range(0, 9):
+    # Only probe binary magics for matching extensions — otherwise a WEBP sitting
+    # near ship20.json in the path table poisons the JSON extract.
+    binary_extractors = []
+    if ext == ".png":
+        binary_extractors.append(extract_png)
+    if ext in {".jpg", ".jpeg"}:
+        binary_extractors.append(extract_jpeg)
+    if ext in {".webp", ".wav"}:
+        binary_extractors.append(extract_riff)
+    if ext in {".woff", ".woff2"}:
+        binary_extractors.append(extract_woff)
+    if ext == ".svg":
+        binary_extractors.append(extract_svg)
+    if ext == ".ogg":
+        binary_extractors.append(extract_ogg)
+
+    # RedUniverse " - Copy.webp" blobs often sit a few bytes after the path marker.
+    for delta in range(0, 48):
         probe = start + delta
-        for extractor in (extract_png, extract_jpeg, extract_riff, extract_woff, extract_svg, extract_ogg):
+        for extractor in binary_extractors:
             payload = extractor(data, probe)
             if payload:
                 return payload
@@ -747,9 +1053,31 @@ def discover_paths_from_output(out_dir: Path) -> set[str]:
     return found
 
 
+def offset_looks_like_blob(data: bytes, search_path: str, offset: int) -> bool:
+    start = offset + len(search_path.encode())
+    ext = Path(search_path).suffix.lower()
+    for delta in range(0, 48):
+        p = start + delta
+        if p + 12 > len(data):
+            break
+        if ext == ".png" and data.startswith(b"\x89PNG", p):
+            return True
+        if ext in {".jpg", ".jpeg"} and data.startswith(b"\xff\xd8", p):
+            return True
+        if ext in {".webp", ".wav"} and data.startswith(b"RIFF", p):
+            return True
+        if ext == ".json" and data[p] in (0x7B, 0x5B):
+            return True
+        if ext == ".atlas" and data[p] not in (0,):
+            probe = data[p : p + 64]
+            if b"size:" in probe or b".webp" in probe or b".png" in probe:
+                return True
+    return False
+
+
 def main() -> int:
     if len(sys.argv) != 3:
-        print("usage: extract_redgalaxy_web.py /path/to/redgalaxy-client.exe /output/dir", file=sys.stderr)
+        print("usage: extract_redgalaxy_web.py /path/to/reduniverse-pc-client.exe /output/dir", file=sys.stderr)
         return 2
 
     exe = Path(sys.argv[1]).expanduser()
@@ -777,16 +1105,11 @@ def main() -> int:
     for _ in range(4):
         progress = False
         for path in sorted(pending):
-            rel = normalize_path(path)
+            rel = canonical_asset_rel(path) or normalize_path(path)
             if not rel or rel in extracted or rel in failed:
                 continue
             offsets = []
-            search_paths = [path]
-            if path.startswith("/"):
-                search_paths.append(path[1:])
-            else:
-                search_paths.append("/" + path)
-            for search_path in dict.fromkeys(search_paths):
+            for search_path in path_search_variants(path):
                 raw = search_path.encode()
                 start = 0
                 while True:
@@ -799,14 +1122,16 @@ def main() -> int:
                 failed.add(rel)
                 continue
 
+            offsets.sort(key=lambda item: 0 if offset_looks_like_blob(data, item[0], item[1]) else 1)
             payload = None
-            for search_path, off in offsets[:20]:
+            for search_path, off in offsets[:40]:
                 payload = extract_payload(data, search_path, off, brotli_bin)
                 if payload:
                     break
             if payload:
                 write_file(out_dir, rel, payload)
                 extracted.add(rel)
+                failed.discard(rel)
                 progress = True
             else:
                 failed.add(rel)
@@ -821,7 +1146,20 @@ def main() -> int:
     merge_locale_with_fallback(out_dir, "it")
     merge_locale_with_fallback(out_dir, "quest.it", fallback="quest.en")
     apply_italian_ui_overrides(out_dir)
+    # RedUniverse-only: never heal/copy from RedGalaxy twin exe.
     ensure_runtime_asset_aliases(out_dir)
+
+    critical = ["box/cargo.png", "base/orion.png"]
+    missing_critical = []
+    for rel in critical:
+        full = out_dir.joinpath(*rel.split("/"))
+        if not full.is_file() or not is_valid_png(full):
+            missing_critical.append(rel)
+    if missing_critical:
+        print(
+            f"WARN: missing/invalid critical assets after extract: {', '.join(missing_critical)}",
+            file=sys.stderr,
+        )
 
     print(f"extracted={len(extracted)} failed={len(failed)} output={out_dir}")
     if failed:
@@ -829,7 +1167,7 @@ def main() -> int:
         print("failed_sample:")
         for item in sample:
             print(f"  {item}")
-    return 0
+    return 1 if missing_critical else 0
 
 
 if __name__ == "__main__":

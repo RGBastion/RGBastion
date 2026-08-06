@@ -1,7 +1,7 @@
 {
-  "version": "1.0.0",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.0/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.0/RedGalaxy-Bastion.exe",
-  "notes": "Bastion 1.0.0 ufficiale — Mac e Windows.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.0"
+  "version": "1.0.1",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.1/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.1/RedGalaxy-Bastion.exe",
+  "notes": "Windows portable cold-start fix (persistent unpack) + Bastion 1.0.1 for Mac and Windows.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.1"
 }

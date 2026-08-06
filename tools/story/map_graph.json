@@ -117,8 +117,8 @@
       "name": "Pyro",
       "short": "Pyro",
       "faction": "NEUTRAL",
-      "w": 30000,
-      "h": 18000
+      "w": 45000,
+      "h": 27000
     },
     "MAP13": {
       "id": "MAP13",
@@ -325,20 +325,6 @@
       "y": 9000
     },
     {
-      "from": "MAP7",
-      "to": "MAP9",
-      "portalId": "m7_to_m9",
-      "x": 15000,
-      "y": 1000
-    },
-    {
-      "from": "MAP7",
-      "to": "MAP8",
-      "portalId": "m7_to_m8",
-      "x": 1000,
-      "y": 1000
-    },
-    {
       "from": "MAP8",
       "to": "MAP4",
       "portalId": "m8_to_m4",
@@ -350,20 +336,6 @@
       "to": "MAP11",
       "portalId": "m8_to_m11",
       "x": 1000,
-      "y": 9000
-    },
-    {
-      "from": "MAP8",
-      "to": "MAP7",
-      "portalId": "m8_to_m7",
-      "x": 15000,
-      "y": 1000
-    },
-    {
-      "from": "MAP8",
-      "to": "MAP9",
-      "portalId": "m8_to_m9",
-      "x": 15000,
       "y": 9000
     },
     {
@@ -379,20 +351,6 @@
       "portalId": "m9_to_m12",
       "x": 15000,
       "y": 1000
-    },
-    {
-      "from": "MAP9",
-      "to": "MAP7",
-      "portalId": "m9_to_m7",
-      "x": 1000,
-      "y": 9000
-    },
-    {
-      "from": "MAP9",
-      "to": "MAP8",
-      "portalId": "m9_to_m8",
-      "x": 15000,
-      "y": 9000
     },
     {
       "from": "MAP10",
@@ -510,15 +468,15 @@
       "from": "SECTOR_Y",
       "to": "PYRO",
       "portalId": "sy_to_pyro",
-      "x": 12000,
-      "y": 6000
+      "x": 8400,
+      "y": 4200
     },
     {
       "from": "PYRO",
       "to": "SECTOR_X",
       "portalId": "pyro_to_sx",
-      "x": 14500,
-      "y": 17500
+      "x": 21750,
+      "y": 26250
     },
     {
       "from": "MAP13",
@@ -713,6 +671,7 @@
     "MAP21": "ORION-7",
     "SECTOR_X": "SECTOR X",
     "SECTOR_Y": "SECTOR Y",
+    "PYRO": "PYRO",
     "RAID_VOID": "VOID GATE",
     "RAID_RIFT": "RIFT GATE",
     "RAID_NEBULA": "NEBULA GATE",
