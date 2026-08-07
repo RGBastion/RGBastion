@@ -1,9 +1,9 @@
 {
-  "name": "reduniverse-bastion",
-  "version": "1.0.2",
-  "description": "RedUniverse Bastion — story/autopilot Windows host (Electron + local HTTP)",
+  "name": "redgalaxy-bastion",
+  "version": "1.0.3",
+  "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
-  "author": "RedUniverse Bastion",
+  "author": "RedGalaxy Bastion",
   "license": "UNLICENSED",
   "private": true,
   "scripts": {
@@ -15,9 +15,9 @@
     "pack:win": "electron-builder --win zip portable --x64"
   },
   "build": {
-    "appId": "local.reduniverse.bastion",
-    "productName": "RedUniverse Bastion",
-    "copyright": "RedUniverse Bastion",
+    "appId": "local.redgalaxy.bastion",
+    "productName": "RedGalaxy Bastion",
+    "copyright": "RedGalaxy Bastion",
     "directories": {
       "output": "../../dist/windows-bastion",
       "buildResources": "build"
@@ -28,7 +28,7 @@
     ],
     "extraResources": [
       {
-        "from": "../../artifacts/redgalaxy-story-web-reduniverse",
+        "from": "../../artifacts/redgalaxy-story-web-redgalaxy",
         "to": "web",
         "filter": [
           "**/*"
@@ -72,12 +72,12 @@
         }
       ],
       "icon": "build/icon.png",
-      "artifactName": "RedUniverse-Bastion-${version}-${arch}.${ext}",
-      "executableName": "RedUniverse-Bastion"
+      "artifactName": "RedGalaxy-Bastion-${version}-${arch}.${ext}",
+      "executableName": "RedGalaxy-Bastion"
     },
     "portable": {
-      "artifactName": "RedUniverse-Bastion.${ext}",
-      "unpackDirName": "RedUniverseBastionPortable"
+      "artifactName": "RedGalaxy-Bastion.${ext}",
+      "unpackDirName": "RedGalaxyBastionPortable"
     },
     "nsis": {
       "oneClick": true,
@@ -85,8 +85,8 @@
       "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "RedUniverse Bastion",
-      "artifactName": "RedUniverse-Bastion-Setup.${ext}"
+      "shortcutName": "RedGalaxy Bastion",
+      "artifactName": "RedGalaxy-Bastion-Setup.${ext}"
     },
     "compression": "normal"
   },

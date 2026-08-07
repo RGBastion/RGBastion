@@ -85,7 +85,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.2";
+  return "1.0.3";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -128,6 +128,11 @@ function scheduleWindowsExeSwapAndRelaunch(currentExe, newExe) {
     app.getPath("temp"),
     `bastion-relaunch-${process.pid}-${Date.now()}.bat`
   );
+  const vbsPath = `${batPath}.vbs`;
+  // Do NOT use `timeout` here: timeout.exe allocates a visible console even when
+  // the parent cmd is spawned with windowsHide, so users see a terminal that
+  // "reopens" every wait tick until they Ctrl+C. `ping` delays without that.
+  // Swap + start "%TARGET%" sequence is unchanged so Bastion update still works.
   const bat = [
     "@echo off",
     "setlocal",
@@ -137,10 +142,10 @@ function scheduleWindowsExeSwapAndRelaunch(currentExe, newExe) {
     ":wait",
     'tasklist /FI "PID eq %PID%" 2>NUL | find "%PID%" >NUL',
     "if not errorlevel 1 (",
-    "  timeout /t 1 /nobreak >NUL",
+    "  ping -n 2 127.0.0.1 >NUL",
     "  goto wait",
     ")",
-    "timeout /t 1 /nobreak >NUL",
+    "ping -n 2 127.0.0.1 >NUL",
     'copy /Y "%SOURCE%" "%TARGET%" >NUL',
     "if errorlevel 1 (",
     '  move /Y "%SOURCE%" "%TARGET%" >NUL',
@@ -148,11 +153,20 @@ function scheduleWindowsExeSwapAndRelaunch(currentExe, newExe) {
     'start "" "%TARGET%"',
     'del /F /Q "%SOURCE%" >NUL 2>&1',
     `del /F /Q "${batPath}" >NUL 2>&1`,
+    `del /F /Q "${vbsPath}" >NUL 2>&1`,
     "endlocal",
+    "exit /b 0",
     "",
   ].join("\r\n");
   fs.writeFileSync(batPath, bat, "utf8");
-  const child = spawn("cmd.exe", ["/c", batPath], {
+  // Start the bat via wscript Run(...,0) so no console window appears for end users.
+  const safeBat = String(batPath).replace(/"/g, "");
+  fs.writeFileSync(
+    vbsPath,
+    `CreateObject("WScript.Shell").Run "cmd.exe /d /c ""${safeBat}""", 0, False\r\n`,
+    "utf8"
+  );
+  const child = spawn("wscript.exe", ["//B", "//Nologo", vbsPath], {
     detached: true,
     stdio: "ignore",
     windowsHide: true,
@@ -1457,9 +1471,15 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       };
     }
 
+    const liveWebVersion = readEmbeddedWebVersion(userWebRoot());
+    const versionFileLie = !!(
+      recorded &&
+      liveWebVersion &&
+      recorded !== liveWebVersion
+    );
     if (versionFileLie) {
       console.warn(
-        `version.txt (${recorded}) disagrees with live game web (${installed}) — refreshing game assets.`
+        `version.txt (${recorded}) disagrees with live game web (${liveWebVersion}) — refreshing game assets.`
       );
     }
     if (!liveOk) {
