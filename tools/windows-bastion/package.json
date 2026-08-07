@@ -1,6 +1,6 @@
 {
   "name": "reduniverse-bastion",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "RedUniverse Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedUniverse Bastion",

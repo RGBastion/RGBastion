@@ -16,7 +16,37 @@ const PKG = (() => {
 })();
 const WINDOW_TITLE =
   (PKG.build && PKG.build.productName) || PKG.productName || "Bastion";
-const UPDATE_MANIFEST_URL = "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json";
+/**
+ * Brand is baked into package.json at build time (productName / name).
+ * Matches Mac host: RG → updates.redgalaxygame.space, RU → R2.
+ */
+const PRODUCT_BRAND = (() => {
+  const blob = `${(PKG.build && PKG.build.productName) || ""} ${PKG.productName || ""} ${PKG.name || ""} ${PKG.build && PKG.build.appId || ""}`.toLowerCase();
+  if (blob.includes("reduniverse")) return "reduniverse";
+  return "redgalaxy";
+})();
+const BRAND_GAME_UPDATE =
+  PRODUCT_BRAND === "reduniverse"
+    ? {
+        manifestUrl:
+          "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json",
+        fallbackInstallerUrl:
+          "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/RedUniverse_1.0.12_x64-setup.exe",
+        clientLabel: "RedUniverse",
+        clientExeHint: "reduniverse-pc-client.exe",
+      }
+    : {
+        manifestUrl: "https://updates.redgalaxygame.space/latest.json",
+        fallbackInstallerUrl:
+          "https://updates.redgalaxygame.space/RedGalaxy-Setup.exe",
+        clientLabel: "RedGalaxy",
+        clientExeHint: "redgalaxy-client.exe",
+      };
+const UPDATE_MANIFEST_URL = (
+  process.env.BASTION_GAME_UPDATE_MANIFEST_URL ||
+  process.env.UPDATE_MANIFEST_URL ||
+  BRAND_GAME_UPDATE.manifestUrl
+).trim();
 /**
  * Bastion self-update manifest (separate from game asset updates).
  * Override with env BASTION_UPDATE_MANIFEST_URL if needed.
@@ -55,7 +85,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.1";
+  return "1.0.2";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -1100,7 +1130,7 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
     }
     if (!gameWebIsComplete(rawOut)) {
       throw new Error(
-        "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedUniverse."
+        "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale."
       );
     }
     fs.rmSync(finalOut, { recursive: true, force: true });
@@ -1149,7 +1179,7 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
   }
   if (!gameWebIsComplete(rawOut)) {
     throw new Error(
-      "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale RedUniverse."
+      "Estrazione incompleta (mancano index/lang/woff2 o asset fusi). Riprova Aggiorna gioco; se persiste, reinstalla il client ufficiale."
     );
   }
   fs.rmSync(finalOut, { recursive: true, force: true });
@@ -1296,8 +1326,7 @@ function findInstalledClientExe() {
   const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
   const userProfile = process.env.USERPROFILE || "";
   const portableDir = String(process.env.PORTABLE_EXECUTABLE_DIR || "").trim();
-  const candidates = [
-    // Official Tauri per-user install (RedUniverse).
+  const ruCandidates = [
     path.join(local, "RedUniverse", "reduniverse-pc-client.exe"),
     path.join(local, "RedUniverse", "reduniverse-client.exe"),
     path.join(local, "RedUniverse", "RedUniverse.exe"),
@@ -1305,12 +1334,12 @@ function findInstalledClientExe() {
     path.join(programFiles, "RedUniverse", "reduniverse-pc-client.exe"),
     path.join(programFilesX86, "RedUniverse", "reduniverse-pc-client.exe"),
     path.join(local, "Programs", "RedUniverse", "reduniverse-pc-client.exe"),
-    // Same folder as Bastion portable / Desktop copies of the official client.
     portableDir ? path.join(portableDir, "reduniverse-pc-client.exe") : "",
     portableDir ? path.join(portableDir, "RedUniverse.exe") : "",
     userProfile ? path.join(userProfile, "Desktop", "reduniverse-pc-client.exe") : "",
     userProfile ? path.join(userProfile, "Desktop", "RedUniverse.exe") : "",
-    // Legacy RedGalaxy paths (twin client).
+  ];
+  const rgCandidates = [
     path.join(local, "RedGalaxy", "redgalaxy-client.exe"),
     path.join(local, "RedGalaxy", "RedGalaxy.exe"),
     path.join(roaming, "RedGalaxy", "redgalaxy-client.exe"),
@@ -1322,6 +1351,11 @@ function findInstalledClientExe() {
     userProfile ? path.join(userProfile, "Desktop", "redgalaxy-client.exe") : "",
     userProfile ? path.join(userProfile, "Desktop", "RedGalaxy.exe") : "",
   ];
+  // Prefer the brand this Bastion was built for (avoid harvesting the twin client).
+  const candidates =
+    PRODUCT_BRAND === "reduniverse"
+      ? [...ruCandidates, ...rgCandidates]
+      : [...rgCandidates, ...ruCandidates];
   for (const c of candidates) {
     if (c && fs.existsSync(c)) return c;
   }
@@ -1342,7 +1376,8 @@ async function downloadAndSilentInstallOfficialClient(installerUrl) {
   fs.mkdirSync(downloads, { recursive: true });
   const installerPath = path.join(
     downloads,
-    path.basename(installerUrl) || "RedUniverse-Setup.exe"
+    path.basename(installerUrl) ||
+      (PRODUCT_BRAND === "reduniverse" ? "RedUniverse-Setup.exe" : "RedGalaxy-Setup.exe")
   );
   await downloadFile(installerUrl, installerPath, (pct) => {
     setUpdateStatus({ phase: "download", percent: pct, message: `Download… ${pct}%` });
@@ -1434,17 +1469,20 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     }
 
     const win = (manifest.platforms && (manifest.platforms["windows-x86_64"] || manifest.platforms.windows)) || {};
-    const installerUrl = String(win.url || "https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/RedUniverse_1.0.12_x64-setup.exe").trim();
+    const installerUrl = String(
+      win.url || BRAND_GAME_UPDATE.fallbackInstallerUrl
+    ).trim();
 
     // Compatible with the official Desktop EXE path:
-    // that Tauri client self-updates into %LOCALAPPDATA%\RedUniverse\reduniverse-pc-client.exe.
-    // Bastion should harvest web assets from that binary first — NOT re-download +
+    // Bastion harvests web assets from that binary first — NOT re-download +
     // silent-reinstall whenever Bastion's AppData web cache is merely behind.
     // Silent install is only for when the official client is missing, or when an
     // extract from the installed client is still older than the official manifest.
     let clientExe = findInstalledClientExe();
     if (!clientExe) {
-      console.warn("Official reduniverse-pc-client.exe not found — downloading installer.");
+      console.warn(
+        `Official ${BRAND_GAME_UPDATE.clientExeHint} not found — downloading installer.`
+      );
       clientExe = await downloadAndSilentInstallOfficialClient(installerUrl);
     } else {
       setUpdateStatus({
@@ -1456,7 +1494,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
 
     if (!clientExe) {
       throw new Error(
-        "reduniverse-pc-client.exe non trovato. Aggiorna/installa una volta il client ufficiale RedUniverse (quello sul Desktop), poi riprova Aggiorna gioco in Bastion."
+        `${BRAND_GAME_UPDATE.clientExeHint} non trovato. Aggiorna/installa una volta il client ufficiale ${BRAND_GAME_UPDATE.clientLabel} (quello sul Desktop), poi riprova Aggiorna gioco in Bastion.`
       );
     }
 
@@ -1508,7 +1546,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       clientExe = refreshed || findInstalledClientExe() || clientExe;
       if (!clientExe) {
         throw new Error(
-          "reduniverse-pc-client.exe non trovato dopo l'installazione. Installa il client ufficiale RedUniverse, poi riprova."
+          `${BRAND_GAME_UPDATE.clientExeHint} non trovato dopo l'installazione. Installa il client ufficiale ${BRAND_GAME_UPDATE.clientLabel}, poi riprova.`
         );
       }
       embeddedStaged = await runStagingExtract(
@@ -1517,7 +1555,7 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       );
       if (!embeddedStaged || !gameWebIsComplete(stagingOut)) {
         throw new Error(
-          `Estrazione incompleta dopo installazione (embed=${embeddedStaged || "missing"}, ufficiale=${remote}). Aggiorna il client RedUniverse sul Desktop e riprova.`
+          `Estrazione incompleta dopo installazione (embed=${embeddedStaged || "missing"}, ufficiale=${remote}). Aggiorna il client ${BRAND_GAME_UPDATE.clientLabel} sul Desktop e riprova.`
         );
       }
     }
