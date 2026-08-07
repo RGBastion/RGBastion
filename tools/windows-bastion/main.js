@@ -6,6 +6,7 @@ const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
+const { Worker } = require("worker_threads");
 const PREFERRED_PORT = 8765;
 const PKG = (() => {
   try {
@@ -85,7 +86,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.3";
+  return "1.0.4";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -1096,24 +1097,94 @@ function nodeToolPath(basename) {
 }
 
 async function runNodeTool(scriptPath, scriptArgs, extraOpts = {}) {
-  // process.execPath is Electron.exe — without ELECTRON_RUN_AS_NODE it launches
-  // another GUI instance and the updater hangs on the progress bar forever.
+  // Prefer worker_threads: same embedded Node, no second RedGalaxy-Bastion.exe.
+  // Spawning process.execPath without a working ELECTRON_RUN_AS_NODE re-enters the
+  // portable app (single-instance lock) and the parent waits until timeout — error
+  // message then names Bastion.exe even though this is a game-extract step.
+  const timeoutMs = Number(extraOpts.timeoutMs) || 300000;
+  const onOutput = typeof extraOpts.onOutput === "function" ? extraOpts.onOutput : null;
   const env = {
     ...process.env,
     ...(extraOpts.env || {}),
-    ELECTRON_RUN_AS_NODE: "1",
   };
-  return runCommand(process.execPath, [scriptPath, ...scriptArgs], {
-    timeoutMs: 300000,
-    ...extraOpts,
-    env,
+  // Workers must not inherit portable/Electron relaunch hints.
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.PORTABLE_EXECUTABLE_FILE;
+  delete env.PORTABLE_EXECUTABLE_DIR;
+
+  const runViaSpawn = () => {
+    const spawnEnv = {
+      ...process.env,
+      ...(extraOpts.env || {}),
+      ELECTRON_RUN_AS_NODE: "1",
+    };
+    return runCommand(process.execPath, [scriptPath, ...scriptArgs], {
+      timeoutMs,
+      onOutput,
+      env: spawnEnv,
+    });
+  };
+
+  let worker;
+  try {
+    worker = new Worker(scriptPath, {
+      argv: scriptArgs,
+      stdout: true,
+      stderr: true,
+      env,
+    });
+  } catch (workerErr) {
+    console.warn(
+      "worker_threads unavailable, falling back to ELECTRON_RUN_AS_NODE:",
+      workerErr.message || workerErr
+    );
+    return runViaSpawn();
+  }
+
+  return new Promise((resolve, reject) => {
+    let out = "";
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      fn();
+    };
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            try {
+              worker.terminate();
+            } catch {
+              /* ignore */
+            }
+            finish(() =>
+              reject(new Error(`extract/patch worker timeout after ${timeoutMs}ms\n${out}`))
+            );
+          }, timeoutMs)
+        : null;
+    const handleChunk = (buf) => {
+      const text = buf.toString();
+      out += text;
+      if (onOutput) onOutput(text);
+    };
+    if (worker.stdout) worker.stdout.on("data", handleChunk);
+    if (worker.stderr) worker.stderr.on("data", handleChunk);
+    worker.on("error", (err) => finish(() => reject(err)));
+    worker.on("exit", (code) => {
+      if (code === 0) finish(() => resolve(out));
+      else finish(() => reject(new Error(`extract/patch worker exited ${code}\n${out}`)));
+    });
   });
 }
 
 function startUpdateHeartbeat(phase, basePercent, message) {
   let tick = 0;
+  let lastRealAt = 0;
   const timer = setInterval(() => {
     tick += 1;
+    // When extract_progress lines update the bar, don't overwrite with the fake 91% cap.
+    if (Date.now() - lastRealAt < 2000) return;
     const wobble = Math.min(9, tick);
     setUpdateStatus({
       phase,
@@ -1121,7 +1192,33 @@ function startUpdateHeartbeat(phase, basePercent, message) {
       message: `${message} (${tick}s)`,
     });
   }, 1000);
-  return () => clearInterval(timer);
+  const stop = () => clearInterval(timer);
+  stop.noteRealProgress = () => {
+    lastRealAt = Date.now();
+  };
+  return stop;
+}
+
+function onExtractProgressOutput(text, heartbeat, basePercent) {
+  const re = /extract_progress\s+extracted=(\d+)\s+pending=(\d+)/g;
+  let m;
+  let last = null;
+  while ((m = re.exec(String(text || ""))) !== null) {
+    last = m;
+  }
+  if (!last) return;
+  if (heartbeat && typeof heartbeat.noteRealProgress === "function") {
+    heartbeat.noteRealProgress();
+  }
+  const done = Number(last[1]) || 0;
+  const pending = Math.max(Number(last[2]) || 1, 1);
+  const frac = Math.min(1, done / pending);
+  const percent = Math.min(basePercent + 9, basePercent + Math.floor(frac * 9));
+  setUpdateStatus({
+    phase: "extract",
+    percent,
+    message: `Estrazione asset web (Node)… ${done}/${pending}`,
+  });
 }
 
 async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
@@ -1138,7 +1235,9 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
     setUpdateStatus({ phase: "extract", percent: 82, message: "Estrazione asset web (Node)…" });
     const stopExtractBeat = startUpdateHeartbeat("extract", 82, "Estrazione asset web (Node)…");
     try {
-      await runNodeTool(extractorJs, [clientExe, rawOut]);
+      await runNodeTool(extractorJs, [clientExe, rawOut], {
+        onOutput: (text) => onExtractProgressOutput(text, stopExtractBeat, 82),
+      });
     } finally {
       stopExtractBeat();
     }
@@ -1312,8 +1411,8 @@ async function publishUserWebRoot(stagingOut, liveOut) {
 function humanizeUpdateError(err) {
   const raw = String(err && err.message ? err.message : err || "");
   const lower = raw.toLowerCase();
-  if (/timeout after/i.test(raw) && /extract|patch|node|electron/i.test(lower)) {
-    return "Tempo scaduto durante estrazione/patch. Riprova con la rete stabile; se persiste, chiudi Bastion e riprova.";
+  if (/timeout after/i.test(raw) && /extract|patch|node|electron|worker|bastion/i.test(lower)) {
+    return "Tempo scaduto durante estrazione/patch. Riprova; se persiste, chiudi Bastion e riprova Aggiorna gioco.";
   }
   if (/ebusy|eperm|eacces|resource busy|being used by another process/i.test(lower)) {
     return `File di gioco in uso o permessi AppData insufficienti. Chiudi altre copie di Bastion e riprova.\n${raw}`;
@@ -2018,7 +2117,9 @@ ipcMain.handle("bastion-update-bastion", async () => triggerBastionSelfUpdate())
 // extractors cannot clobber %LOCALAPPDATA%\<unpackDirName>.
 const gotBastionLock = app.requestSingleInstanceLock();
 if (!gotBastionLock) {
-  app.quit();
+  // app.exit — not app.quit — so a mistaken second spawn cannot sit around forever
+  // while the game updater waits on RedGalaxy-Bastion.exe.
+  app.exit(0);
 } else {
   app.on("second-instance", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {

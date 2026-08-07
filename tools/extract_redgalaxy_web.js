@@ -90,13 +90,14 @@ function despliceEmbeddedPayload(raw, targetLen) {
     if (raw.length < targetLen) return Buffer.from(raw);
     return Buffer.from(raw.subarray(0, targetLen));
   }
-  const out = [];
+  const out = Buffer.allocUnsafe(Math.min(limit, raw.length));
   let i = 0;
   let produced = 0;
   while (i < raw.length && produced < limit) {
     const room = EMBED_SPLICE_PERIOD - (produced % EMBED_SPLICE_PERIOD);
     const take = Math.min(room, raw.length - i, limit - produced);
-    for (let k = 0; k < take; k++) out.push(raw[i + k]);
+    if (take <= 0) break;
+    raw.copy(out, produced, i, i + take);
     i += take;
     produced += take;
     if (produced > 0 && produced % EMBED_SPLICE_PERIOD === 0 && i < raw.length && produced < limit) {
@@ -112,8 +113,8 @@ function despliceEmbeddedPayload(raw, targetLen) {
       }
     }
   }
-  if (!out.length) return null;
-  return Buffer.from(out);
+  if (!produced) return null;
+  return out.subarray(0, produced);
 }
 
 function isValidPngBuffer(buf) {
@@ -406,6 +407,9 @@ function acceptBrotliOutput(out, ext) {
 }
 
 function brotliDecompressLoose(chunk) {
+  // Match extract_redgalaxy_web.py: a few progressive sizes only.
+  // Do NOT binary-search up to 30MB — that made Windows Bastion extract appear
+  // frozen at the 91% heartbeat for minutes until the 300s child timeout.
   const trySync = (buf) => {
     try {
       return zlib.brotliDecompressSync(buf);
@@ -414,9 +418,6 @@ function brotliDecompressLoose(chunk) {
     }
   };
 
-  let out = trySync(chunk);
-  if (out) return out;
-
   const sizes = [
     chunk.length,
     Math.min(chunk.length, 8_000_000),
@@ -424,25 +425,10 @@ function brotliDecompressLoose(chunk) {
     Math.min(chunk.length, 512_000),
   ];
   for (const size of [...new Set(sizes)]) {
-    out = trySync(chunk.subarray(0, size));
+    const out = trySync(chunk.subarray(0, size));
     if (out) return out;
   }
-
-  // Binary search longest prefix that decompresses (handles trailing junk).
-  let lo = 16;
-  let hi = chunk.length;
-  let best = null;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    out = trySync(chunk.subarray(0, mid));
-    if (out) {
-      best = out;
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
-    }
-  }
-  return best;
+  return null;
 }
 
 function brotliDecompressSlice(data, start, brotliBin, ext) {
@@ -827,16 +813,70 @@ function extractPayload(data, filePath, offset, brotliBin) {
 }
 
 function discoverPathsFromBinary(data) {
-  const found = new Set(["/index.html"]);
+  // latin1 index === byte offset. Record match offsets here so main() does not
+  // re-scan the whole exe with Buffer.indexOf for every path × variant (that
+  // alone was ~50s+ on a 282MB client and made Windows updates look hung at 91%).
+  const pending = new Set(["/index.html"]);
+  const offsetIndex = new Map(); // canonicalRel -> [[exactSearchPath, byteOffset], ...]
+  const pushOffset = (rel, searchPath, offset) => {
+    const key = canonicalAssetRel(rel) || normalizePath(rel);
+    if (!key || key.includes("..") || key.length > 220) return;
+    pending.add("/" + key);
+    let list = offsetIndex.get(key);
+    if (!list) {
+      list = [];
+      offsetIndex.set(key, list);
+    }
+    list.push([searchPath, offset]);
+  };
+
   const text = data.toString("latin1");
   let m;
   PATH_RE.lastIndex = 0;
   while ((m = PATH_RE.exec(text)) !== null) {
-    for (const rel of expandPathCandidates(m[0])) {
-      if (rel.length < 220 && !rel.includes("..")) found.add("/" + rel);
+    const matched = m[0];
+    const offset = m.index;
+    for (const rel of expandPathCandidates(matched)) {
+      // extractPayload needs the exact bytes at `offset`; keep `matched` as searchPath.
+      pushOffset(rel, matched, offset);
     }
   }
-  return found;
+  return { pending, offsetIndex };
+}
+
+/** Fallback indexOf only for refs discovered from extracted text (small set). */
+function findPathOffsetsFallback(data, pth, cache) {
+  const cacheKey = String(pth || "");
+  if (cache.has(cacheKey)) return cache.get(cacheKey);
+
+  const offsets = [];
+  const noSlash = cacheKey.replace(/^\/+/, "");
+  const primary = noSlash ? [noSlash, "/" + noSlash] : [];
+  const tryVariants = (variants, maxHitsPer) => {
+    for (const searchPath of variants) {
+      if (!searchPath) continue;
+      const raw = Buffer.from(searchPath);
+      let start = 0;
+      let hits = 0;
+      while (hits < maxHitsPer) {
+        const off = data.indexOf(raw, start);
+        if (off < 0) break;
+        offsets.push([searchPath, off]);
+        start = off + 1;
+        hits += 1;
+      }
+    }
+  };
+  tryVariants(primary, 8);
+  // Localized " - Copy" twins only when the primary path is absent in the binary.
+  if (!offsets.length) {
+    tryVariants(
+      pathSearchVariants(pth).filter((v) => !primary.includes(v)),
+      4
+    );
+  }
+  cache.set(cacheKey, offsets);
+  return offsets;
 }
 
 function discoverPathsFromOutput(outDir) {
@@ -911,25 +951,27 @@ function main() {
   const data = fs.readFileSync(exe);
   fs.mkdirSync(outDir, { recursive: true });
 
-  let pending = discoverPathsFromBinary(data);
+  const discovered = discoverPathsFromBinary(data);
+  let pending = discovered.pending;
+  const offsetIndex = discovered.offsetIndex;
+  const offsetCache = new Map();
   const extracted = new Set();
   const failed = new Set();
+  const t0 = Date.now();
+  const logProgress = () => {
+    console.error(
+      `extract_progress extracted=${extracted.size} pending=${pending.size} failed=${failed.size} ms=${Date.now() - t0}`
+    );
+  };
 
   for (let round = 0; round < 4; round++) {
     let progress = false;
     for (const pth of [...pending].sort()) {
       const rel = canonicalAssetRel(pth) || normalizePath(pth);
       if (!rel || extracted.has(rel) || failed.has(rel)) continue;
-      const offsets = [];
-      for (const searchPath of pathSearchVariants(pth)) {
-        const raw = Buffer.from(searchPath);
-        let start = 0;
-        while (true) {
-          const off = data.indexOf(raw, start);
-          if (off < 0) break;
-          offsets.push([searchPath, off]);
-          start = off + 1;
-        }
+      let offsets = offsetIndex.get(rel) ? offsetIndex.get(rel).slice() : [];
+      if (!offsets.length) {
+        offsets = findPathOffsetsFallback(data, pth, offsetCache);
       }
       if (!offsets.length) {
         failed.add(rel);
@@ -951,6 +993,7 @@ function main() {
         extracted.add(rel);
         failed.delete(rel);
         progress = true;
+        if (extracted.size === 1 || extracted.size % 40 === 0) logProgress();
       } else {
         failed.add(rel);
       }
@@ -961,6 +1004,7 @@ function main() {
     progress = progress || pending.size > before;
     if (!progress) break;
   }
+  logProgress();
 
   mergeLocaleWithFallback(outDir, "it");
   mergeLocaleWithFallback(outDir, "quest.it", "quest.en");
