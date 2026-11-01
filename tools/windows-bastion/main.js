@@ -86,7 +86,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.4";
+  return "1.0.6";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -1238,6 +1238,10 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc }) {
       await runNodeTool(extractorJs, [clientExe, rawOut], {
         onOutput: (text) => onExtractProgressOutput(text, stopExtractBeat, 82),
       });
+    } catch (err) {
+      // Tag extractor-only failures so the caller can reinstall the official client.
+      if (err && typeof err === "object") err.rgExtractFailed = true;
+      throw err;
     } finally {
       stopExtractBeat();
     }
@@ -1432,6 +1436,38 @@ function humanizeUpdateError(err) {
   return raw || "Aggiornamento non riuscito per un errore sconosciuto.";
 }
 
+/**
+ * Wait until the official client exe is a complete PE file whose size is stable.
+ * Tauri/NSIS setup can return before the exe is fully written; extracting a
+ * partial/empty file gave "extracted=0 pending=1 failed=1 ms=7".
+ */
+async function waitForClientExeReady(exePath, timeoutMs = 90000) {
+  if (!exePath) return false;
+  const deadline = Date.now() + timeoutMs;
+  let lastSize = -1;
+  while (Date.now() < deadline) {
+    try {
+      const st = fs.statSync(exePath);
+      if (st.size >= 1_000_000 && st.size === lastSize) {
+        const fd = fs.openSync(exePath, "r");
+        try {
+          const head = Buffer.alloc(2);
+          fs.readSync(fd, head, 0, 2, 0);
+          if (head[0] === 0x4d && head[1] === 0x5a) return true;
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+      lastSize = st.size;
+    } catch {
+      lastSize = -1;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  console.warn(`Official client exe not ready after ${timeoutMs}ms: ${exePath}`);
+  return false;
+}
+
 function findInstalledClientExe() {
   const local = process.env.LOCALAPPDATA || "";
   const roaming = process.env.APPDATA || "";
@@ -1522,7 +1558,9 @@ async function downloadAndSilentInstallOfficialClient(installerUrl) {
   } finally {
     stopInstallBeat();
   }
-  return findInstalledClientExe();
+  const installed = findInstalledClientExe();
+  if (installed) await waitForClientExeReady(installed);
+  return installed;
 }
 
 async function applyWindowsGameUpdate({ force = false } = {}) {
@@ -1650,10 +1688,20 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       return readEmbeddedWebVersion(stagingOut);
     };
 
-    let embeddedStaged = await runStagingExtract(
-      clientExe,
-      "Preparazione asset (staging, senza toccare la cache live)…"
-    );
+    await waitForClientExeReady(clientExe, 15000);
+    let embeddedStaged = null;
+    try {
+      embeddedStaged = await runStagingExtract(
+        clientExe,
+        "Preparazione asset (staging, senza toccare la cache live)…"
+      );
+    } catch (err) {
+      // Extract-only failure (truncated/old client exe): fall through to the
+      // official reinstall + re-extract below. Patch-step errors still propagate.
+      if (!(err && err.rgExtractFailed)) throw err;
+      console.warn("Extract from installed client failed — reinstalling official client:", err.message || err);
+      embeddedStaged = null;
+    }
 
     // Tauri manifest (1.0.x) != game embed (redgalaxy-client@0.6.x). A successful
     // extract with a valid embed is enough; only reinstall if extract failed.

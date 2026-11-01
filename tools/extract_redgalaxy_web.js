@@ -11,6 +11,7 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const os = require("os");
 
@@ -932,6 +933,138 @@ function offsetLooksLikeBlob(data, searchPath, offset) {
   return false;
 }
 
+// --- Structured embedded asset tables (authoritative) ---
+// Newer official clients (Oct 2026+) ship two pointer tables in .rdata:
+//   1. Tauri frontend map: 32-byte records (key_ptr, key_len, val_ptr, val_len),
+//      key like "/assets/index-*.js", value = one brotli stream.
+//   2. Game asset embed: 104-byte records with name (ptr, len) at +0, sha256 at +48
+//      and raw data (ptr, len) at +88. Names are packed together and identical
+//      files are deduplicated by the linker, so the "data follows the path string"
+//      heuristic cannot find them (drones/*.atlas, ships/*.json, ...).
+// Same logic as extract_redgalaxy_web.py (find_embedded_asset_tables).
+const TABLE_NAME_RE = /^\/?[A-Za-z0-9_@+\-][A-Za-z0-9_./@+\- ]*\.[A-Za-z0-9]{1,6}$/;
+
+function pe64Layout(data) {
+  if (data.length < 0x400 || data[0] !== 0x4d || data[1] !== 0x5a) return null;
+  const pe = data.readUInt32LE(0x3c);
+  if (pe + 24 > data.length || data.readUInt32LE(pe) !== 0x00004550) return null;
+  const nsec = data.readUInt16LE(pe + 6);
+  const optsz = data.readUInt16LE(pe + 20);
+  const opt = pe + 24;
+  if (data.readUInt16LE(opt) !== 0x20b) return null; // PE32+ only (x64 client)
+  const imageBase = Number(data.readBigUInt64LE(opt + 24));
+  const sections = [];
+  for (let i = 0; i < nsec; i++) {
+    const o = opt + optsz + 40 * i;
+    if (o + 40 > data.length) break;
+    const va = data.readUInt32LE(o + 12);
+    let rsize = data.readUInt32LE(o + 16);
+    const raw = data.readUInt32LE(o + 20);
+    const chars = data.readUInt32LE(o + 36);
+    rsize = Math.min(rsize, Math.max(0, data.length - raw));
+    if (rsize > 0) sections.push({ va, raw, rsize, chars });
+  }
+  return { imageBase, sections };
+}
+
+function findEmbeddedAssetTables(data) {
+  const found = new Map(); // rel -> { kind: "raw" | "br", off, len }
+  const layout = pe64Layout(data);
+  if (!layout || !layout.sections.length) return found;
+  const { imageBase, sections } = layout;
+  const vmin = imageBase + Math.min(...sections.map((s) => s.va));
+  const vmax = imageBase + Math.max(...sections.map((s) => s.va + s.rsize));
+  const v2o = (v) => {
+    const r = v - imageBase;
+    for (const s of sections) {
+      if (r >= s.va && r < s.va + s.rsize) return s.raw + (r - s.va);
+    }
+    return -1;
+  };
+  const q = (off) => data.readUInt32LE(off) + data.readUInt32LE(off + 4) * 0x100000000;
+  const n = data.length;
+  for (const s of sections) {
+    if (s.chars & 0x20000000) continue; // skip executable code sections
+    const start = s.raw + ((8 - (s.raw % 8)) % 8);
+    const count = Math.floor((s.raw + s.rsize - start) / 8);
+    for (let i = 0; i + 3 < count; i++) {
+      const rec = start + i * 8;
+      const p = q(rec);
+      if (p < vmin || p >= vmax) continue;
+      const ln = q(rec + 8);
+      if (ln < 3 || ln > 260) continue;
+      const no = v2o(p);
+      if (no < 0 || no + ln > n) continue;
+      const nameBuf = data.subarray(no, no + ln);
+      const name = nameBuf.toString("latin1");
+      if (!TABLE_NAME_RE.test(name)) continue;
+      const rel = normalizePath(name);
+      if (!rel || !isSaneRelPath(rel)) continue;
+      // Game asset embed record (raw bytes + sha256).
+      if (i + 12 < count) {
+        const dp = q(rec + 88);
+        const dl = q(rec + 96);
+        if (dp >= vmin && dp < vmax && dl > 0 && dl <= 200_000_000) {
+          const dOff = v2o(dp);
+          if (dOff >= 0 && dOff + dl <= n) {
+            const digest = crypto.createHash("sha256").update(data.subarray(dOff, dOff + dl)).digest();
+            if (digest.equals(data.subarray(rec + 48, rec + 80))) {
+              if (!found.has(rel)) found.set(rel, { kind: "raw", off: dOff, len: dl });
+              continue;
+            }
+          }
+        }
+      }
+      // Tauri frontend map record (brotli value).
+      if (name.startsWith("/")) {
+        const vp = q(rec + 16);
+        const vl = q(rec + 24);
+        if (vp >= vmin && vp < vmax && vl > 0 && vl <= 200_000_000) {
+          const vOff = v2o(vp);
+          if (vOff >= 0 && vOff + vl <= n && !found.has(rel)) {
+            found.set(rel, { kind: "br", off: vOff, len: vl });
+          }
+        }
+      }
+    }
+  }
+  return found;
+}
+
+function extractFromAssetTables(data, outDir) {
+  const table = findEmbeddedAssetTables(data);
+  const ok = new Set();
+  const bad = new Set();
+  for (const rel of [...table.keys()].sort()) {
+    const { kind, off, len } = table.get(rel);
+    const chunk = data.subarray(off, off + len);
+    let payload = null;
+    if (kind === "raw") payload = Buffer.from(chunk);
+    else {
+      try {
+        payload = zlib.brotliDecompressSync(chunk);
+      } catch {
+        payload = null;
+      }
+    }
+    if (!payload || !payload.length) {
+      bad.add(rel);
+      continue;
+    }
+    writeFile(outDir, rel, payload);
+    ok.add(rel);
+    const canon = canonicalAssetRel(rel);
+    if (canon && canon !== rel && !table.has(canon)) {
+      writeFile(outDir, canon, payload);
+      ok.add(canon);
+    }
+  }
+  if (table.size) {
+    console.error(`asset_table entries=${table.size} decoded=${ok.size} bad=${bad.size}`);
+  }
+  return { ok, bad };
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args.length !== 2) {
@@ -949,13 +1082,27 @@ function main() {
   const brotliBin = resolveBrotliBin();
   // Node always has zlib brotli — no hard dependency on CLI/Python.
   const data = fs.readFileSync(exe);
+  // A truncated / still-installing / wrong file has no PE header or is tiny
+  // (Windows: "extracted=0 pending=1 failed=1 ms=7" came from such an input).
+  if (data.length < 1_000_000 || data[0] !== 0x4d || data[1] !== 0x5a) {
+    console.error(
+      `Client exe is not a complete official client (size=${data.length} bytes, header=${JSON.stringify(
+        data.subarray(0, 2).toString("latin1")
+      )}): ${exe}. Reinstall/finish installing the official client and retry.`
+    );
+    return 3;
+  }
   fs.mkdirSync(outDir, { recursive: true });
 
   const discovered = discoverPathsFromBinary(data);
   let pending = discovered.pending;
   const offsetIndex = discovered.offsetIndex;
   const offsetCache = new Map();
-  const extracted = new Set();
+  // Exact extraction from the client's embedded asset tables first.
+  const tableResult = extractFromAssetTables(data, outDir);
+  const tableOk = tableResult.ok;
+  for (const rel of tableOk) pending.add("/" + rel);
+  const extracted = new Set(tableOk);
   const failed = new Set();
   const t0 = Date.now();
   const logProgress = () => {
@@ -1022,7 +1169,21 @@ function main() {
     console.warn(`WARN: missing/invalid critical assets after extract: ${missingCritical.join(", ")}`);
   }
 
-  console.log(`extracted=${extracted.size} failed=${failed.size} output=${outDir}`);
+  // With a structured table present, a referenced path that is neither in the table
+  // nor recoverable by the heuristic is not shipped in the official client
+  // (e.g. icons/128x128.png is the Tauri bundle icon string from tauri.conf).
+  const notInClient = new Set();
+  if (tableOk.size) {
+    for (const rel of failed) if (!tableOk.has(rel)) notInClient.add(rel);
+    for (const rel of notInClient) failed.delete(rel);
+  }
+  console.log(
+    `extracted=${extracted.size} failed=${failed.size} not_in_client=${notInClient.size} output=${outDir}`
+  );
+  if (notInClient.size) {
+    console.log("not_in_client (referenced, but not embedded in the official exe):");
+    for (const item of [...notInClient].sort().slice(0, 80)) console.log(`  ${item}`);
+  }
   if (failed.size) {
     console.log("failed_sample:");
     for (const item of [...failed].sort().slice(0, 80)) console.log(`  ${item}`);

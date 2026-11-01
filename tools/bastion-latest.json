@@ -1,7 +1,7 @@
 {
-  "version": "1.0.4",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.4/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.4/RedGalaxy-Bastion.exe",
-  "notes": "Fix Windows game extract hang at 91% (Node path index + worker). Bastion self-update unchanged.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.4"
+  "version": "1.0.6",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.6/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.6/RedGalaxy-Bastion.exe",
+  "notes": "Fix Aggiorna gioco for official client 0.8.4: structured PE asset-table extract + Phaser game hook needles (e→s).",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.6"
 }

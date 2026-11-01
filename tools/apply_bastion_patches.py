@@ -260,8 +260,9 @@ def patch_index_html(root: Path, brand: str) -> None:
 
 # Minified identifiers change between game builds; match structural patterns instead.
 # 0.6.23: Phaser ns Mt→Ct, game state K→W, bonus callback T→S — keep needles identifier-agnostic.
+# 0.8.4: Phaser game local renamed e→s (const s=new gt.Game(...);Tit(s),...).
 GAME_HOOK_RE = re.compile(
-    r"(const e=new \w+\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(e\))"
+    r"(const (\w+)=new \w+\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(\2\))"
 )
 NET_HOOK_RE = re.compile(
     r"const (\w+)=new (\w+),(\w+)=Object\.freeze\(Object\.defineProperty"
@@ -282,8 +283,9 @@ STATE_HOOK_FALLBACK_RE = re.compile(
 STATE_HOOK_ALREADY_RE = re.compile(
     r"const (\w+)=\w+\(\);window\.__RG_STATE__=\1;const \w+=new Set"
 )
+# 0.8.4: handler object e→t (…,{t.onBonusBoxCollected(i)}).
 BONUS_HOOK_RE = re.compile(
-    r'(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{e\.onBonusBoxCollected\(\2\)\}\)'
+    r'(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{(\w+)\.onBonusBoxCollected\(\2\)\}\)'
 )
 MAP_DIMS_RE = re.compile(
     r"(\w+)\.map_width&&\((\w+)\.mapWidth=\1\.map_width\),\1\.map_height&&\(\2\.mapHeight=\1\.map_height\)"
@@ -293,11 +295,12 @@ GAME_BOOTSTRAP_RE = re.compile(r"new \w+\.Game\(")
 
 
 def _patch_game_hook(text: str) -> tuple[str, str | None]:
-    if "window.__RG_GAME__=e" in text and GAME_HOOK_RE.search(text) is None:
+    if "window.__RG_GAME__=" in text and GAME_HOOK_RE.search(text) is None:
         return text, "already"
     if GAME_HOOK_RE.search(text) is None:
         return text, None
-    patched = GAME_HOOK_RE.sub(r"\1window.__RG_GAME__=e;\2", text, count=1)
+    # Keep the minified local name (\2); expose it as window.__RG_GAME__.
+    patched = GAME_HOOK_RE.sub(r"\1window.__RG_GAME__=\2;\3", text, count=1)
     return patched, "patched"
 
 
@@ -351,9 +354,9 @@ def _patch_bonus_hook(text: str) -> tuple[str, str | None]:
     m = BONUS_HOOK_RE.search(text)
     if not m:
         return text, None
-    net_var, arg = m.groups()
+    net_var, arg, obj = m.groups()
     repl = (
-        f'{net_var}.onMessage("bonusBoxCollected",{arg}=>{{e.onBonusBoxCollected({arg}),'
+        f'{net_var}.onMessage("bonusBoxCollected",{arg}=>{{{obj}.onBonusBoxCollected({arg}),'
         f"window.__RG_STORY_ON_BONUS__?.({arg})}})"
     )
     return text.replace(m.group(0), repl, 1), "patched"

@@ -124,9 +124,10 @@ function patchIndexHtml(root) {
   console.log(`Patched: ${indexPath}`);
 }
 
-// Minified identifiers change between builds (0.6.23: Mt→Ct, K→W, bonus T→S).
+// Minified identifiers change between builds (0.6.23: Mt→Ct, K→W, bonus T→S;
+// 0.8.4: Phaser game local e→s).
 const GAME_HOOK_RE =
-  /(const e=new \w+\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(e\))/;
+  /(const (\w+)=new \w+\.Game\([A-Za-z0-9_$]+\);)(?!window\.__RG_GAME__)([A-Za-z0-9_$]+\(\2\))/;
 const NET_HOOK_RE =
   /const (\w+)=new (\w+),(\w+)=Object\.freeze\(Object\.defineProperty/;
 const NET_HOOK_ALREADY_RE =
@@ -139,19 +140,21 @@ const STATE_HOOK_FALLBACK_RE =
   /const (\w+)=(\w+)\(\),(\w+)=new Set;function (\w+)\((\w+)\)\{\3\.add/;
 const STATE_HOOK_ALREADY_RE =
   /const (\w+)=\w+\(\);window\.__RG_STATE__=\1;const \w+=new Set/;
+// 0.8.4: handler object e→t.
 const BONUS_HOOK_RE =
-  /(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{e\.onBonusBoxCollected\(\2\)\}\)/;
+  /(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{(\w+)\.onBonusBoxCollected\(\2\)\}\)/;
 const MAP_DIMS_RE =
   /(\w+)\.map_width&&\((\w+)\.mapWidth=\1\.map_width\),\1\.map_height&&\(\2\.mapHeight=\1\.map_height\)/;
 const MAP_DIMS_ALREADY = "window.__RG_MAP_W__";
 const GAME_BOOTSTRAP_RE = /new \w+\.Game\(/;
 
 function patchGameHook(text) {
-  if (text.includes("window.__RG_GAME__=e") && !GAME_HOOK_RE.test(text)) {
+  if (text.includes("window.__RG_GAME__=") && !GAME_HOOK_RE.test(text)) {
     return [text, "already"];
   }
   if (!GAME_HOOK_RE.test(text)) return [text, null];
-  return [text.replace(GAME_HOOK_RE, "$1window.__RG_GAME__=e;$2"), "patched"];
+  // Keep the minified local name ($2); expose it as window.__RG_GAME__.
+  return [text.replace(GAME_HOOK_RE, "$1window.__RG_GAME__=$2;$3"), "patched"];
 }
 
 function patchNetHook(text) {
@@ -196,9 +199,9 @@ function patchBonusHook(text) {
   if (text.includes("window.__RG_STORY_ON_BONUS__")) return [text, "already"];
   const m = text.match(BONUS_HOOK_RE);
   if (!m) return [text, null];
-  const [, netVar, arg] = m;
+  const [, netVar, arg, obj] = m;
   const repl =
-    `${netVar}.onMessage("bonusBoxCollected",${arg}=>{e.onBonusBoxCollected(${arg}),` +
+    `${netVar}.onMessage("bonusBoxCollected",${arg}=>{${obj}.onBonusBoxCollected(${arg}),` +
     `window.__RG_STORY_ON_BONUS__?.(${arg})})`;
   return [text.replace(m[0], repl), "patched"];
 }

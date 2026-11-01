@@ -90,7 +90,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.1";
+  const BASTION_APP_VERSION = "1.0.6";
   /** Raid portals spawn on own-faction X-1 (HELIOS-1 / NOVA-1 / ORION-1). */
   const RAID_HUB_RING = 1;
 

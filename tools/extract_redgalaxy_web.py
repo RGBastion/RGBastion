@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import hashlib
 import shutil
 import struct
 import subprocess
@@ -1075,6 +1076,159 @@ def offset_looks_like_blob(data: bytes, search_path: str, offset: int) -> bool:
     return False
 
 
+# --- Structured embedded asset tables (authoritative, format-independent of neighbors) ---
+# Newer official clients (Oct 2026+) ship two tables in .rdata:
+#   1. Tauri frontend map: 32-byte records (key_ptr, key_len, val_ptr, val_len),
+#      key like "/assets/index-*.js", value = one brotli stream.
+#   2. Game asset embed: 104-byte records with name (ptr, len) at +0, sha256 at +48
+#      and raw (uncompressed) data (ptr, len) at +88. Names are packed together and
+#      identical files are deduplicated by the linker, so the "data follows the
+#      path string" heuristic cannot find them (drones/*.atlas, ships/*.json, ...).
+# Reading the pointer tables gives exact bytes; embed entries are sha256-verified.
+TABLE_NAME_RE = re.compile(rb"^/?[A-Za-z0-9_@+\-][A-Za-z0-9_./@+\- ]*\.[A-Za-z0-9]{1,6}$")
+EMBED_RECORD_HASH_OFF = 48
+EMBED_RECORD_DATA_OFF = 88
+EMBED_RECORD_SIZE = 104
+
+
+def pe64_layout(data: bytes):
+    if len(data) < 0x400 or data[:2] != b"MZ":
+        return None
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if pe + 24 > len(data) or data[pe : pe + 4] != b"PE\x00\x00":
+        return None
+    nsec = struct.unpack_from("<H", data, pe + 6)[0]
+    optsz = struct.unpack_from("<H", data, pe + 20)[0]
+    opt = pe + 24
+    if struct.unpack_from("<H", data, opt)[0] != 0x20B:  # PE32+ only (x64 client)
+        return None
+    image_base = struct.unpack_from("<Q", data, opt + 24)[0]
+    sections = []
+    for i in range(nsec):
+        o = opt + optsz + 40 * i
+        if o + 40 > len(data):
+            break
+        _vsize, va, rsize, raw = struct.unpack_from("<IIII", data, o + 8)
+        chars = struct.unpack_from("<I", data, o + 36)[0]
+        rsize = min(rsize, max(0, len(data) - raw))
+        if rsize > 0:
+            sections.append((va, raw, rsize, chars))
+    return image_base, sections
+
+
+def brotli_decompress_exact(chunk: bytes, brotli_bin: str | None) -> bytes | None:
+    try:
+        import brotli as _pybrotli  # type: ignore
+
+        return _pybrotli.decompress(chunk)
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    if not brotli_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [brotli_bin, "-d", "-c"],
+            input=chunk,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
+def find_embedded_asset_tables(data: bytes) -> dict[str, tuple[str, int, int]]:
+    """Return rel -> (kind, file_offset, length); kind is "raw" (sha256-verified) or "br"."""
+    layout = pe64_layout(data)
+    if not layout:
+        return {}
+    image_base, sections = layout
+    if not sections:
+        return {}
+    vmin = image_base + min(s[0] for s in sections)
+    vmax = image_base + max(s[0] + s[2] for s in sections)
+
+    def v2o(v: int) -> int | None:
+        r = v - image_base
+        for va, raw, rsize, _c in sections:
+            if va <= r < va + rsize:
+                return raw + (r - va)
+        return None
+
+    found: dict[str, tuple[str, int, int]] = {}
+    n = len(data)
+    view = memoryview(data)
+    for _va, raw, rsize, chars in sections:
+        if chars & 0x20000000:  # skip executable code sections
+            continue
+        start = raw + ((8 - raw % 8) % 8)
+        count = (raw + rsize - start) // 8
+        if count < 4:
+            continue
+        qs = view[start : start + count * 8].cast("Q")
+        for i in range(count - 3):
+            p = qs[i]
+            if p < vmin or p >= vmax:
+                continue
+            ln = qs[i + 1]
+            if ln < 3 or ln > 260:
+                continue
+            no = v2o(p)
+            if no is None or no + ln > n:
+                continue
+            name = bytes(view[no : no + ln])
+            if not TABLE_NAME_RE.match(name):
+                continue
+            rel = normalize_path(name.decode("ascii", "ignore"))
+            if not rel or not is_sane_rel_path(rel):
+                continue
+            rec = start + i * 8
+            # Game asset embed record (raw bytes + sha256).
+            if i + 12 < count:
+                dp, dl = qs[i + 11], qs[i + 12]
+                if vmin <= dp < vmax and 0 < dl <= 200_000_000:
+                    do = v2o(dp)
+                    if do is not None and do + dl <= n:
+                        digest = bytes(view[rec + EMBED_RECORD_HASH_OFF : rec + EMBED_RECORD_HASH_OFF + 32])
+                        if hashlib.sha256(view[do : do + dl]).digest() == digest:
+                            found.setdefault(rel, ("raw", do, dl))
+                            continue
+            # Tauri frontend map record (brotli value).
+            if name.startswith(b"/"):
+                vp, vl = qs[i + 2], qs[i + 3]
+                if vmin <= vp < vmax and 0 < vl <= 200_000_000:
+                    vo = v2o(vp)
+                    if vo is not None and vo + vl <= n and rel not in found:
+                        found[rel] = ("br", vo, vl)
+    return found
+
+
+def extract_from_asset_tables(
+    data: bytes, out_dir: Path, brotli_bin: str | None
+) -> tuple[set[str], set[str]]:
+    table = find_embedded_asset_tables(data)
+    ok: set[str] = set()
+    bad: set[str] = set()
+    for rel, (kind, off, length) in sorted(table.items()):
+        chunk = data[off : off + length]
+        payload = chunk if kind == "raw" else brotli_decompress_exact(chunk, brotli_bin)
+        if not payload:
+            bad.add(rel)
+            continue
+        write_file(out_dir, rel, payload)
+        ok.add(rel)
+        canon = canonical_asset_rel(rel)
+        if canon and canon != rel and canon not in table:
+            write_file(out_dir, canon, payload)
+            ok.add(canon)
+    if table:
+        print(f"asset_table entries={len(table)} decoded={len(ok)} bad={len(bad)}", file=sys.stderr)
+    return ok, bad
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("usage: extract_redgalaxy_web.py /path/to/reduniverse-pc-client.exe /output/dir", file=sys.stderr)
@@ -1095,11 +1249,25 @@ def main() -> int:
         )
         return 2
 
+    if not exe.is_file():
+        print(f"Client exe not found: {exe}", file=sys.stderr)
+        return 2
     data = exe.read_bytes()
+    # A truncated / still-installing / wrong file has no PE header or is tiny.
+    if len(data) < 1_000_000 or data[:2] != b"MZ":
+        print(
+            f"Client exe is not a complete official client (size={len(data)} bytes, "
+            f"header={data[:2]!r}): {exe}. Reinstall/finish installing the official client and retry.",
+            file=sys.stderr,
+        )
+        return 3
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pending = discover_paths_from_binary(data)
-    extracted: set[str] = set()
+    # Exact extraction from the client's embedded asset tables first.
+    table_ok, _table_bad = extract_from_asset_tables(data, out_dir, brotli_bin)
+    extracted: set[str] = set(table_ok)
+    pending |= {"/" + rel for rel in table_ok}
     failed: set[str] = set()
 
     for _ in range(4):
@@ -1161,7 +1329,20 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    print(f"extracted={len(extracted)} failed={len(failed)} output={out_dir}")
+    # With a structured table present, a referenced path that is neither in the table
+    # nor recoverable by the heuristic is simply not shipped in the official client
+    # (e.g. icons/128x128.png is the Tauri bundle icon string from tauri.conf).
+    not_in_client: set[str] = set()
+    if table_ok:
+        not_in_client = {rel for rel in failed if rel not in table_ok}
+        failed -= not_in_client
+    print(
+        f"extracted={len(extracted)} failed={len(failed)} not_in_client={len(not_in_client)} output={out_dir}"
+    )
+    if not_in_client:
+        print("not_in_client (referenced, but not embedded in the official exe):")
+        for item in sorted(not_in_client)[:80]:
+            print(f"  {item}")
     if failed:
         sample = sorted(failed)[:80]
         print("failed_sample:")

@@ -1,6 +1,6 @@
 {
   "name": "redgalaxy-bastion",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedGalaxy Bastion",
@@ -77,7 +77,8 @@
     },
     "portable": {
       "artifactName": "RedGalaxy-Bastion.${ext}",
-      "unpackDirName": "RedGalaxyBastionPortable"
+      "unpackDirName": "RedGalaxyBastionPortable",
+      "useZip": true
     },
     "nsis": {
       "oneClick": true,
