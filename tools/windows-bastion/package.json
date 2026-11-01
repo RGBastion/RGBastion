@@ -1,6 +1,6 @@
 {
   "name": "redgalaxy-bastion",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedGalaxy Bastion",
@@ -94,5 +94,8 @@
   "devDependencies": {
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1"
   }
 }

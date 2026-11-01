@@ -20,3 +20,4 @@ default.profraw
 *.pem
 *.p12
 credentials.json
+.tmp-probe/

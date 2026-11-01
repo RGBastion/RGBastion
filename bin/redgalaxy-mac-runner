@@ -40,9 +40,11 @@ case "$PRODUCT_BRAND" in
       "$HOME/Desktop/RedGalaxy_0.6.23_x64-setup.exe"
     )
     BRAND_OFFICIAL_SITE="https://www.redgalaxygame.space"
-    BRAND_UPDATE_MANIFEST_URL="https://updates.redgalaxygame.space/latest.json"
+    # Official launcher 1.1.7+ uses the PC envelope (Gioco 0.9.x). Legacy /latest.json stayed on 0.8.4.
+    BRAND_UPDATE_MANIFEST_URL="https://updates.redgalaxygame.space/pc/latest.json"
     BRAND_UPDATE_INSTALLER_URL="https://updates.redgalaxygame.space/RedGalaxy-Setup.exe"
-    BRAND_SETUP_GLOBS=('RedGalaxy*setup*.exe' 'redgalaxy*setup*.exe')
+    BRAND_ART_DONOR_MANIFEST_URL="https://updates.redgalaxygame.space/nc-bridge/latest.json"
+    BRAND_SETUP_GLOBS=('RedGalaxy*setup*.exe' 'redgalaxy*setup*.exe' 'redgalaxy-game*.exe')
     ;;
   reduniverse|ru)
     PRODUCT_BRAND="reduniverse"
@@ -873,11 +875,21 @@ rescan_launcher() {
 
 find_web_client_exe() {
   local game_exe=""
+  if [[ -n "${WEB_CLIENT_EXE_OVERRIDE:-}" && -f "${WEB_CLIENT_EXE_OVERRIDE}" ]]; then
+    printf '%s\n' "$WEB_CLIENT_EXE_OVERRIDE"
+    return 0
+  fi
   if [[ -f "$LAST_EXE_FILE" ]]; then
     game_exe="$(cat "$LAST_EXE_FILE")"
   fi
   if [[ -z "$game_exe" || ! -f "$game_exe" ]]; then
     game_exe="$(find_installed_game_exe || true)"
+  fi
+  # Prefer a previously downloaded official PC client blob.
+  if [[ -z "$game_exe" || ! -f "$game_exe" ]]; then
+    if [[ -f "$NATIVE_DOWNLOAD_DIR/redgalaxy-game.exe" ]]; then
+      game_exe="$NATIVE_DOWNLOAD_DIR/redgalaxy-game.exe"
+    fi
   fi
   [[ -n "$game_exe" && -f "$game_exe" ]] || die "Installed $PRODUCT_BASE_NAME client not found. Run: $(basename "$0") install --silent"
   printf '%s\n' "$game_exe"
@@ -948,6 +960,19 @@ extract_web_assets_to() {
   mkdir -p "$out_dir"
   "$python_bin" "$EXTRACTOR" "$game_exe" "$out_dir"
   validate_extracted_web_root "$out_dir"
+  # PC 0.9.x keeps ships/maps in encrypted .rgpak — fill gaps from prior Bastion web
+  # or a legacy full Tauri client extract still present on disk.
+  if ! game_web_is_complete "$out_dir"; then
+    if [[ -d "$NATIVE_APP_WEB_DIR" ]]; then
+      merge_missing_game_art "$out_dir" "$NATIVE_APP_WEB_DIR"
+    fi
+    if ! game_web_is_complete "$out_dir" && [[ -d "$BASTION_APP_WEB_DIR" && "$BASTION_APP_WEB_DIR" != "$NATIVE_APP_WEB_DIR" ]]; then
+      merge_missing_game_art "$out_dir" "$BASTION_APP_WEB_DIR"
+    fi
+  fi
+  if ! game_web_is_complete "$out_dir"; then
+    die "Extraction incomplete after art merge (need ships/maps/atlas/lang/woff2). Run Aggiorna gioco again after a full prior install."
+  fi
   log "Native web assets are ready."
 }
 
@@ -968,7 +993,18 @@ read_embedded_web_version() {
   asset="${asset#/}"
   [[ -n "$asset" && -f "$web_root/$asset" ]] || return 1
   local match=""
+  # Legacy Tauri package id, then PC/native ncVersion:"0.9.17+…".
   match="$(grep -oE 'redgalaxy-client@[0-9][0-9A-Za-z.+_-]*' "$web_root/$asset" 2>/dev/null | head -1 || true)"
+  if [[ -z "$match" ]]; then
+    match="$(grep -oE 'ncVersion:"[0-9][0-9A-Za-z.+_-]*"' "$web_root/$asset" 2>/dev/null | head -1 || true)"
+    match="${match#ncVersion:\"}"
+    match="${match%\"}"
+  fi
+  if [[ -z "$match" ]]; then
+    match="$(grep -oE '\"[0-9]+\.[0-9]+\.[0-9]+\+[A-Za-z0-9]+\"\.split\(\"\+\"\)' "$web_root/$asset" 2>/dev/null | head -1 || true)"
+    match="${match#\"}"
+    match="${match%%\"*}"
+  fi
   [[ -n "$match" ]] || return 1
   version_from_release_id "$match"
 }
@@ -1064,38 +1100,13 @@ cached_installer_matches_remote() {
   [[ "$base" == *"_${remote}_"* ]] || [[ "$base" == *"-${remote}-"* ]] || [[ "$base" == *"${remote}"* ]]
 }
 
-fetch_remote_client_version() {
-  need_cmd curl
-  local manifest=""
-  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
-  UPDATE_MANIFEST_JSON="$manifest" python3 - <<'PY'
-import json
-import os
-import sys
-
-raw = os.environ.get("UPDATE_MANIFEST_JSON", "")
-try:
-    data = json.loads(raw)
-except json.JSONDecodeError as exc:
-    print(f"Invalid update manifest JSON: {exc}", file=sys.stderr)
-    sys.exit(1)
-
-version = str(data.get("version", "")).strip()
-if not version:
-    print("Update manifest is missing version.", file=sys.stderr)
-    sys.exit(1)
-print(version)
-PY
-}
-
-fetch_remote_installer_url() {
-  need_cmd curl
-  local manifest=""
-  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
-  UPDATE_MANIFEST_JSON="$manifest" FALLBACK_URL="$UPDATE_INSTALLER_URL" python3 - <<'PY'
-import json
-import os
-import sys
+# Decode official PC envelope (schema 1) or legacy Tauri latest.json.
+# Prints: version \t kind \t download_url \t expected_size
+parse_update_manifest() {
+  local manifest_json="$1"
+  local fallback_url="${2:-}"
+  UPDATE_MANIFEST_JSON="$manifest_json" FALLBACK_URL="$fallback_url" python3 - <<'PY'
+import json, os, sys, base64
 
 raw = os.environ.get("UPDATE_MANIFEST_JSON", "")
 fallback = os.environ.get("FALLBACK_URL", "").strip()
@@ -1105,18 +1116,72 @@ except json.JSONDecodeError as exc:
     print(f"Invalid update manifest JSON: {exc}", file=sys.stderr)
     sys.exit(1)
 
-platforms = data.get("platforms") or {}
-win = platforms.get("windows-x86_64") or platforms.get("windows") or {}
-url = ""
-if isinstance(win, dict):
-    url = str(win.get("url") or "").strip()
-if not url:
-    url = fallback
-if not url:
-    print("Update manifest is missing installer URL.", file=sys.stderr)
-    sys.exit(1)
-print(url)
+def emit(version, kind, url, size=0):
+    version = str(version or "").strip()
+    if not version:
+        print("Update manifest is missing version.", file=sys.stderr)
+        sys.exit(1)
+    print(f"{version}\t{kind}\t{url}\t{int(size or 0)}")
+
+if int(data.get("schema") or 0) == 1 and data.get("payload"):
+    try:
+        payload = json.loads(base64.b64decode(data["payload"]).decode("utf-8"))
+    except Exception as exc:
+        print(f"Invalid PC update envelope: {exc}", file=sys.stderr)
+        sys.exit(1)
+    version = str(payload.get("version", "")).strip()
+    files = payload.get("files") or []
+    game = next((f for f in files if isinstance(f, dict) and (f.get("path") == "redgalaxy-game.exe" or f.get("component") == "game")), None)
+    blobs = str((payload.get("base_url") or {}).get("blobs") or "blobs/").lstrip("/")
+    sha = str((game or {}).get("sha256") or "").strip()
+    url = f"https://updates.redgalaxygame.space/pc/{blobs}{sha}" if sha else fallback
+    size = int((game or {}).get("size") or 0)
+    emit(version, "pc", url, size)
+else:
+    version = str(data.get("version", "")).strip()
+    platforms = data.get("platforms") or {}
+    win = platforms.get("windows-x86_64") or platforms.get("windows") or {}
+    url = ""
+    if isinstance(win, dict):
+        url = str(win.get("url") or "").strip()
+    if not url:
+        url = fallback
+    emit(version, "tauri", url, 0)
 PY
+}
+
+fetch_remote_client_version() {
+  need_cmd curl
+  local manifest=""
+  local parsed=""
+  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
+  parsed="$(parse_update_manifest "$manifest" "$UPDATE_INSTALLER_URL")" || die "Cannot parse update manifest"
+  printf '%s\n' "${parsed%%$'\t'*}"
+}
+
+fetch_remote_installer_url() {
+  need_cmd curl
+  local manifest=""
+  local parsed=""
+  local url=""
+  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
+  parsed="$(parse_update_manifest "$manifest" "$UPDATE_INSTALLER_URL")" || die "Cannot parse update manifest"
+  url="$(printf '%s\n' "$parsed" | awk -F'\t' '{print $3}')"
+  [[ -n "$url" ]] || die "Update manifest is missing installer/blob URL."
+  printf '%s\n' "$url"
+}
+
+fetch_remote_update_meta() {
+  # Sets REMOTE_UPDATE_VERSION / KIND / URL / SIZE from the brand manifest.
+  need_cmd curl
+  local manifest=""
+  local parsed=""
+  manifest="$(curl -fsSL -A "$UPDATE_USER_AGENT" "$UPDATE_MANIFEST_URL")" || die "Cannot fetch update manifest: $UPDATE_MANIFEST_URL"
+  parsed="$(parse_update_manifest "$manifest" "$UPDATE_INSTALLER_URL")" || die "Cannot parse update manifest"
+  REMOTE_UPDATE_VERSION="$(printf '%s\n' "$parsed" | awk -F'\t' '{print $1}')"
+  REMOTE_UPDATE_KIND="$(printf '%s\n' "$parsed" | awk -F'\t' '{print $2}')"
+  REMOTE_UPDATE_URL="$(printf '%s\n' "$parsed" | awk -F'\t' '{print $3}')"
+  REMOTE_UPDATE_SIZE="$(printf '%s\n' "$parsed" | awk -F'\t' '{print $4}')"
 }
 
 resolve_story_src() {
@@ -1264,8 +1329,58 @@ download_official_installer() {
   need_cmd curl
   mkdir -p "$NATIVE_DOWNLOAD_DIR"
 
-  local installer_url=""
-  installer_url="$(fetch_remote_installer_url)"
+  fetch_remote_update_meta
+  local installer_url="$REMOTE_UPDATE_URL"
+  local kind="${REMOTE_UPDATE_KIND:-tauri}"
+  local expect_size="${REMOTE_UPDATE_SIZE:-0}"
+  local ver="${REMOTE_UPDATE_VERSION:-game}"
+  local destination=""
+  local partial=""
+
+  if [[ "$kind" == "pc" ]]; then
+    destination="$NATIVE_DOWNLOAD_DIR/redgalaxy-game-${ver}.exe"
+    if [[ -f "$destination" && "$expect_size" -gt 0 ]]; then
+      local have_size=0
+      have_size="$(stat -f %z "$destination" 2>/dev/null || echo 0)"
+      if [[ "$have_size" == "$expect_size" ]]; then
+        DOWNLOADED_INSTALLER="$destination"
+        log "Using cached PC client: $destination"
+        return 0
+      fi
+    fi
+    partial="$destination.zst.part"
+    log "Downloading official PC client blob from: $installer_url"
+    curl -fL -A "$UPDATE_USER_AGENT" -e "$OFFICIAL_SITE/" "$installer_url" -o "$partial"
+    if command -v zstd >/dev/null 2>&1; then
+      zstd -d -f -o "$destination" "$partial"
+    else
+      UPDATE_ZST_SRC="$partial" UPDATE_ZST_DST="$destination" python3 - <<'PY'
+import os, pathlib
+src = pathlib.Path(os.environ["UPDATE_ZST_SRC"])
+dst = pathlib.Path(os.environ["UPDATE_ZST_DST"])
+data = src.read_bytes()
+try:
+    import zstandard as zstd
+    out = zstd.ZstdDecompressor().decompress(data)
+except Exception:
+    # Fallback: system `zstd` missing and no zstandard module.
+    raise SystemExit("Need `zstd` CLI or Python zstandard to decompress PC client blob")
+dst.write_bytes(out)
+print(len(out))
+PY
+    fi
+    rm -f "$partial"
+    if [[ "$expect_size" -gt 0 ]]; then
+      local have_size=0
+      have_size="$(stat -f %z "$destination" 2>/dev/null || echo 0)"
+      [[ "$have_size" == "$expect_size" ]] || die "Decompressed PC client size mismatch ($have_size != $expect_size)"
+    fi
+    ln -sfn "$destination" "$NATIVE_DOWNLOAD_DIR/redgalaxy-game.exe" 2>/dev/null || cp -f "$destination" "$NATIVE_DOWNLOAD_DIR/redgalaxy-game.exe"
+    DOWNLOADED_INSTALLER="$destination"
+    log "PC client saved to: $destination"
+    return 0
+  fi
+
   local basename
   basename="$(basename "$installer_url")"
   if [[ -z "$basename" ]]; then
@@ -1276,8 +1391,8 @@ download_official_installer() {
     fi
   fi
 
-  local destination="$NATIVE_DOWNLOAD_DIR/$basename"
-  local partial="$destination.part"
+  destination="$NATIVE_DOWNLOAD_DIR/$basename"
+  partial="$destination.part"
   log "Downloading latest installer from: $installer_url"
   curl -fL -A "$UPDATE_USER_AGENT" -e "$OFFICIAL_SITE/" "$installer_url" -o "$partial"
   mv "$partial" "$destination"
@@ -1289,6 +1404,31 @@ download_official_installer() {
   fi
   DOWNLOADED_INSTALLER="$destination"
   log "Installer saved to: $destination"
+}
+
+merge_missing_game_art() {
+  local target="$1"
+  local donor="$2"
+  [[ -d "$target" && -d "$donor" ]] || return 0
+  local d=""
+  local copied=0
+  for d in ships maps drones equip box missiles ore portals ranks corps base extras icons; do
+    [[ -d "$donor/$d" ]] || continue
+    mkdir -p "$target/$d"
+    # Copy only missing files so newer extract outputs win.
+    while IFS= read -r -d '' src; do
+      local rel="${src#"$donor/$d/"}"
+      local dst="$target/$d/$rel"
+      if [[ ! -e "$dst" ]]; then
+        mkdir -p "$(dirname "$dst")"
+        cp -f "$src" "$dst"
+        copied=$((copied + 1))
+      fi
+    done < <(find "$donor/$d" -type f -print0 2>/dev/null)
+  done
+  if (( copied > 0 )); then
+    log "Merged $copied missing art file(s) from donor into extract staging."
+  fi
 }
 
 publish_web_root() {
@@ -1315,7 +1455,15 @@ publish_web_root() {
 }
 
 update_native_app_assets() {
-  install_game
+  # PC client blobs are already the game EXE — skip Wine NSIS install.
+  if [[ -n "${WEB_CLIENT_EXE_OVERRIDE:-}" && -f "${WEB_CLIENT_EXE_OVERRIDE}" ]]; then
+    log "Using PC/game client directly (no Wine install): $WEB_CLIENT_EXE_OVERRIDE"
+  elif [[ -n "${EXE_PATH:-}" && "$EXE_PATH" == *redgalaxy-game* && -f "$EXE_PATH" ]]; then
+    export WEB_CLIENT_EXE_OVERRIDE="$EXE_PATH"
+    log "Using PC/game client directly (no Wine install): $EXE_PATH"
+  else
+    install_game
+  fi
   local staging=""
   local lock_dir="$NATIVE_SUPPORT_DIR/update.lock"
   if ! mkdir "$lock_dir" 2>/dev/null; then
@@ -1420,8 +1568,15 @@ update_from_web() {
     log "Installing $PRODUCT_BASE_NAME game client version $remote"
   fi
 
+  fetch_remote_update_meta
+  remote="$REMOTE_UPDATE_VERSION"
+  local update_kind="${REMOTE_UPDATE_KIND:-tauri}"
+
   # Never reuse a cached installer that does not match the official remote version.
-  if [[ -z "$EXE_PATH" ]] && cached_installer_matches_remote "$remote"; then
+  if [[ -z "$EXE_PATH" && "$update_kind" == "pc" && -f "$NATIVE_DOWNLOAD_DIR/redgalaxy-game-${remote}.exe" ]]; then
+    EXE_PATH="$NATIVE_DOWNLOAD_DIR/redgalaxy-game-${remote}.exe"
+    log "Using cached PC client matching $remote: $EXE_PATH"
+  elif [[ -z "$EXE_PATH" ]] && cached_installer_matches_remote "$remote"; then
     if [[ "$PRODUCT_BRAND" == "reduniverse" ]]; then
       EXE_PATH="$NATIVE_DOWNLOAD_DIR/RedUniverse-Setup.exe"
     else
@@ -1438,21 +1593,29 @@ update_from_web() {
 
   [[ -n "$EXE_PATH" && -f "$EXE_PATH" ]] || die "Installer not found: ${EXE_PATH:-<empty>}"
 
-  if ! find_wine >/dev/null 2>&1; then
-    if confirm "Wine is required to apply the Windows installer. Download the local Wine runtime now?"; then
-      install_local_wine
+  if [[ "$update_kind" == "pc" || "$EXE_PATH" == *redgalaxy-game* ]]; then
+    # Official PC client blob: extract web directly (no Wine install step).
+    export WEB_CLIENT_EXE_OVERRIDE="$EXE_PATH"
+    mkdir -p "$(dirname "$LAST_EXE_FILE")"
+    printf '%s\n' "$EXE_PATH" >"$LAST_EXE_FILE"
+    update_native_app_assets
+    unset WEB_CLIENT_EXE_OVERRIDE
+  else
+    if ! find_wine >/dev/null 2>&1; then
+      if confirm "Wine is required to apply the Windows installer. Download the local Wine runtime now?"; then
+        install_local_wine
+      fi
     fi
+    update_native_app_assets
   fi
-
-  update_native_app_assets
 
   local embedded_after=""
   embedded_after="$(read_embedded_web_version "$NATIVE_APP_WEB_DIR" || true)"
   if [[ -z "$embedded_after" ]]; then
-    die "Update finished but live game web has no redgalaxy-client@version embed."
+    die "Update finished but live game web has no version embed (redgalaxy-client@ / ncVersion)."
   fi
   if [[ "$embedded_after" != "$remote" ]]; then
-    log "Live web embed is redgalaxy-client@$embedded_after; recording official Tauri/manifest version $remote."
+    log "Live web embed is $embedded_after; recording official manifest version $remote."
   fi
   write_installed_client_version "$remote"
 

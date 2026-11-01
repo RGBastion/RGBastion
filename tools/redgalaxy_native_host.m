@@ -784,23 +784,9 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
             NSString *assetName = [html substringWithRange:[match rangeAtIndex:1]];
             NSString *assetPath = [[webRoot stringByAppendingPathComponent:@"assets"] stringByAppendingPathComponent:assetName];
             NSString *content = [NSString stringWithContentsOfFile:assetPath encoding:NSUTF8StringEncoding error:nil];
-            if (content.length > 0) {
-                NSRange marker = [content rangeOfString:@"redgalaxy-client@"];
-                if (marker.location != NSNotFound) {
-                    NSString *tail = [content substringFromIndex:marker.location + marker.length];
-                    NSCharacterSet *stopSet = [NSCharacterSet characterSetWithCharactersInString:@"+\"'\\s"];
-                    NSRange stop = [tail rangeOfCharacterFromSet:stopSet];
-                    NSString *version = stop.location == NSNotFound ? tail : [tail substringToIndex:stop.location];
-                    version = [version stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-                    // Strip build metadata if somehow still present
-                    NSRange dash = [version rangeOfString:@"-"];
-                    if (dash.location != NSNotFound) {
-                        version = [version substringToIndex:dash.location];
-                    }
-                    if (version.length > 0) {
-                        return version;
-                    }
-                }
+            NSString *parsed = [self versionStringFromGameJs:content];
+            if (parsed.length > 0) {
+                return parsed;
             }
         }
     }
@@ -813,20 +799,51 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
         }
         NSString *path = [assets stringByAppendingPathComponent:name];
         NSString *content = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
-        if (content.length == 0) {
-            continue;
+        NSString *parsed = [self versionStringFromGameJs:content];
+        if (parsed.length > 0) {
+            return parsed;
         }
-        NSRange marker = [content rangeOfString:@"redgalaxy-client@"];
-        if (marker.location == NSNotFound) {
-            continue;
-        }
+    }
+    return nil;
+}
+
+- (NSString *)versionStringFromGameJs:(NSString *)content {
+    if (content.length == 0) {
+        return nil;
+    }
+    // Legacy Tauri: redgalaxy-client@0.8.4+deadbeef
+    NSRange marker = [content rangeOfString:@"redgalaxy-client@"];
+    if (marker.location != NSNotFound) {
         NSString *tail = [content substringFromIndex:marker.location + marker.length];
-        NSCharacterSet *stopSet = [NSCharacterSet characterSetWithCharactersInString:@"+\"'"];
-        NSRange stop = [tail rangeOfCharacterFromSet:stopSet];
-        NSString *version = stop.location == NSNotFound ? tail : [tail substringToIndex:stop.location];
-        version = [version stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // Keep digits/dots until metadata separator.
+        NSMutableString *version = [NSMutableString string];
+        for (NSUInteger i = 0; i < tail.length; i++) {
+            unichar c = [tail characterAtIndex:i];
+            if ((c >= '0' && c <= '9') || c == '.') {
+                [version appendFormat:@"%C", c];
+            } else {
+                break;
+            }
+        }
         if (version.length > 0) {
             return version;
+        }
+    }
+    // PC/native 0.9.x: ncVersion:"0.9.17+70ec8ce"
+    NSRegularExpression *ncRe =
+        [NSRegularExpression regularExpressionWithPattern:@"ncVersion:\"([0-9][0-9A-Za-z.+_-]*)\""
+                                                 options:0
+                                                   error:nil];
+    NSTextCheckingResult *ncMatch = [ncRe firstMatchInString:content options:0 range:NSMakeRange(0, content.length)];
+    if (ncMatch && ncMatch.numberOfRanges >= 2) {
+        NSString *raw = [content substringWithRange:[ncMatch rangeAtIndex:1]];
+        NSRange plus = [raw rangeOfString:@"+"];
+        if (plus.location != NSNotFound) {
+            raw = [raw substringToIndex:plus.location];
+        }
+        raw = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (raw.length > 0) {
+            return raw;
         }
     }
     return nil;
@@ -952,7 +969,9 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
 #if defined(BASTION_BRAND_REDUNIVERSE)
     NSURL *url = [NSURL URLWithString:@"https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json"];
 #else
-    NSURL *url = [NSURL URLWithString:@"https://updates.redgalaxygame.space/latest.json"];
+    // Official launcher 1.1.7+ reads the PC envelope (Gioco 0.9.x).
+    // Legacy https://updates.redgalaxygame.space/latest.json stayed on 0.8.4.
+    NSURL *url = [NSURL URLWithString:@"https://updates.redgalaxygame.space/pc/latest.json"];
 #endif
     if (!url) {
         return nil;
@@ -983,7 +1002,24 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
     if (![json isKindOfClass:[NSDictionary class]]) {
         return nil;
     }
-    id version = json[@"version"];
+    NSDictionary *dict = (NSDictionary *)json;
+    // PC envelope: { schema:1, payload:<base64 JSON with version> }
+    id schema = dict[@"schema"];
+    id envelopePayload = dict[@"payload"];
+    if ([schema respondsToSelector:@selector(integerValue)] && [schema integerValue] == 1 &&
+        [envelopePayload isKindOfClass:[NSString class]]) {
+        NSData *decoded = [[NSData alloc] initWithBase64EncodedString:(NSString *)envelopePayload options:0];
+        if (decoded.length > 0) {
+            id inner = [NSJSONSerialization JSONObjectWithData:decoded options:0 error:nil];
+            if ([inner isKindOfClass:[NSDictionary class]]) {
+                id version = ((NSDictionary *)inner)[@"version"];
+                if ([version isKindOfClass:[NSString class]]) {
+                    return [(NSString *)version stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                }
+            }
+        }
+    }
+    id version = dict[@"version"];
     if (![version isKindOfClass:[NSString class]]) {
         return nil;
     }
