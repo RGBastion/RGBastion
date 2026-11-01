@@ -1172,6 +1172,7 @@ function main() {
   // With a structured table present, a referenced path that is neither in the table
   // nor recoverable by the heuristic is not shipped in the official client
   // (e.g. icons/128x128.png is the Tauri bundle icon string from tauri.conf).
+  // PC 0.9.x also keeps ships/maps/box art in encrypted .rgpak — those land here.
   const notInClient = new Set();
   if (tableOk.size) {
     for (const rel of failed) if (!tableOk.has(rel)) notInClient.add(rel);
@@ -1188,7 +1189,11 @@ function main() {
     console.log("failed_sample:");
     for (const item of [...failed].sort().slice(0, 80)) console.log(`  ${item}`);
   }
-  return missingCritical.length ? 1 : 0;
+  // Do not fail solely because rgpak-backed art is absent from the PE.
+  // Bastion merges ships/maps from a prior web / bundle donor, then completeness-gates.
+  const blockingCritical = missingCritical.filter((rel) => !notInClient.has(rel));
+  if (failed.size) return 1;
+  return blockingCritical.length ? 1 : 0;
 }
 
 if (require.main === module) {

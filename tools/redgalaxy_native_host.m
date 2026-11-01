@@ -1548,15 +1548,17 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
     }
     NSString *script = [NSTemporaryDirectory() stringByAppendingPathComponent:
         [NSString stringWithFormat:@"bastion-relaunch-%d.sh", getpid()]];
+    // Ignore SIGHUP: a non-detached child of this process would die with terminate
+    // and never reopen — users saw Aggiorna Bastion "just close" the app.
     NSString *body = [NSString stringWithFormat:
         @"#!/bin/bash\n"
+        @"trap '' HUP TERM\n"
         @"APP=%@\n"
         @"PID=%d\n"
         @"while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done\n"
-        @"sleep 0.4\n"
+        @"sleep 0.8\n"
         @"open \"$APP\"\n"
-        @"rm -f -- %@"
-        @"\n",
+        @"rm -f -- %@\n",
         [self shellQuote:appPath],
         getpid(),
         [self shellQuote:script]];
@@ -1565,13 +1567,18 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
                                      ofItemAtPath:script
                                             error:nil];
 
+    // Launch detached (nohup + background) so the helper outlives NSApp terminate.
     NSTask *helper = [[NSTask alloc] init];
     helper.launchPath = @"/bin/bash";
-    helper.arguments = @[script];
+    helper.arguments = @[
+        @"-c",
+        [NSString stringWithFormat:@"nohup /bin/bash %@ >/dev/null 2>&1 &", [self shellQuote:script]]
+    ];
     helper.standardOutput = [NSFileHandle fileHandleWithNullDevice];
     helper.standardError = [NSFileHandle fileHandleWithNullDevice];
     @try {
         [helper launch];
+        [helper waitUntilExit];
     } @catch (NSException *ex) {
         NSLog(@"Bastion relaunch helper failed: %@", ex);
         [[NSWorkspace sharedWorkspace] openURL:[NSURL fileURLWithPath:appPath]];
@@ -1833,7 +1840,7 @@ typedef NS_ENUM(NSInteger, BastionProductBrand) {
     done.alertStyle = NSAlertStyleInformational;
     done.messageText = @"Aggiornamento completato";
     done.informativeText = [NSString stringWithFormat:
-        @"Bastion %@ è stato installato in:\n%@\n\nRiavvio l'app ora.",
+        @"Bastion %@ è stato installato in:\n%@\n\nChiudo e riapro Bastion automaticamente (necessario per caricare il nuovo host).",
         remote, installPath];
     [done addButtonWithTitle:@"Riavvia"];
     [done runModal];

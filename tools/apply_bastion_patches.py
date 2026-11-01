@@ -274,14 +274,38 @@ NET_HOOK_BROKEN_RE = re.compile(
     r"const (\w+)=new (\w+);window\.__RG_NET__=\1,(\w+)=Object\.freeze\(Object\.defineProperty"
 )
 # Prefer unique game-state marker; fallback = factory() + listener Set with .add.
+# 0.9.17 minifies some locals as $v — \w alone misses leading $.
+_JS_IDENT = r"[A-Za-z0-9_$]+"
 STATE_HOOK_RE = re.compile(
-    r"(preservedLocalSlow:null\}\})const (\w+)=(\w+)\(\),(\w+)=new Set"
+    r"(preservedLocalSlow:null\}\})const ("
+    + _JS_IDENT
+    + r")=("
+    + _JS_IDENT
+    + r")\(\),("
+    + _JS_IDENT
+    + r")=new Set"
 )
 STATE_HOOK_FALLBACK_RE = re.compile(
-    r"const (\w+)=(\w+)\(\),(\w+)=new Set;function (\w+)\((\w+)\)\{\3\.add"
+    r"const ("
+    + _JS_IDENT
+    + r")=("
+    + _JS_IDENT
+    + r")\(\),("
+    + _JS_IDENT
+    + r")=new Set;function ("
+    + _JS_IDENT
+    + r")\(("
+    + _JS_IDENT
+    + r")\{\3\.add"
 )
 STATE_HOOK_ALREADY_RE = re.compile(
-    r"const (\w+)=\w+\(\);window\.__RG_STATE__=\1;const \w+=new Set"
+    r"const ("
+    + _JS_IDENT
+    + r")="
+    + _JS_IDENT
+    + r"\(\);window\.__RG_STATE__=\1;const "
+    + _JS_IDENT
+    + r"=new Set"
 )
 # 0.8.4: handler object e→t (…,{t.onBonusBoxCollected(i)}).
 BONUS_HOOK_RE = re.compile(

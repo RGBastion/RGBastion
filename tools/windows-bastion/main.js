@@ -91,7 +91,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.7";
+  return "1.0.8";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -178,9 +178,10 @@ function scheduleWindowsExeSwapAndRelaunch(currentExe, newExe) {
     windowsHide: true,
   });
   child.unref();
+  // Give the helper a moment to start watching our PID before we exit.
   setTimeout(() => {
     app.quit();
-  }, 400);
+  }, 800);
 }
 
 function isBastionManifestConfigured(url = BASTION_UPDATE_MANIFEST_URL) {
@@ -1442,6 +1443,10 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc, artDo
     }
   };
 
+  const extractLooksUsable = () =>
+    fs.existsSync(path.join(rawOut, "index.html")) &&
+    fs.existsSync(path.join(rawOut, "assets"));
+
   const hasNodePipeline = fs.existsSync(extractorJs) && fs.existsSync(patcherJs);
   if (hasNodePipeline) {
     setUpdateStatus({ phase: "extract", percent: 82, message: "Estrazione asset web (Node)…" });
@@ -1451,9 +1456,17 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc, artDo
         onOutput: (text) => onExtractProgressOutput(text, stopExtractBeat, 82),
       });
     } catch (err) {
-      // Tag extractor-only failures so the caller can reinstall the official client.
-      if (err && typeof err === "object") err.rgExtractFailed = true;
-      throw err;
+      // PC 0.9.x: extractor may exit non-zero when .rgpak art is absent from the PE.
+      // If index/assets exist, continue and merge art from donors before failing.
+      if (extractLooksUsable()) {
+        console.warn(
+          "Extractor exited non-zero but produced a usable web root — merging art donors…",
+          err && err.message ? err.message : err
+        );
+      } else {
+        if (err && typeof err === "object") err.rgExtractFailed = true;
+        throw err;
+      }
     } finally {
       stopExtractBeat();
     }
@@ -1504,6 +1517,15 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc, artDo
   );
   try {
     await runPy([extractorPy, clientExe, rawOut]);
+  } catch (err) {
+    if (extractLooksUsable()) {
+      console.warn(
+        "Python extractor exited non-zero but produced a usable web root — merging art donors…",
+        err && err.message ? err.message : err
+      );
+    } else {
+      throw err;
+    }
   } finally {
     stopExtractBeat();
   }
@@ -1876,6 +1898,10 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const finalOut = userWebRoot();
     const artDonors = [];
     if (webHasGameArt(userWebRoot())) artDonors.push(userWebRoot());
+    // Packaged Bastion ships a full art tree for cold installs / PC 0.9.x .rgpak gaps.
+    if (webHasGameArt(bundledWebRoot()) && !artDonors.includes(bundledWebRoot())) {
+      artDonors.push(bundledWebRoot());
+    }
 
     const runStagingExtract = async (sourceExe, statusMessage, donors = artDonors) => {
       fs.rmSync(rawOut, { recursive: true, force: true });

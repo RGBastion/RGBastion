@@ -1332,6 +1332,7 @@ def main() -> int:
     # With a structured table present, a referenced path that is neither in the table
     # nor recoverable by the heuristic is simply not shipped in the official client
     # (e.g. icons/128x128.png is the Tauri bundle icon string from tauri.conf).
+    # PC 0.9.x also keeps ships/maps/box art in encrypted .rgpak — those land here.
     not_in_client: set[str] = set()
     if table_ok:
         not_in_client = {rel for rel in failed if rel not in table_ok}
@@ -1348,7 +1349,12 @@ def main() -> int:
         print("failed_sample:")
         for item in sample:
             print(f"  {item}")
-    return 1 if missing_critical else 0
+    # Do not fail the process solely because rgpak-backed art is absent from the PE.
+    # Bastion merges ships/maps from a prior web / bundle donor, then completeness-gates.
+    blocking_critical = [rel for rel in missing_critical if rel not in not_in_client]
+    if failed:
+        return 1
+    return 1 if blocking_critical else 0
 
 
 if __name__ == "__main__":

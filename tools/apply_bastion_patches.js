@@ -134,12 +134,17 @@ const NET_HOOK_ALREADY_RE =
   /const (\w+)=new (\w+);window\.__RG_NET__=\1;const (\w+)=Object\.freeze\(Object\.defineProperty/;
 const NET_HOOK_BROKEN_RE =
   /const (\w+)=new (\w+);window\.__RG_NET__=\1,(\w+)=Object\.freeze\(Object\.defineProperty/;
-const STATE_HOOK_RE =
-  /(preservedLocalSlow:null\}\})const (\w+)=(\w+)\(\),(\w+)=new Set/;
-const STATE_HOOK_FALLBACK_RE =
-  /const (\w+)=(\w+)\(\),(\w+)=new Set;function (\w+)\((\w+)\)\{\3\.add/;
-const STATE_HOOK_ALREADY_RE =
-  /const (\w+)=\w+\(\);window\.__RG_STATE__=\1;const \w+=new Set/;
+// 0.9.17 minifies some locals as $v — \w alone misses leading $.
+const JS_IDENT = "[A-Za-z0-9_$]+";
+const STATE_HOOK_RE = new RegExp(
+  `(preservedLocalSlow:null\\}\\})const (${JS_IDENT})=(${JS_IDENT})\\(\\),(${JS_IDENT})=new Set`
+);
+const STATE_HOOK_FALLBACK_RE = new RegExp(
+  `const (${JS_IDENT})=(${JS_IDENT})\\(\\),(${JS_IDENT})=new Set;function (${JS_IDENT})\\((${JS_IDENT})\\)\\{\\3\\.add`
+);
+const STATE_HOOK_ALREADY_RE = new RegExp(
+  `const (${JS_IDENT})=${JS_IDENT}\\(\\);window\\.__RG_STATE__=\\1;const ${JS_IDENT}=new Set`
+);
 // 0.8.4: handler object e→t.
 const BONUS_HOOK_RE =
   /(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{(\w+)\.onBonusBoxCollected\(\2\)\}\)/;

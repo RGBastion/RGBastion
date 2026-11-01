@@ -950,6 +950,8 @@ extract_web_assets_to() {
   [[ -n "$out_dir" ]] || die "Missing output directory for extraction"
   local game_exe
   local python_bin
+  local extract_rc=0
+  local bundle_web=""
   game_exe="$(find_web_client_exe)"
   python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
   ensure_brotli
@@ -958,16 +960,33 @@ extract_web_assets_to() {
   log "Extracting native web client from: $game_exe"
   log "Output directory: $out_dir"
   mkdir -p "$out_dir"
+  # set -e would abort before art merge when the extractor warns on rgpak gaps.
+  set +e
   "$python_bin" "$EXTRACTOR" "$game_exe" "$out_dir"
+  extract_rc=$?
+  set -e
+  if [[ "$extract_rc" -ne 0 ]]; then
+    if [[ -s "$out_dir/index.html" && -d "$out_dir/assets" ]]; then
+      warn "Extractor exited $extract_rc (PC client may omit .rgpak art) — continuing with art merge…"
+    else
+      die "Extractor failed (exit $extract_rc) and produced no usable web root"
+    fi
+  fi
   validate_extracted_web_root "$out_dir"
-  # PC 0.9.x keeps ships/maps in encrypted .rgpak — fill gaps from prior Bastion web
-  # or a legacy full Tauri client extract still present on disk.
+  # PC 0.9.x keeps ships/maps in encrypted .rgpak — fill gaps from prior Bastion web,
+  # bundled Resources/web, or a legacy full Tauri client extract still present on disk.
+  if [[ -d "$SCRIPT_DIR/web/ships" || -d "$SCRIPT_DIR/web/maps" ]]; then
+    bundle_web="$SCRIPT_DIR/web"
+  fi
   if ! game_web_is_complete "$out_dir"; then
     if [[ -d "$NATIVE_APP_WEB_DIR" ]]; then
       merge_missing_game_art "$out_dir" "$NATIVE_APP_WEB_DIR"
     fi
     if ! game_web_is_complete "$out_dir" && [[ -d "$BASTION_APP_WEB_DIR" && "$BASTION_APP_WEB_DIR" != "$NATIVE_APP_WEB_DIR" ]]; then
       merge_missing_game_art "$out_dir" "$BASTION_APP_WEB_DIR"
+    fi
+    if ! game_web_is_complete "$out_dir" && [[ -n "$bundle_web" && -d "$bundle_web" && "$bundle_web" != "$NATIVE_APP_WEB_DIR" ]]; then
+      merge_missing_game_art "$out_dir" "$bundle_web"
     fi
   fi
   if ! game_web_is_complete "$out_dir"; then
