@@ -975,15 +975,137 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
         "shop/drones/atlas.webp": "equip/drone/atlas.webp",
         "shop/drones/pusat.webp": "equip/drone/pusat.webp",
         "shop/drones/tayfun.webp": "equip/drone/tayfun.webp",
+        "shop/drones/preview/anka.webp": "equip/drone/anka.webp",
+        "shop/drones/preview/atlas.webp": "equip/drone/atlas.webp",
+        "shop/drones/preview/pusat.webp": "equip/drone/pusat.webp",
+        "shop/drones/preview/tayfun.webp": "equip/drone/tayfun.webp",
         "shop/extras/preview/booty.webp": "box/booty.webp",
+        "shop/extras/booty.webp": "box/booty.webp",
+        "shop/extras/arc.webp": "equip/extras/arc.webp",
+        "shop/extras/preview/arc.webp": "equip/extras/arc.webp",
+        "shop/extras/rtc.webp": "equip/extras/rtc.webp",
+        "shop/extras/preview/rtc.webp": "equip/extras/rtc.webp",
+        "shop/extras/ccoc.webp": "equip/extras/ccoc.webp",
+        "shop/extras/preview/ccoc.webp": "equip/extras/ccoc.webp",
+        "shop/extras/cloak.webp": "equip/extras/cloak.webp",
+        "shop/extras/preview/cloak.webp": "equip/extras/cloak.webp",
+        "shop/extras/emp-m.webp": "equip/extras/emp-m.webp",
+        "shop/extras/preview/emp-m.webp": "equip/extras/emp-m.webp",
+        "shop/extras/snb-m.webp": "equip/extras/snb-m.webp",
+        "shop/extras/preview/snb-m.webp": "equip/extras/snb-m.webp",
+        "shop/extras/ws-m.webp": "equip/extras/ws-m.webp",
+        "shop/extras/preview/ws-m.webp": "equip/extras/ws-m.webp",
+        "shop/extras/repb1.webp": "equip/extras/repb1.webp",
+        "shop/extras/preview/repb1.webp": "equip/extras/repb1.webp",
+        "shop/extras/repb2.webp": "equip/extras/repb2.webp",
+        "shop/extras/preview/repb2.webp": "equip/extras/repb2.webp",
+        "shop/extras/repb3.webp": "equip/extras/repb3.webp",
+        "shop/extras/preview/repb3.webp": "equip/extras/repb3.webp",
+        "shop/extras/sl1.webp": "equip/extras/sl1.webp",
+        "shop/extras/preview/sl1.webp": "equip/extras/sl1.webp",
+        "shop/extras/sl2.webp": "equip/extras/sl2.webp",
+        "shop/extras/preview/sl2.webp": "equip/extras/sl2.webp",
+        "shop/extras/sl3.webp": "equip/extras/sl3.webp",
+        "shop/extras/preview/sl3.webp": "equip/extras/sl3.webp",
         "drones/halloween.png": "equip/drone/anka.webp",
         "drones/halloween_glow.png": "equip/drone/anka.webp",
+        "equip/skins/halloween.webp": "equip/skins/crimson.webp",
+        "shop/drones/preview/halloween.webp": "equip/skins/crimson.webp",
+        "shop/drones/halloween.webp": "equip/skins/crimson.webp",
     }
     for _ in range(2):
         for target, source in aliases.items():
             copy_asset_alias(out_dir, source, target)
+    ensure_shop_art_fallbacks(out_dir)
     ensure_missing_ship_atlases(out_dir)
     fix_ship_atlas_page_names(out_dir)
+
+
+def ensure_shop_art_fallbacks(out_dir: Path) -> None:
+    """Mirror hangar equip/box/ship art into shop/** when encrypted shop-*.rgpak is unavailable."""
+    mirrors = [
+        ("equip/extras", "shop/extras"),
+        ("equip/extras", "shop/extras/preview"),
+        ("equip/ammo", "shop/ammo"),
+        ("equip/ammo", "shop/ammo/preview"),
+        ("equip/gen", "shop/gen"),
+        ("equip/gen", "shop/gen/preview"),
+        ("equip/launcher", "shop/launcher"),
+        ("equip/launcher", "shop/launcher/preview"),
+        ("equip/drone", "shop/drones"),
+        ("equip/drone", "shop/drones/preview"),
+        ("equip/laser", "shop/repeaters"),
+        ("equip/laser", "shop/repeaters/preview"),
+    ]
+    for src_rel, dst_rel in mirrors:
+        src_dir = out_dir.joinpath(*src_rel.split("/"))
+        dst_dir = out_dir.joinpath(*dst_rel.split("/"))
+        if not src_dir.is_dir():
+            continue
+        for src in src_dir.iterdir():
+            if not src.is_file():
+                continue
+            name = src.name
+            if " 2." in name or " 3." in name:
+                continue
+            lower = name.lower()
+            if not lower.endswith((".webp", ".png", ".jpg", ".jpeg")):
+                continue
+            dest_name = name
+            if src_rel == "equip/laser" and lower.endswith(".png"):
+                dest_name = name[:-4] + ".webp"
+            dest = dst_dir / dest_name
+            if dest.exists():
+                continue
+            try:
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+            except OSError:
+                pass
+    player_dir = out_dir / "ships" / "player"
+    shop_ship = out_dir / "shop" / "ship"
+    shop_ship_preview = shop_ship / "preview"
+    if player_dir.is_dir():
+        for src in player_dir.glob("ship*.webp"):
+            if " 2." in src.name or " 3." in src.name:
+                continue
+            for dest_dir in (shop_ship, shop_ship_preview):
+                dest = dest_dir / src.name
+                if dest.exists():
+                    continue
+                try:
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dest)
+                except OSError:
+                    pass
+    for rel in (
+        "shop/extras",
+        "shop/ammo",
+        "shop/gen",
+        "shop/launcher",
+        "shop/drones",
+        "shop/repeaters",
+        "shop/ship",
+    ):
+        base = out_dir.joinpath(*rel.split("/"))
+        preview = base / "preview"
+        if not base.is_dir():
+            continue
+        for src in base.iterdir():
+            if not src.is_file():
+                continue
+            if " 2." in src.name or " 3." in src.name:
+                continue
+            if not src.name.lower().endswith((".webp", ".png")):
+                continue
+            dest = preview / src.name
+            if dest.exists():
+                continue
+            try:
+                preview.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+            except OSError:
+                pass
 
 
 def fix_ship_atlas_page_names(out_dir: Path) -> None:

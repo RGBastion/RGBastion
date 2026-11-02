@@ -64,6 +64,15 @@ build_one_brand() {
     echo "Missing story web assets: $web_dir/index.html" >&2
     exit 1
   }
+  # Negozio + Home hangar art must ship in the bundle (PC 0.9.x PE omits shop/**).
+  [[ -s "$web_dir/shop/extras/preview/booty.webp" ]] || {
+    echo "Missing Negozio shop art: $web_dir/shop/extras/preview/booty.webp" >&2
+    exit 1
+  }
+  [[ -s "$web_dir/shop/ship/preview/ship10.webp" ]] || {
+    echo "Missing Home hangar ship preview: $web_dir/shop/ship/preview/ship10.webp" >&2
+    exit 1
+  }
   if [[ "$brand" == "redgalaxy" ]]; then
     if rg -q "RedUniverse Bastion" "$web_dir/story/i18n.js" "$web_dir/story/autopilot.js"; then
       echo "Refusing to package RedGalaxy Bastion with RedUniverse Bastion UI strings." >&2
@@ -167,7 +176,10 @@ build_one_brand() {
   cp "$ICON_ICNS" "$app_dir/Contents/Resources/AppIcon.icns"
   cp "$PROJECT_DIR/bin/redgalaxy-mac-runner" "$app_dir/Contents/Resources/redgalaxy-mac-runner"
   cp "$PROJECT_DIR/tools/extract_redgalaxy_web.py" "$app_dir/Contents/Resources/extract_redgalaxy_web.py"
+  cp "$PROJECT_DIR/tools/extract_redgalaxy_web.js" "$app_dir/Contents/Resources/extract_redgalaxy_web.js"
   cp "$PROJECT_DIR/tools/apply_bastion_patches.py" "$app_dir/Contents/Resources/apply_bastion_patches.py"
+  cp "$PROJECT_DIR/tools/apply_bastion_patches.js" "$app_dir/Contents/Resources/apply_bastion_patches.js"
+  cp "$PROJECT_DIR/tools/rgpak_unpack.js" "$app_dir/Contents/Resources/rgpak_unpack.js"
   chmod +x "$app_dir/Contents/Resources/redgalaxy-mac-runner"
   chmod +x "$app_dir/Contents/Resources/apply_bastion_patches.py"
   chmod +x "$SCRIPT_DIR/bundle_brotli_runtime.sh"

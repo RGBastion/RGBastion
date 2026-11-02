@@ -1,7 +1,7 @@
 {
-  "version": "1.0.9",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.9/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.9/RedGalaxy-Bastion.exe",
-  "notes": "Fix missing 0.9.17 assets (login logo + event skins aliases; download .rgpak packs). Raccolta: Cassa Eventi for PUMPKIN_BOX festive crates.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.9"
+  "version": "1.0.10",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.10/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.10/RedGalaxy-Bastion.exe",
+  "notes": "Restore Negozio + Home hangar textures after 0.9.17: merge bundled/shop donors before depleted live web; require shop extras + ship previews; equip→shop/hangar fallbacks. Full RGPAK decrypt still needs compile-time AES key.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.10"
 }

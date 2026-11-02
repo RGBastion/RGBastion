@@ -951,7 +951,6 @@ extract_web_assets_to() {
   local game_exe
   local python_bin
   local extract_rc=0
-  local bundle_web=""
   game_exe="$(find_web_client_exe)"
   python_bin="$(prefer_python3)" || die "Missing required command: python3 (3.10+)"
   ensure_brotli
@@ -973,26 +972,72 @@ extract_web_assets_to() {
     fi
   fi
   validate_extracted_web_root "$out_dir"
-  # PC 0.9.x keeps ships/maps in encrypted .rgpak — fill gaps from prior Bastion web,
-  # bundled Resources/web, or a legacy full Tauri client extract still present on disk.
-  # Always merge (even when "complete") so login logo / event skins get donor+alias fill.
-  if [[ -d "$SCRIPT_DIR/web/ships" || -d "$SCRIPT_DIR/web/maps" ]]; then
-    bundle_web="$SCRIPT_DIR/web"
+  # PC 0.9.x keeps ships/maps/shop in encrypted .rgpak — fill gaps from donors.
+  # Prefer bundled / artifact / prior extract-raw trees BEFORE live web: a depleted
+  # live cache (ships+maps but empty shop/) must not be the only art source.
+  local donor=""
+  local -a art_donors=()
+  local -a seen_donors=()
+  add_art_donor() {
+    local cand="$1"
+    [[ -n "$cand" && -d "$cand" ]] || return 0
+    # Require either ships/maps or a real shop tree so empty PE extracts are skipped.
+    if [[ ! -d "$cand/ships" && ! -d "$cand/maps" && ! -d "$cand/shop" ]]; then
+      return 0
+    fi
+    local resolved=""
+    resolved="$(cd "$cand" 2>/dev/null && pwd -P || printf '%s' "$cand")"
+    local prev=""
+    for prev in "${seen_donors[@]:-}"; do
+      [[ "$prev" == "$resolved" ]] && return 0
+    done
+    seen_donors+=("$resolved")
+    art_donors+=("$cand")
+  }
+  if [[ -d "$SCRIPT_DIR/web/ships" || -d "$SCRIPT_DIR/web/maps" || -d "$SCRIPT_DIR/web/shop" ]]; then
+    add_art_donor "$SCRIPT_DIR/web"
   fi
-  if [[ -d "$NATIVE_APP_WEB_DIR" ]]; then
-    merge_missing_game_art "$out_dir" "$NATIVE_APP_WEB_DIR"
-  fi
-  if [[ -d "$BASTION_APP_WEB_DIR" && "$BASTION_APP_WEB_DIR" != "$NATIVE_APP_WEB_DIR" ]]; then
-    merge_missing_game_art "$out_dir" "$BASTION_APP_WEB_DIR"
-  fi
-  if [[ -n "$bundle_web" && -d "$bundle_web" && "$bundle_web" != "$NATIVE_APP_WEB_DIR" ]]; then
-    merge_missing_game_art "$out_dir" "$bundle_web"
-  fi
+  # Dev/tree + packaged neighbors: story/native web artifacts ship a full shop set.
+  add_art_donor "$PROJECT_DIR/artifacts/redgalaxy-story-web-$PRODUCT_BRAND"
+  add_art_donor "$PROJECT_DIR/artifacts/redgalaxy-native-web-$PRODUCT_BRAND"
+  add_art_donor "$PROJECT_DIR/artifacts/redgalaxy-native-web"
+  # Prior successful extracts under App Support (have shop from pre-0.9.x clients).
+  local raw=""
+  for raw in "$NATIVE_SUPPORT_DIR"/extract-raw-*; do
+    [[ -d "$raw/shop" ]] || continue
+    add_art_donor "$raw"
+  done
+  add_art_donor "$BASTION_APP_WEB_DIR"
+  add_art_donor "$NATIVE_APP_WEB_DIR"
+  for donor in "${art_donors[@]:-}"; do
+    [[ "$donor" == "$out_dir" ]] && continue
+    merge_missing_game_art "$out_dir" "$donor"
+  done
   if [[ ! -e "$out_dir/redgalaxy.png" && -f "$out_dir/redgalaxy2.png" ]]; then
     cp -f "$out_dir/redgalaxy2.png" "$out_dir/redgalaxy.png"
   fi
+  # Equip→shop mirrors + logo/event aliases (Node preferred; Python fallback).
+  local alias_js=""
+  if [[ -f "$SCRIPT_DIR/extract_redgalaxy_web.js" ]]; then
+    alias_js="$SCRIPT_DIR/extract_redgalaxy_web.js"
+  elif [[ -f "$PROJECT_DIR/tools/extract_redgalaxy_web.js" ]]; then
+    alias_js="$PROJECT_DIR/tools/extract_redgalaxy_web.js"
+  fi
+  if [[ -n "$alias_js" ]] && command -v node >/dev/null 2>&1; then
+    node -e 'const m=require(process.argv[1]); m.ensureRuntimeAssetAliases(process.argv[2]);' \
+      "$alias_js" "$out_dir" 2>/dev/null || true
+  elif [[ -f "$EXTRACTOR" ]]; then
+    "$python_bin" - "$EXTRACTOR" "$out_dir" <<'PY' 2>/dev/null || true
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("extract_redgalaxy_web", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+mod.ensure_runtime_asset_aliases(Path(sys.argv[2]))
+PY
+  fi
   if ! game_web_is_complete "$out_dir"; then
-    die "Extraction incomplete after art merge (need ships/maps/atlas/lang/woff2). Run Aggiorna gioco again after a full prior install."
+    die "Extraction incomplete after art merge (need ships/maps/shop/atlas/lang/woff2). Run Aggiorna gioco again after a full prior install."
   fi
   log "Native web assets are ready."
 }
@@ -1065,6 +1110,13 @@ game_web_is_complete() {
   [[ -n "$asset" && -s "$web/$asset" ]] || return 1
   [[ -d "$web/maps" ]] || return 1
   [[ -d "$web/ships" ]] || return 1
+  # Negozio + Home hangar both load shop/** (extras, ship previews). PE 0.9.x omits
+  # the whole shop tree — without this gate Aggiorna publishes blue-? UI everywhere.
+  [[ -s "$web/shop/extras/preview/booty.webp" ]] || return 1
+  [[ -s "$web/shop/ship/preview/ship10.webp" ]] || return 1
+  local shop_count=0
+  shop_count="$(find "$web/shop" -type f 2>/dev/null | wc -l | tr -d ' ')"
+  [[ "${shop_count:-0}" -ge 40 ]] || return 1
   # Locales + woff2 are required for WKWebView boot (fonts.load otherwise hangs → black screen).
   [[ -s "$web/lang/tr.json" || -s "$web/lang/en.json" ]] || return 1
   if ! compgen -G "$web/assets/"*.woff2 >/dev/null; then
@@ -1459,9 +1511,10 @@ merge_missing_game_art() {
       fi
     done < <(find "$donor/$d" -type f -print0 2>/dev/null)
   done
-  if (( copied > 0 )); then
-    log "Merged $copied missing art file(s) from donor into extract staging."
+  if [[ "$copied" -gt 0 ]]; then
+    log "Merged $copied missing art file(s) from donor ($(basename "$donor")) into extract staging."
   fi
+  return 0
 }
 
 publish_web_root() {

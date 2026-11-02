@@ -91,7 +91,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.9";
+  return "1.0.10";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -1120,6 +1120,28 @@ function gameWebIsComplete(webRoot) {
     if (!fs.existsSync(path.join(webRoot, "assets"))) return false;
     if (!fs.existsSync(path.join(webRoot, "maps"))) return false;
     if (!fs.existsSync(path.join(webRoot, "ships"))) return false;
+    // Negozio + Home hangar load shop/** (extras + ship previews) — PE 0.9.x omits them.
+    const bootyPreview = path.join(webRoot, "shop", "extras", "preview", "booty.webp");
+    if (!fs.existsSync(bootyPreview) || fs.statSync(bootyPreview).size < 1) return false;
+    const shipPreview = path.join(webRoot, "shop", "ship", "preview", "ship10.webp");
+    if (!fs.existsSync(shipPreview) || fs.statSync(shipPreview).size < 1) return false;
+    let shopCount = 0;
+    const countShop = (dir, depth = 0) => {
+      if (depth > 6 || shopCount >= 40) return;
+      let names;
+      try {
+        names = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const ent of names) {
+        const full = path.join(dir, ent.name);
+        if (ent.isDirectory()) countShop(full, depth + 1);
+        else shopCount += 1;
+      }
+    };
+    countShop(path.join(webRoot, "shop"));
+    if (shopCount < 40) return false;
     const html = fs.readFileSync(path.join(webRoot, "index.html"), "utf8");
     const m = html.match(/\/assets\/(index-[^"' ]+\.js)/);
     if (!m) return false;
@@ -2040,12 +2062,27 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
     const rawOut = path.join(supportDir(), "extract-raw");
     const stagingOut = path.join(supportDir(), "staging-web");
     const finalOut = userWebRoot();
+    // Prefer bundled / richer donors BEFORE live web — a depleted live cache can
+    // keep ships/maps while shop/ is empty (Negozio blue ? after 0.9.x Aggiorna).
     const artDonors = [];
-    if (webHasGameArt(userWebRoot())) artDonors.push(userWebRoot());
-    // Packaged Bastion ships a full art tree for cold installs / PC 0.9.x .rgpak gaps.
-    if (webHasGameArt(bundledWebRoot()) && !artDonors.includes(bundledWebRoot())) {
-      artDonors.push(bundledWebRoot());
+    const pushDonor = (dir) => {
+      if (!dir || !fs.existsSync(dir) || artDonors.includes(dir)) return;
+      if (webHasGameArt(dir) || fs.existsSync(path.join(dir, "shop", "extras", "preview", "booty.webp"))) {
+        artDonors.push(dir);
+      }
+    };
+    pushDonor(bundledWebRoot());
+    try {
+      const support = supportDir();
+      for (const name of fs.readdirSync(support)) {
+        if (!name.startsWith("extract-raw")) continue;
+        const cand = path.join(support, name);
+        if (fs.existsSync(path.join(cand, "shop"))) pushDonor(cand);
+      }
+    } catch {
+      /* ignore */
     }
+    pushDonor(userWebRoot());
 
     const runStagingExtract = async (sourceExe, statusMessage, donors = artDonors) => {
       fs.rmSync(rawOut, { recursive: true, force: true });

@@ -748,14 +748,49 @@ function ensureRuntimeAssetAliases(outDir) {
     "ships/player/ship95_glow.webp": "ships/player/ship90.webp",
     "ships/player/ship105_glow.webp": "ships/player/ship100.webp",
     "ships/player/ship125_glow.webp": "ships/player/ship120.webp",
-    // Shop / drone previews often sit only in ui.rgpak / drones.rgpak.
+    // Shop / drone previews often sit only in shop-*.rgpak; mirror hangar art until packs decrypt.
     "shop/drones/anka.webp": "equip/drone/anka.webp",
     "shop/drones/atlas.webp": "equip/drone/atlas.webp",
     "shop/drones/pusat.webp": "equip/drone/pusat.webp",
     "shop/drones/tayfun.webp": "equip/drone/tayfun.webp",
+    "shop/drones/preview/anka.webp": "equip/drone/anka.webp",
+    "shop/drones/preview/atlas.webp": "equip/drone/atlas.webp",
+    "shop/drones/preview/pusat.webp": "equip/drone/pusat.webp",
+    "shop/drones/preview/tayfun.webp": "equip/drone/tayfun.webp",
     "shop/extras/preview/booty.webp": "box/booty.webp",
+    "shop/extras/booty.webp": "box/booty.webp",
+    "shop/extras/arc.webp": "equip/extras/arc.webp",
+    "shop/extras/preview/arc.webp": "equip/extras/arc.webp",
+    "shop/extras/rtc.webp": "equip/extras/rtc.webp",
+    "shop/extras/preview/rtc.webp": "equip/extras/rtc.webp",
+    "shop/extras/ccoc.webp": "equip/extras/ccoc.webp",
+    "shop/extras/preview/ccoc.webp": "equip/extras/ccoc.webp",
+    "shop/extras/cloak.webp": "equip/extras/cloak.webp",
+    "shop/extras/preview/cloak.webp": "equip/extras/cloak.webp",
+    "shop/extras/emp-m.webp": "equip/extras/emp-m.webp",
+    "shop/extras/preview/emp-m.webp": "equip/extras/emp-m.webp",
+    "shop/extras/snb-m.webp": "equip/extras/snb-m.webp",
+    "shop/extras/preview/snb-m.webp": "equip/extras/snb-m.webp",
+    "shop/extras/ws-m.webp": "equip/extras/ws-m.webp",
+    "shop/extras/preview/ws-m.webp": "equip/extras/ws-m.webp",
+    "shop/extras/repb1.webp": "equip/extras/repb1.webp",
+    "shop/extras/preview/repb1.webp": "equip/extras/repb1.webp",
+    "shop/extras/repb2.webp": "equip/extras/repb2.webp",
+    "shop/extras/preview/repb2.webp": "equip/extras/repb2.webp",
+    "shop/extras/repb3.webp": "equip/extras/repb3.webp",
+    "shop/extras/preview/repb3.webp": "equip/extras/repb3.webp",
+    "shop/extras/sl1.webp": "equip/extras/sl1.webp",
+    "shop/extras/preview/sl1.webp": "equip/extras/sl1.webp",
+    "shop/extras/sl2.webp": "equip/extras/sl2.webp",
+    "shop/extras/preview/sl2.webp": "equip/extras/sl2.webp",
+    "shop/extras/sl3.webp": "equip/extras/sl3.webp",
+    "shop/extras/preview/sl3.webp": "equip/extras/sl3.webp",
     "drones/halloween.png": "equip/drone/anka.webp",
     "drones/halloween_glow.png": "equip/drone/anka.webp",
+    // Hangar drone skin HALLOWEEN lives in encrypted packs; reuse crimson art.
+    "equip/skins/halloween.webp": "equip/skins/crimson.webp",
+    "shop/drones/preview/halloween.webp": "equip/skins/crimson.webp",
+    "shop/drones/halloween.webp": "equip/skins/crimson.webp",
   };
   // Two passes so reverse aliases can fill bases after forward *1 copies.
   for (let pass = 0; pass < 2; pass++) {
@@ -764,10 +799,127 @@ function ensureRuntimeAssetAliases(outDir) {
     }
   }
 
+  // Mirror hangar equip trees into shop/** when donor shop packs are absent.
+  ensureShopArtFallbacks(outDir);
+
   // Synthesize missing ship atlases from a sibling sheet (shared frame layout).
   ensureMissingShipAtlases(outDir);
   // Retarget mismatched pages (p1.atlas→p1.webp, p2, froston1) after aliases.
   fixShipAtlasPageNames(outDir);
+}
+
+/**
+ * PC 0.9.x keeps Negozio art in encrypted shop-*.rgpak. Until those decrypt,
+ * copy any available hangar (equip/) / box / ship sheets into the shop URL
+ * layout the JS client requests (`shop/extras/preview/…`, `shop/ammo/…`, …).
+ */
+function ensureShopArtFallbacks(outDir) {
+  const mirrors = [
+    ["equip/extras", "shop/extras"],
+    ["equip/extras", "shop/extras/preview"],
+    ["equip/ammo", "shop/ammo"],
+    ["equip/ammo", "shop/ammo/preview"],
+    ["equip/gen", "shop/gen"],
+    ["equip/gen", "shop/gen/preview"],
+    ["equip/launcher", "shop/launcher"],
+    ["equip/launcher", "shop/launcher/preview"],
+    ["equip/drone", "shop/drones"],
+    ["equip/drone", "shop/drones/preview"],
+    ["equip/laser", "shop/repeaters"],
+    ["equip/laser", "shop/repeaters/preview"],
+  ];
+  for (const [srcRel, dstRel] of mirrors) {
+    const srcDir = path.join(outDir, ...srcRel.split("/"));
+    const dstDir = path.join(outDir, ...dstRel.split("/"));
+    if (!fs.existsSync(srcDir)) continue;
+    let names;
+    try {
+      names = fs.readdirSync(srcDir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.includes(" 2.") || name.includes(" 3.")) continue;
+      const lower = name.toLowerCase();
+      if (!/\.(webp|png|jpg|jpeg)$/i.test(lower)) continue;
+      const from = path.join(srcDir, name);
+      let destName = name;
+      // Laser hangar uses .png; shop repeaters prefer .webp of the same stem.
+      if (srcRel === "equip/laser" && lower.endsWith(".png")) {
+        destName = name.replace(/\.png$/i, ".webp");
+      }
+      const to = path.join(dstDir, destName);
+      if (fs.existsSync(to)) continue;
+      try {
+        fs.mkdirSync(dstDir, { recursive: true });
+        fs.copyFileSync(from, to);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  // Ship shop cards: shop/ship/preview/shipNN.webp ← ships/player/shipNN.webp
+  const playerDir = path.join(outDir, "ships", "player");
+  const shopShip = path.join(outDir, "shop", "ship");
+  const shopShipPreview = path.join(shopShip, "preview");
+  if (fs.existsSync(playerDir)) {
+    let names;
+    try {
+      names = fs.readdirSync(playerDir);
+    } catch {
+      names = [];
+    }
+    for (const name of names) {
+      const m = /^ship(\d+)\.webp$/i.exec(name);
+      if (!m) continue;
+      const from = path.join(playerDir, name);
+      for (const destDir of [shopShip, shopShipPreview]) {
+        const to = path.join(destDir, name);
+        if (fs.existsSync(to)) continue;
+        try {
+          fs.mkdirSync(destDir, { recursive: true });
+          fs.copyFileSync(from, to);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  // Preview copies from non-preview shop files when only one side exists.
+  const previewPairs = [
+    "shop/extras",
+    "shop/ammo",
+    "shop/gen",
+    "shop/launcher",
+    "shop/drones",
+    "shop/repeaters",
+    "shop/ship",
+  ];
+  for (const rel of previewPairs) {
+    const base = path.join(outDir, ...rel.split("/"));
+    const preview = path.join(base, "preview");
+    if (!fs.existsSync(base)) continue;
+    let names;
+    try {
+      names = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of names) {
+      if (!ent.isFile()) continue;
+      if (!/\.(webp|png)$/i.test(ent.name)) continue;
+      if (ent.name.includes(" 2.") || ent.name.includes(" 3.")) continue;
+      const from = path.join(base, ent.name);
+      const to = path.join(preview, ent.name);
+      if (fs.existsSync(to)) continue;
+      try {
+        fs.mkdirSync(preview, { recursive: true });
+        fs.copyFileSync(from, to);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 function ensureMissingShipAtlases(outDir) {
