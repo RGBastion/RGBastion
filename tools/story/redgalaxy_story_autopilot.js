@@ -83,6 +83,7 @@
   const UI_ZOOM_STORAGE_KEY = "rg_story_ui_zoom_v1";
   const ORB_POS_STORAGE_KEY = "rg_story_orb_pos_v1";
   const SECURITY_STORAGE_KEY = "rg_story_security_v1";
+  const COLLECT_STORAGE_KEY = "rg_story_collect_v1";
   const MAP_GRAPH_REFRESH_STORAGE_KEY = "rg_story_map_graph_refresh_v1";
   const DISCORD_WEBHOOK_STORAGE_KEY = "rg_story_discord_webhook_v1";
   /** Effectively unlimited: any hostile the client can see. */
@@ -90,7 +91,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.8";
+  const BASTION_APP_VERSION = "1.0.9";
   /** Raid portals spawn on own-faction X-1 (HELIOS-1 / NOVA-1 / ORION-1). */
   const RAID_HUB_RING = 1;
 
@@ -193,9 +194,12 @@
     collectBonus: false,
     collectCargo: false,
     collectBooty: false,
+    /** Festive event crates (PUMPKIN_BOX / future gift boxes) — separate from bonus. */
+    collectEvent: false,
     bootyKeysBlocked: false,
     cargoCollected: 0,
     bootyCollected: 0,
+    eventCollected: 0,
     modeAttack: false,
     modeOrbit: false,
     orbitDirection: 1,
@@ -304,6 +308,8 @@
     combatBonusCollectMax: 220,
     gameHooksInstalled: false,
     countedBonusIds: new Set(),
+    countedEventIds: new Set(),
+    lastEventCountAt: 0,
     pendingBonusIds: new Set(),
     attackRange: 635,
     npcScanRadius: 0,
@@ -1075,7 +1081,7 @@
   }
 
   function hasAnyCollectMode() {
-    return AUTO.collectBonus || AUTO.collectCargo || AUTO.collectBooty;
+    return AUTO.collectBonus || AUTO.collectCargo || AUTO.collectBooty || AUTO.collectEvent;
   }
 
   function syncCollectMasterFlag() {
@@ -1100,6 +1106,25 @@
 
   function isBootyLoot(sprite, id) {
     return getLootTypeFromId(id, sprite) === "BOOTY_BOX";
+  }
+
+  /** Known festive loot types (Halloween calabaza + future holiday gifts). */
+  const EVENT_LOOT_TYPES = new Set([
+    "PUMPKIN_BOX",
+    "GIFT_BOX",
+    "XMAS_BOX",
+    "CHRISTMAS_BOX",
+    "EVENT_BOX",
+    "HOLIDAY_BOX",
+  ]);
+  const EVENT_LOOT_TEX_RE = /pumpkin|calabaza|giftbox|gift_box|xmas|christmas|event.?box|holiday.?box/i;
+
+  function isEventLoot(sprite, id) {
+    const type = getLootTypeFromId(id, sprite);
+    if (EVENT_LOOT_TYPES.has(type)) return true;
+    if (type === "BONUS_BOX" || type === "BOOTY_BOX" || type === "CARGO") return false;
+    const key = sprite?.spr?.texture?.key || sprite?.spr?.frame?.texture?.key || "";
+    return EVENT_LOOT_TEX_RE.test(String(key));
   }
 
   function isCargoLoot(sprite, id) {
@@ -1577,6 +1602,7 @@
 
   function isCollectibleWanted(id, sprite) {
     if (isForeignOwnedLoot(id, sprite)) return false;
+    if (isEventLoot(sprite, id)) return AUTO.collectEvent;
     if (isBonusLoot(sprite)) return AUTO.collectBonus;
     if (isBootyLoot(sprite, id)) return canCollectBootyNow();
     if (isCargoLoot(sprite, id)) return false;
@@ -1830,7 +1856,11 @@
       const dist = distance(ship.x, ship.y, x, y);
       if (maxRadius && dist > maxRadius) continue;
       const type = getLootTypeFromId(id, sprite);
-      items.push({ id, x, y, dist, type, kind: type === "BOOTY_BOX" ? "booty" : type === "BONUS_BOX" ? "bonus" : "cargo" });
+      let kind = "cargo";
+      if (isEventLoot(sprite, id) || EVENT_LOOT_TYPES.has(type)) kind = "event";
+      else if (type === "BOOTY_BOX") kind = "booty";
+      else if (type === "BONUS_BOX") kind = "bonus";
+      items.push({ id, x, y, dist, type, kind });
     }
     items.sort((a, b) => a.dist - b.dist);
     return items;
@@ -1849,6 +1879,10 @@
     const type = getLootTypeFromId(id, sprite);
     if (type === "BONUS_BOX") {
       noteBonusCollected(id);
+      return;
+    }
+    if (EVENT_LOOT_TYPES.has(type) || (sprite && isEventLoot(sprite, id))) {
+      noteEventCollected(id);
       return;
     }
     if (type === "BOOTY_BOX") {
@@ -4683,6 +4717,31 @@
     }
     AUTO.bonusCollected += 1;
     updateBonusCounter();
+  }
+
+  function noteEventCollected(lootId) {
+    if (lootId) {
+      if (!AUTO.countedEventIds) AUTO.countedEventIds = new Set();
+      if (AUTO.countedEventIds.has(lootId)) return;
+      AUTO.countedEventIds.add(lootId);
+      AUTO.pendingBonusIds.delete(lootId);
+      if (AUTO.cargoCollectInFlightId === lootId) AUTO.cargoCollectInFlightId = null;
+      clearCollectMovement(lootId);
+      if (
+        AUTO.currentTask === "collect" &&
+        (AUTO.taskTargetId === lootId || AUTO.pendingCollectId === lootId || AUTO.chasingBonusId === lootId)
+      ) {
+        clearCurrentTask();
+      }
+      if (AUTO.pendingCollectId === lootId) AUTO.pendingCollectId = null;
+      if (AUTO.chasingBonusId === lootId) AUTO.chasingBonusId = null;
+    } else {
+      const now = Date.now();
+      if (now - (AUTO.lastEventCountAt || 0) < 350) return;
+      AUTO.lastEventCountAt = now;
+    }
+    AUTO.eventCollected = (AUTO.eventCollected || 0) + 1;
+    updateStatisticsPanel();
   }
 
   function resolveNpcType(npcId) {
@@ -7765,6 +7824,10 @@
     const net = window.__RG_NET__;
     if (!net?.onMessage) return;
 
+    net.onMessage("pumpkinBoxCollected", () => {
+      noteEventCollected(null);
+      window.__RG_STORY_ON_EVENT_BOX__?.();
+    });
     net.onMessage("lootRemove", (payload) => {
       const ids = payload?.ids;
       if (!Array.isArray(ids)) return;
@@ -8194,6 +8257,7 @@
 
   function installGameHooks() {
     window.__RG_STORY_ON_BONUS__ = () => noteBonusCollected(null);
+    window.__RG_STORY_ON_EVENT_BOX__ = () => noteEventCollected(null);
 
     const net = window.__RG_NET__;
     if (!net?.onMessage) return;
@@ -11683,8 +11747,42 @@
     if (option === "bonus") AUTO.collectBonus = !AUTO.collectBonus;
     if (option === "cargo") AUTO.collectCargo = !AUTO.collectCargo;
     if (option === "booty") AUTO.collectBooty = !AUTO.collectBooty;
+    if (option === "event") AUTO.collectEvent = !AUTO.collectEvent;
     syncCollectMasterFlag();
+    saveCollectPreferences();
     updateModeButtons();
+  }
+
+  function loadCollectPreferences() {
+    try {
+      const raw = localStorage.getItem(COLLECT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+      if (typeof parsed.collectBonus === "boolean") AUTO.collectBonus = parsed.collectBonus;
+      if (typeof parsed.collectCargo === "boolean") AUTO.collectCargo = parsed.collectCargo;
+      if (typeof parsed.collectBooty === "boolean") AUTO.collectBooty = parsed.collectBooty;
+      if (typeof parsed.collectEvent === "boolean") AUTO.collectEvent = parsed.collectEvent;
+      syncCollectMasterFlag();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function saveCollectPreferences() {
+    try {
+      localStorage.setItem(
+        COLLECT_STORAGE_KEY,
+        JSON.stringify({
+          collectBonus: !!AUTO.collectBonus,
+          collectCargo: !!AUTO.collectCargo,
+          collectBooty: !!AUTO.collectBooty,
+          collectEvent: !!AUTO.collectEvent,
+        })
+      );
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   function toggleOrbitMode() {
@@ -11713,6 +11811,7 @@
     document.getElementById("rg-mode-collect-bonus")?.classList.toggle("selected", AUTO.collectBonus);
     document.getElementById("rg-mode-collect-cargo")?.classList.toggle("selected", AUTO.collectCargo);
     document.getElementById("rg-mode-collect-booty")?.classList.toggle("selected", AUTO.collectBooty && canCollectBootyNow());
+    document.getElementById("rg-mode-collect-event")?.classList.toggle("selected", AUTO.collectEvent);
     document.getElementById("rg-refinery-sell")?.classList.toggle("selected", AUTO.refinerySellMinerals && isPlayerPremium());
     document.getElementById("rg-refinery-antimatter")?.classList.toggle("selected", AUTO.refinerySendAntimatter && isPlayerPremium());
     document.getElementById("rg-refinery-refine")?.classList.toggle("selected", AUTO.refineryAutoRefine);
@@ -12973,6 +13072,7 @@
     const items = listBonusesInAttackRange(npc).filter((item) => {
       if (item.kind === "cargo") return false;
       if (item.kind === "bonus") return AUTO.collectBonus;
+      if (item.kind === "event") return AUTO.collectEvent;
       if (item.kind === "booty") return canCollectBootyNow();
       return false;
     });
@@ -14404,6 +14504,7 @@
     if (AUTO.collectBonus) modes.push("Bonus");
     if (AUTO.collectCargo) modes.push("Cargo");
     if (AUTO.collectBooty) modes.push("Bauli");
+    if (AUTO.collectEvent) modes.push("Eventi");
     const gains = getSessionGains();
     const player = getLocalPlayer();
     const hp = getPlayerHpSnapshot();
@@ -14858,6 +14959,7 @@
       "rg-mode-collect-bonus": "ui.collect_bonus",
       "rg-mode-collect-cargo": "ui.collect_cargo",
       "rg-mode-collect-booty": "ui.collect_booty",
+      "rg-mode-collect-event": "ui.collect_event",
       "rg-refinery-sell": "ui.refinery_sell",
       "rg-refinery-antimatter": "ui.refinery_antimatter",
       "rg-refinery-refine": "ui.refinery_refine",
@@ -21800,6 +21902,10 @@
             <button id="rg-mode-collect-bonus" type="button" class="rg-mode-toggle">Bonus box</button>
           </div>
           <div class="rg-mode-actions">
+            <button id="rg-mode-collect-event" type="button" class="rg-mode-toggle" data-i18n="ui.collect_event" title="Event crates">Cassa Eventi</button>
+          </div>
+          <div class="rg-hint" data-i18n="ui.collect_event_hint">Event crates: festive boxes (pumpkin/calabaza, holiday gifts) — separate from bonus</div>
+          <div class="rg-mode-actions">
             <button id="rg-mode-collect-cargo" type="button" class="rg-mode-toggle">Cargo NPC</button>
           </div>
           <div class="rg-mode-actions">
@@ -22032,6 +22138,7 @@
 
     bindSecurityPanelEvents();
     loadSecurityPreferences();
+    loadCollectPreferences();
     initSecurityPanelValues();
     syncSecurityPanelFromAuto();
     installSocialChatAdminHook();
@@ -22059,6 +22166,7 @@
 
     document.getElementById("rg-story-play-main").addEventListener("click", startPlay);
     document.getElementById("rg-mode-collect-bonus").addEventListener("click", () => toggleCollectOption("bonus"));
+    document.getElementById("rg-mode-collect-event")?.addEventListener("click", () => toggleCollectOption("event"));
     document.getElementById("rg-mode-collect-cargo").addEventListener("click", () => toggleCollectOption("cargo"));
     document.getElementById("rg-mode-collect-booty").addEventListener("click", () => toggleCollectOption("booty"));
     document.getElementById("rg-sec-auto-booty-key")?.addEventListener("click", toggleAutoBuyBootyKeys);

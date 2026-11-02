@@ -148,6 +148,8 @@ const STATE_HOOK_ALREADY_RE = new RegExp(
 // 0.8.4: handler object e→t.
 const BONUS_HOOK_RE =
   /(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{(\w+)\.onBonusBoxCollected\(\2\)\}\)/;
+const PUMPKIN_HOOK_RE =
+  /(\w+)\.onMessage\("pumpkinBoxCollected",(\w+)=>\{(\w+)\.onPumpkinBoxCollected\(\2\)\}\)/;
 const MAP_DIMS_RE =
   /(\w+)\.map_width&&\((\w+)\.mapWidth=\1\.map_width\),\1\.map_height&&\(\2\.mapHeight=\1\.map_height\)/;
 const MAP_DIMS_ALREADY = "window.__RG_MAP_W__";
@@ -211,6 +213,17 @@ function patchBonusHook(text) {
   return [text.replace(m[0], repl), "patched"];
 }
 
+function patchPumpkinHook(text) {
+  if (text.includes("window.__RG_STORY_ON_EVENT_BOX__")) return [text, "already"];
+  const m = text.match(PUMPKIN_HOOK_RE);
+  if (!m) return [text, null];
+  const [, netVar, arg, obj] = m;
+  const repl =
+    `${netVar}.onMessage("pumpkinBoxCollected",${arg}=>{${obj}.onPumpkinBoxCollected(${arg}),` +
+    `window.__RG_STORY_ON_EVENT_BOX__?.(${arg})})`;
+  return [text.replace(m[0], repl), "patched"];
+}
+
 function patchMapDims(text) {
   if (text.includes(MAP_DIMS_ALREADY)) return [text, "already"];
   const m = text.match(MAP_DIMS_RE);
@@ -240,6 +253,7 @@ function patchOneAsset(jsPath) {
     ["net", patchNetHook],
     ["state", patchStateHook],
     ["bonus", patchBonusHook],
+    ["pumpkin", patchPumpkinHook],
     ["map", patchMapDims],
   ];
   let changed = false;

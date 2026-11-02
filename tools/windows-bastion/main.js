@@ -91,7 +91,7 @@ function bastionAppVersion() {
   } catch {
     /* ignore */
   }
-  return "1.0.8";
+  return "1.0.9";
 }
 
 function playerSafeBastionNotes(notes) {
@@ -806,7 +806,14 @@ const GAME_ART_DIRS = [
   "base",
   "extras",
   "icons",
+  "shop",
+  "ui",
+  "effects",
+  "audio",
 ];
+
+/** Root-level files the login/boot UI expects (PE embeds redgalaxy2.png; UI asks redgalaxy.png). */
+const GAME_ART_ROOT_FILES = ["redgalaxy.png", "redgalaxy2.png", "bg.jpg", "box.png"];
 
 function webHasGameArt(webRoot) {
   try {
@@ -841,6 +848,21 @@ function mergeMissingGameArt(targetDir, donorDir) {
     return 0;
   }
   let copied = 0;
+  for (const name of GAME_ART_ROOT_FILES) {
+    const from = path.join(donorDir, name);
+    const to = path.join(targetDir, name);
+    if (fs.existsSync(from) && !fs.existsSync(to)) {
+      fs.copyFileSync(from, to);
+      copied += 1;
+    }
+  }
+  // Prefer a real logo alias immediately when only redgalaxy2.png landed from the PE.
+  const logo = path.join(targetDir, "redgalaxy.png");
+  const logo2 = path.join(targetDir, "redgalaxy2.png");
+  if (!fs.existsSync(logo) && fs.existsSync(logo2)) {
+    fs.copyFileSync(logo2, logo);
+    copied += 1;
+  }
   for (const name of GAME_ART_DIRS) {
     const src = path.join(donorDir, name);
     const dst = path.join(targetDir, name);
@@ -873,6 +895,92 @@ function mergeMissingGameArt(targetDir, donorDir) {
     }
   }
   return copied;
+}
+
+function pcAssetPacksDir() {
+  return path.join(app.getPath("userData"), "rgpak");
+}
+
+/**
+ * Download PC .rgpak asset blobs (zstd→RGPAK) next to the game exe cache.
+ * Decrypt+extract runs when RGPAK_AES_KEY is set; otherwise packs stay on disk
+ * and runtime aliases / donor merge cover the Bastion HTTP client.
+ */
+async function downloadPcAssetPacks(manifest, onProgress) {
+  const assets = Array.isArray(manifest && manifest.assetFiles) ? manifest.assetFiles : [];
+  if (!assets.length) return [];
+  const packsDir = pcAssetPacksDir();
+  fs.mkdirSync(packsDir, { recursive: true });
+  const base = "https://updates.redgalaxygame.space/pc/";
+  const blobsPrefix = "blobs/";
+  const out = [];
+  for (let i = 0; i < assets.length; i++) {
+    const f = assets[i];
+    const sha = f && f.sha256 ? String(f.sha256).trim() : "";
+    if (!sha) continue;
+    const name = path.basename(String(f.path || `${sha}.rgpak`));
+    const dest = path.join(packsDir, name);
+    const expect = f.size ? Number(f.size) || 0 : 0;
+    if (fs.existsSync(dest) && expect > 0 && fs.statSync(dest).size === expect) {
+      out.push(dest);
+      continue;
+    }
+    const url = `${base}${blobsPrefix}${sha}`;
+    const zst = `${dest}.zst`;
+    const pctBase = Math.round((i / Math.max(assets.length, 1)) * 100);
+    await downloadFile(url, zst, (pct) => {
+      if (typeof onProgress === "function") {
+        onProgress(Math.min(99, pctBase + Math.round(pct / Math.max(assets.length, 1))));
+      }
+    });
+    try {
+      decompressZstdFile(zst, dest);
+    } catch (err) {
+      // Some mirrors may already be raw RGPAK.
+      fs.copyFileSync(zst, dest);
+      console.warn("rgpak zstd decompress failed, kept raw:", err.message || err);
+    }
+    try {
+      fs.unlinkSync(zst);
+    } catch {
+      /* ignore */
+    }
+    out.push(dest);
+  }
+  return out;
+}
+
+function tryUnpackRgpakPacks(packPaths, outDir) {
+  const key = String(process.env.RGPAK_AES_KEY || process.env.RGPAK_KEY || "").trim();
+  if (!key) {
+    console.warn(
+      "RGPAK packs downloaded but RGPAK_AES_KEY unset — using donor merge + runtime aliases (encrypted index)."
+    );
+    return 0;
+  }
+  const unpacker = nodeToolPath("rgpak_unpack.js");
+  if (!fs.existsSync(unpacker)) {
+    console.warn("rgpak_unpack.js missing — skip decrypt");
+    return 0;
+  }
+  try {
+    const { spawnSync } = require("child_process");
+    const args = [unpacker, "--out", outDir, "--key", key, ...packPaths];
+    const r = spawnSync(process.execPath, args, {
+      encoding: "utf8",
+      env: { ...process.env, RGPAK_AES_KEY: key },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    if (r.stdout) console.log(String(r.stdout).slice(0, 4000));
+    if (r.status !== 0) {
+      console.warn("rgpak unpack failed:", (r.stderr || r.stdout || "").toString().slice(0, 2000));
+      return 0;
+    }
+    return 1;
+  } catch (err) {
+    console.warn("rgpak unpack error:", err.message || err);
+    return 0;
+  }
 }
 
 function downloadFile(url, destPath, onProgress) {
@@ -1422,7 +1530,14 @@ function onExtractProgressOutput(text, heartbeat, basePercent) {
   });
 }
 
-async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc, artDonors = [] }) {
+async function runExtractAndPatch({
+  clientExe,
+  rawOut,
+  finalOut,
+  storySrc,
+  artDonors = [],
+  rgpakPacks = [],
+}) {
   const extractorJs = nodeToolPath("extract_redgalaxy_web.js");
   const patcherJs = nodeToolPath("apply_bastion_patches.js");
   const extractorPy = nodeToolPath("extract_redgalaxy_web.py");
@@ -1432,14 +1547,43 @@ async function runExtractAndPatch({ clientExe, rawOut, finalOut, storySrc, artDo
   // the HTTP server / Chromium serve them. Callers must pass a staging dir, then
   // publishUserWebRoot() after closing the server.
   const fillArtIfNeeded = () => {
-    if (gameWebIsComplete(rawOut)) return;
+    // Prefer live decrypt of current packs when the AES key is available.
+    const packs =
+      Array.isArray(rgpakPacks) && rgpakPacks.length
+        ? rgpakPacks
+        : fs.existsSync(pcAssetPacksDir())
+          ? fs
+              .readdirSync(pcAssetPacksDir())
+              .filter((n) => n.endsWith(".rgpak"))
+              .map((n) => path.join(pcAssetPacksDir(), n))
+          : [];
+    if (packs.length) {
+      tryUnpackRgpakPacks(packs, rawOut);
+    }
     for (const donor of artDonors) {
       if (!donor || donor === rawOut) continue;
       const n = mergeMissingGameArt(rawOut, donor);
       if (n > 0) {
         console.warn(`Merged ${n} missing art file(s) from donor into extract staging.`);
       }
-      if (gameWebIsComplete(rawOut)) return;
+    }
+    // Always ensure login logo + event skin aliases even when ships/maps already look "complete".
+    const logo = path.join(rawOut, "redgalaxy.png");
+    const logo2 = path.join(rawOut, "redgalaxy2.png");
+    if (!fs.existsSync(logo) && fs.existsSync(logo2)) {
+      fs.copyFileSync(logo2, logo);
+    }
+    for (const donor of artDonors) {
+      if (!donor || donor === rawOut) continue;
+      mergeMissingGameArt(rawOut, donor);
+    }
+    try {
+      const extractMod = require(extractorJs);
+      if (typeof extractMod.ensureRuntimeAssetAliases === "function") {
+        extractMod.ensureRuntimeAssetAliases(rawOut);
+      }
+    } catch (aliasErr) {
+      console.warn("Runtime asset aliases failed:", aliasErr.message || aliasErr);
     }
   };
 
@@ -1918,11 +2062,13 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
         finalOut: stagingOut,
         storySrc: storySrcRoot(),
         artDonors: donors,
+        rgpakPacks: downloadedPacks,
       });
       return readEmbeddedWebVersion(stagingOut);
     };
 
     let clientExe = null;
+    let downloadedPacks = [];
     if (manifest.kind === "pc" && manifest.gameBlobUrl) {
       setUpdateStatus({
         phase: "download",
@@ -1932,10 +2078,26 @@ async function applyWindowsGameUpdate({ force = false } = {}) {
       clientExe = await downloadPcGameExecutable(manifest, (pct) => {
         setUpdateStatus({
           phase: "download",
-          percent: pct,
+          percent: Math.min(55, pct),
           message: `Download client PC… ${pct}%`,
         });
       });
+      setUpdateStatus({
+        phase: "download",
+        percent: 58,
+        message: "Download pacchetti asset (.rgpak)…",
+      });
+      try {
+        downloadedPacks = await downloadPcAssetPacks(manifest, (pct) => {
+          setUpdateStatus({
+            phase: "download",
+            percent: 58 + Math.round(pct * 0.15),
+            message: `Download pacchetti asset… ${pct}%`,
+          });
+        });
+      } catch (packErr) {
+        console.warn("Asset pack download failed (continuing with PE + donors):", packErr.message || packErr);
+      }
     } else {
       // Compatible with the official Desktop EXE path:
       // Bastion harvests web assets from that binary first — NOT re-download +

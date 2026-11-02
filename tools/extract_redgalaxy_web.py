@@ -952,6 +952,32 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
         "box/bootyy.webp": "box/booty.webp",
         # RU packs Wraith config only under ship103; runtime still requests ship100.json.
         "ships/player/ship100.json": "ships/player/ship103.json",
+        # PC 0.9.x PE embeds redgalaxy2.png; login/boot UI requests redgalaxy.png.
+        "redgalaxy.png": "redgalaxy2.png",
+        # Halloween event skins live in encrypted .rgpak; map to base hulls until packs decrypt.
+        "ships/player/ship85.webp": "ships/player/ship80.webp",
+        "ships/player/ship85.json": "ships/player/ship80.json",
+        "ships/player/ship85.atlas": "ships/player/ship80.atlas",
+        "ships/player/ship95.webp": "ships/player/ship90.webp",
+        "ships/player/ship95.json": "ships/player/ship90.json",
+        "ships/player/ship95.atlas": "ships/player/ship90.atlas",
+        "ships/player/ship105.webp": "ships/player/ship100.webp",
+        "ships/player/ship105.json": "ships/player/ship100.json",
+        "ships/player/ship105.atlas": "ships/player/ship100.atlas",
+        "ships/player/ship125.webp": "ships/player/ship120.webp",
+        "ships/player/ship125.json": "ships/player/ship120.json",
+        "ships/player/ship125.atlas": "ships/player/ship120.atlas",
+        "ships/player/ship85_glow.webp": "ships/player/ship80.webp",
+        "ships/player/ship95_glow.webp": "ships/player/ship90.webp",
+        "ships/player/ship105_glow.webp": "ships/player/ship100.webp",
+        "ships/player/ship125_glow.webp": "ships/player/ship120.webp",
+        "shop/drones/anka.webp": "equip/drone/anka.webp",
+        "shop/drones/atlas.webp": "equip/drone/atlas.webp",
+        "shop/drones/pusat.webp": "equip/drone/pusat.webp",
+        "shop/drones/tayfun.webp": "equip/drone/tayfun.webp",
+        "shop/extras/preview/booty.webp": "box/booty.webp",
+        "drones/halloween.png": "equip/drone/anka.webp",
+        "drones/halloween_glow.png": "equip/drone/anka.webp",
     }
     for _ in range(2):
         for target, source in aliases.items():

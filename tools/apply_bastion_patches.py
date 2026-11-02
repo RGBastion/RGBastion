@@ -311,6 +311,9 @@ STATE_HOOK_ALREADY_RE = re.compile(
 BONUS_HOOK_RE = re.compile(
     r'(\w+)\.onMessage\("bonusBoxCollected",(\w+)=>\{(\w+)\.onBonusBoxCollected\(\2\)\}\)'
 )
+PUMPKIN_HOOK_RE = re.compile(
+    r'(\w+)\.onMessage\("pumpkinBoxCollected",(\w+)=>\{(\w+)\.onPumpkinBoxCollected\(\2\)\}\)'
+)
 MAP_DIMS_RE = re.compile(
     r"(\w+)\.map_width&&\((\w+)\.mapWidth=\1\.map_width\),\1\.map_height&&\(\2\.mapHeight=\1\.map_height\)"
 )
@@ -386,6 +389,20 @@ def _patch_bonus_hook(text: str) -> tuple[str, str | None]:
     return text.replace(m.group(0), repl, 1), "patched"
 
 
+def _patch_pumpkin_hook(text: str) -> tuple[str, str | None]:
+    if "window.__RG_STORY_ON_EVENT_BOX__" in text:
+        return text, "already"
+    m = PUMPKIN_HOOK_RE.search(text)
+    if not m:
+        return text, None
+    net_var, arg, obj = m.groups()
+    repl = (
+        f'{net_var}.onMessage("pumpkinBoxCollected",{arg}=>{{{obj}.onPumpkinBoxCollected({arg}),'
+        f"window.__RG_STORY_ON_EVENT_BOX__?.({arg})}})"
+    )
+    return text.replace(m.group(0), repl, 1), "patched"
+
+
 def _patch_map_dims(text: str) -> tuple[str, str | None]:
     if MAP_DIMS_ALREADY in text:
         return text, "already"
@@ -417,6 +434,7 @@ def patch_one_asset(js_path: Path) -> dict[str, str]:
     writers = (
         ("game", _patch_game_hook),
         ("net", _patch_net_hook),
+        ("pumpkin", _patch_pumpkin_hook),
         ("state", _patch_state_hook),
         ("bonus", _patch_bonus_hook),
         ("map", _patch_map_dims),

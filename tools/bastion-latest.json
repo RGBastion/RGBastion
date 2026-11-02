@@ -1,7 +1,7 @@
 {
-  "version": "1.0.8",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.8/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.8/RedGalaxy-Bastion.exe",
-  "notes": "Fix Aggiorna gioco for PC 0.9.17 (.rgpak art merge). Fix Bastion self-update relaunch so the app reopens after install.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.8"
+  "version": "1.0.9",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.9/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.9/RedGalaxy-Bastion.exe",
+  "notes": "Fix missing 0.9.17 assets (login logo + event skins aliases; download .rgpak packs). Raccolta: Cassa Eventi for PUMPKIN_BOX festive crates.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.9"
 }

@@ -975,19 +975,21 @@ extract_web_assets_to() {
   validate_extracted_web_root "$out_dir"
   # PC 0.9.x keeps ships/maps in encrypted .rgpak — fill gaps from prior Bastion web,
   # bundled Resources/web, or a legacy full Tauri client extract still present on disk.
+  # Always merge (even when "complete") so login logo / event skins get donor+alias fill.
   if [[ -d "$SCRIPT_DIR/web/ships" || -d "$SCRIPT_DIR/web/maps" ]]; then
     bundle_web="$SCRIPT_DIR/web"
   fi
-  if ! game_web_is_complete "$out_dir"; then
-    if [[ -d "$NATIVE_APP_WEB_DIR" ]]; then
-      merge_missing_game_art "$out_dir" "$NATIVE_APP_WEB_DIR"
-    fi
-    if ! game_web_is_complete "$out_dir" && [[ -d "$BASTION_APP_WEB_DIR" && "$BASTION_APP_WEB_DIR" != "$NATIVE_APP_WEB_DIR" ]]; then
-      merge_missing_game_art "$out_dir" "$BASTION_APP_WEB_DIR"
-    fi
-    if ! game_web_is_complete "$out_dir" && [[ -n "$bundle_web" && -d "$bundle_web" && "$bundle_web" != "$NATIVE_APP_WEB_DIR" ]]; then
-      merge_missing_game_art "$out_dir" "$bundle_web"
-    fi
+  if [[ -d "$NATIVE_APP_WEB_DIR" ]]; then
+    merge_missing_game_art "$out_dir" "$NATIVE_APP_WEB_DIR"
+  fi
+  if [[ -d "$BASTION_APP_WEB_DIR" && "$BASTION_APP_WEB_DIR" != "$NATIVE_APP_WEB_DIR" ]]; then
+    merge_missing_game_art "$out_dir" "$BASTION_APP_WEB_DIR"
+  fi
+  if [[ -n "$bundle_web" && -d "$bundle_web" && "$bundle_web" != "$NATIVE_APP_WEB_DIR" ]]; then
+    merge_missing_game_art "$out_dir" "$bundle_web"
+  fi
+  if [[ ! -e "$out_dir/redgalaxy.png" && -f "$out_dir/redgalaxy2.png" ]]; then
+    cp -f "$out_dir/redgalaxy2.png" "$out_dir/redgalaxy.png"
   fi
   if ! game_web_is_complete "$out_dir"; then
     die "Extraction incomplete after art merge (need ships/maps/atlas/lang/woff2). Run Aggiorna gioco again after a full prior install."
@@ -1431,7 +1433,19 @@ merge_missing_game_art() {
   [[ -d "$target" && -d "$donor" ]] || return 0
   local d=""
   local copied=0
-  for d in ships maps drones equip box missiles ore portals ranks corps base extras icons; do
+  local root_file=""
+  for root_file in redgalaxy.png redgalaxy2.png bg.jpg box.png; do
+    if [[ -f "$donor/$root_file" && ! -e "$target/$root_file" ]]; then
+      cp -f "$donor/$root_file" "$target/$root_file"
+      copied=$((copied + 1))
+    fi
+  done
+  # PC PE embeds redgalaxy2.png; login UI requests redgalaxy.png.
+  if [[ ! -e "$target/redgalaxy.png" && -f "$target/redgalaxy2.png" ]]; then
+    cp -f "$target/redgalaxy2.png" "$target/redgalaxy.png"
+    copied=$((copied + 1))
+  fi
+  for d in ships maps drones equip box missiles ore portals ranks corps base extras icons shop ui effects audio; do
     [[ -d "$donor/$d" ]] || continue
     mkdir -p "$target/$d"
     # Copy only missing files so newer extract outputs win.
