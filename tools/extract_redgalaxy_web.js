@@ -692,6 +692,119 @@ function fixShipAtlasPageNames(outDir) {
   }
 }
 
+/**
+ * Copy missing files from srcRel tree into dstRel (do not overwrite existing).
+ * Used when encrypted maps-*.rgpak / npc-*.rgpak cannot be decrypted yet.
+ */
+function copyMissingAssetTree(outDir, srcRel, dstRel) {
+  const srcRoot = path.join(outDir, ...srcRel.split("/"));
+  const dstRoot = path.join(outDir, ...dstRel.split("/"));
+  if (!fs.existsSync(srcRoot)) return 0;
+  let n = 0;
+  const walk = (srcDir, dstDir) => {
+    fs.mkdirSync(dstDir, { recursive: true });
+    let names;
+    try {
+      names = fs.readdirSync(srcDir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      // Skip Windows duplicate extracts ("bg 2.jpg").
+      if (/ \d+\.[A-Za-z0-9]+$/.test(name) || / - (?:Copy|Kopya|Copia)\./i.test(name)) {
+        continue;
+      }
+      const from = path.join(srcDir, name);
+      const to = path.join(dstDir, name);
+      let st;
+      try {
+        st = fs.statSync(from);
+      } catch {
+        continue;
+      }
+      if (st.isDirectory()) {
+        walk(from, to);
+        continue;
+      }
+      if (fs.existsSync(to) && fs.statSync(to).size > 0) continue;
+      try {
+        fs.copyFileSync(from, to);
+        n += 1;
+      } catch {
+        /* ignore */
+      }
+    }
+  };
+  walk(srcRoot, dstRoot);
+  return n;
+}
+
+/**
+ * 0.9.19+ content that lives only in encrypted packs (maps-frontier / maps-pyro /
+ * npc-pyro-raid). Until RGPAK_AES_KEY works, donor-copy same-faction / same-tier
+ * art so backgrounds and NPC sprites resolve instead of 404.
+ */
+function ensureMissing0919ArtFallbacks(outDir) {
+  // Faction -7 maps ← faction -8 donors (HELIOS/NOVA/ORION). Pyro tiers ← pyro hub.
+  const mapTrees = [
+    ["maps/map19", "maps/map22"],
+    ["maps/map20", "maps/map23"],
+    ["maps/map21", "maps/map24"],
+    ["maps/pyro", "maps/pyro_core"],
+    ["maps/pyro", "maps/pyro_2"],
+  ];
+  for (const [src, dst] of mapTrees) {
+    copyMissingAssetTree(outDir, src, dst);
+  }
+
+  // MAP22/23 request fog_a/fog_b; donors ship dust_* instead.
+  const fogAliases = [
+    ["maps/map22/fog_a.png", "maps/map22/dust_ember.png"],
+    ["maps/map22/fog_a.png", "maps/map22/dust_crimson.png"],
+    ["maps/map22/fog_b.png", "maps/map22/dust_crimson.png"],
+    ["maps/map22/fog_b.png", "maps/map22/dust_ember.png"],
+    ["maps/map23/fog_a.png", "maps/map23/dust_blue.png"],
+    ["maps/map23/fog_a.png", "maps/map23/dust_gold.png"],
+    ["maps/map23/fog_b.png", "maps/map23/dust_gold.png"],
+    ["maps/map23/fog_b.png", "maps/map23/dust_blue.png"],
+    ["maps/pyro_core/core_fog_a.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro_core/core_fog_b.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro_2/fog_ash_a.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro_2/fog_ash_b.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro/fog_ash_a.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro/fog_ash_b.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro/fog_ash_c.png", "maps/pyro/bg.jpg"],
+  ];
+  for (const [target, source] of fogAliases) {
+    copyAssetAlias(outDir, source, target);
+  }
+
+  // Pyro unique NPCs (frameSize 256) — provisional stand-ins until npc-pyro-raid decrypts.
+  const npcAliases = [
+    ["ships/alien/ember_mite.webp", "ships/alien/alien10.webp"],
+    ["ships/alien/ember_mite.json", "ships/alien/alien10.json"],
+    ["ships/alien/ember_mite.atlas", "ships/alien/alien10.atlas"],
+    ["ships/alien/cinder_stalker.webp", "ships/alien/noxon.webp"],
+    ["ships/alien/cinder_stalker.json", "ships/alien/noxon.json"],
+    ["ships/alien/cinder_stalker.atlas", "ships/alien/noxon.atlas"],
+    ["ships/alien/cinder_stalker.webp", "ships/alien/noxon1.webp"],
+    ["ships/alien/cinder_stalker.json", "ships/alien/noxon1.json"],
+    ["ships/alien/cinder_stalker.atlas", "ships/alien/noxon1.atlas"],
+    ["ships/alien/pyre_warden.webp", "ships/alien/raidon.webp"],
+    ["ships/alien/pyre_warden.json", "ships/alien/raidon.json"],
+    ["ships/alien/pyre_warden.atlas", "ships/alien/raidon.atlas"],
+    ["ships/alien/pyre_warden.webp", "ships/alien/raidon1.webp"],
+    ["ships/alien/pyre_warden.json", "ships/alien/raidon1.json"],
+    ["ships/alien/pyre_warden.atlas", "ships/alien/raidon1.atlas"],
+  ];
+  for (const [target, source] of npcAliases) {
+    copyAssetAlias(outDir, source, target);
+  }
+
+  // Neutral pyro base icon (xY.NEUTRAL) — PE never embeds base/pyro.png.
+  copyAssetAlias(outDir, "base/helios.png", "base/pyro.png");
+}
+
 function ensureRuntimeAssetAliases(outDir) {
   const aliases = {
     "ships/alien/alien21.json": "ships/alien/alien20.json",
@@ -798,6 +911,9 @@ function ensureRuntimeAssetAliases(outDir) {
       copyAssetAlias(outDir, source, target);
     }
   }
+
+  // 0.9.19 map/NPC gaps (encrypted packs) — after base aliases so donors exist.
+  ensureMissing0919ArtFallbacks(outDir);
 
   // Mirror hangar equip trees into shop/** when donor shop packs are absent.
   ensureShopArtFallbacks(outDir);

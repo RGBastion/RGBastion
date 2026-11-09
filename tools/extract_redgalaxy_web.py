@@ -918,6 +918,81 @@ def ensure_missing_ship_atlases(out_dir: Path) -> None:
             atlas_path.write_text(rewrite_atlas_page_name(template, img.name), encoding="utf-8")
 
 
+def copy_missing_asset_tree(out_dir: Path, src_rel: str, dst_rel: str) -> int:
+    """Copy missing files from src_rel into dst_rel (no overwrite)."""
+    src_root = out_dir / Path(src_rel)
+    dst_root = out_dir / Path(dst_rel)
+    if not src_root.is_dir():
+        return 0
+    n = 0
+    for src_path in src_root.rglob("*"):
+        if not src_path.is_file():
+            continue
+        name = src_path.name
+        if re.search(r" \d+\.[A-Za-z0-9]+$", name) or re.search(
+            r" - (?:Copy|Kopya|Copia)\.", name, re.IGNORECASE
+        ):
+            continue
+        rel = src_path.relative_to(src_root)
+        dst_path = dst_root / rel
+        if dst_path.exists() and dst_path.stat().st_size > 0:
+            continue
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src_path, dst_path)
+            n += 1
+        except OSError:
+            continue
+    return n
+
+
+def ensure_missing_0919_art_fallbacks(out_dir: Path) -> None:
+    """Donor-fill 0.9.19 map/NPC art until encrypted .rgpak packs decrypt."""
+    for src, dst in (
+        ("maps/map19", "maps/map22"),
+        ("maps/map20", "maps/map23"),
+        ("maps/map21", "maps/map24"),
+        ("maps/pyro", "maps/pyro_core"),
+        ("maps/pyro", "maps/pyro_2"),
+    ):
+        copy_missing_asset_tree(out_dir, src, dst)
+
+    for target, source in (
+        ("maps/map22/fog_a.png", "maps/map22/dust_ember.png"),
+        ("maps/map22/fog_a.png", "maps/map22/dust_crimson.png"),
+        ("maps/map22/fog_b.png", "maps/map22/dust_crimson.png"),
+        ("maps/map22/fog_b.png", "maps/map22/dust_ember.png"),
+        ("maps/map23/fog_a.png", "maps/map23/dust_blue.png"),
+        ("maps/map23/fog_a.png", "maps/map23/dust_gold.png"),
+        ("maps/map23/fog_b.png", "maps/map23/dust_gold.png"),
+        ("maps/map23/fog_b.png", "maps/map23/dust_blue.png"),
+        ("maps/pyro_core/core_fog_a.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro_core/core_fog_b.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro_2/fog_ash_a.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro_2/fog_ash_b.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro/fog_ash_a.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro/fog_ash_b.png", "maps/pyro/bg.jpg"),
+        ("maps/pyro/fog_ash_c.png", "maps/pyro/bg.jpg"),
+        ("ships/alien/ember_mite.webp", "ships/alien/alien10.webp"),
+        ("ships/alien/ember_mite.json", "ships/alien/alien10.json"),
+        ("ships/alien/ember_mite.atlas", "ships/alien/alien10.atlas"),
+        ("ships/alien/cinder_stalker.webp", "ships/alien/noxon.webp"),
+        ("ships/alien/cinder_stalker.json", "ships/alien/noxon.json"),
+        ("ships/alien/cinder_stalker.atlas", "ships/alien/noxon.atlas"),
+        ("ships/alien/cinder_stalker.webp", "ships/alien/noxon1.webp"),
+        ("ships/alien/cinder_stalker.json", "ships/alien/noxon1.json"),
+        ("ships/alien/cinder_stalker.atlas", "ships/alien/noxon1.atlas"),
+        ("ships/alien/pyre_warden.webp", "ships/alien/raidon.webp"),
+        ("ships/alien/pyre_warden.json", "ships/alien/raidon.json"),
+        ("ships/alien/pyre_warden.atlas", "ships/alien/raidon.atlas"),
+        ("ships/alien/pyre_warden.webp", "ships/alien/raidon1.webp"),
+        ("ships/alien/pyre_warden.json", "ships/alien/raidon1.json"),
+        ("ships/alien/pyre_warden.atlas", "ships/alien/raidon1.atlas"),
+        ("base/pyro.png", "base/helios.png"),
+    ):
+        copy_asset_alias(out_dir, source, target)
+
+
 def ensure_runtime_asset_aliases(out_dir: Path) -> None:
     aliases = {
         "ships/alien/alien21.json": "ships/alien/alien20.json",
@@ -1016,6 +1091,7 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
     for _ in range(2):
         for target, source in aliases.items():
             copy_asset_alias(out_dir, source, target)
+    ensure_missing_0919_art_fallbacks(out_dir)
     ensure_shop_art_fallbacks(out_dir)
     ensure_missing_ship_atlases(out_dir)
     fix_ship_atlas_page_names(out_dir)
