@@ -12045,15 +12045,18 @@
     ensureNpcListBuilt();
     updateNpcFilterControls();
     const counts = new Map(listNpcTypes().map((t) => [t.key, t.count]));
-    let visible = 0;
+    let filteredRows = 0;
     const attackOn = Boolean(AUTO.modeAttack);
     listEl.querySelectorAll("[data-npc-type]").forEach((btn) => {
       const key = btn.dataset.npcType;
       const passes = npcTypeMatchesFilters(key);
+      // Visibility only — never touch AUTO.selectedNpcTypes here.
       btn.hidden = !passes;
+      btn.classList.toggle("rg-npc-filtered-out", !passes);
+      btn.style.display = passes ? "" : "none";
       if (!passes) return;
+      filteredRows += 1;
       const count = counts.get(key) || 0;
-      if (count > 0) visible += 1;
       btn.classList.toggle("selected", AUTO.selectedNpcTypes.has(key));
       btn.disabled = !attackOn;
       btn.title = attackOn ? "" : t("status.npc_requires_attack");
@@ -12067,7 +12070,7 @@
       }
       if (meta) meta.textContent = parts.length ? parts.join(" · ") : "selezionabile";
     });
-    if (countEl) countEl.textContent = String(visible);
+    if (countEl) countEl.textContent = String(filteredRows);
   }
 
   function listNpcs(maxRadius) {
@@ -21895,6 +21898,11 @@
         overflow: auto;
         margin-bottom: 8px;
       }
+      /* Author display:flex would otherwise override the HTML [hidden] UA rule. */
+      #${PANEL_ID} .rg-npc-item[hidden],
+      #${PANEL_ID} .rg-npc-item.rg-npc-filtered-out {
+        display: none !important;
+      }
       #${PANEL_ID} .rg-npc-item {
         display: flex;
         flex-direction: column;
@@ -22425,11 +22433,14 @@
     });
     const bindNpcFilter = (id, field) => {
       const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener("change", () => {
+      if (!el || el.dataset.filterBound === "1") return;
+      el.dataset.filterBound = "1";
+      const apply = () => {
         AUTO[field] = el.value || "all";
         updateNpcListVisuals();
-      });
+      };
+      el.addEventListener("change", apply);
+      el.addEventListener("input", apply);
     };
     bindNpcFilter("rg-npc-filter-map", "npcFilterMap");
     bindNpcFilter("rg-npc-filter-rank", "npcFilterRank");
@@ -22465,6 +22476,7 @@
       updateStatisticsPanel();
       ensureUiLoop();
       ensureNpcListBuilt();
+      updateNpcListVisuals();
       updateModeButtons();
       updateMapConfigUI();
       buildLocaleSelect();
