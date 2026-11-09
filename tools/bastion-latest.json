@@ -2,6 +2,6 @@
   "version": "1.0.14",
   "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.14/RedGalaxy-Bastion.dmg",
   "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.14/RedGalaxy-Bastion.exe",
-  "notes": "1.0.14: fix Attack NPC Map/Rank/Event filters to immediately hide/show checklist rows (CSS display:flex was overriding HTML hidden). Keeps 1.0.13 map/wall asset fixes.",
+  "notes": "1.0.14: MAP22/Pyro real visuals (wiki BGs, pyro_walls.webp atlas, PNG fogs, named props); Attack NPC Map/Rank/Event filter without fake Raid chip; Executioner maps aligned with Imperon (x-6/x-7/Sector Y).",
   "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.14"
 }

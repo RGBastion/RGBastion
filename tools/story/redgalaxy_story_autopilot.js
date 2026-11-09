@@ -192,7 +192,6 @@
     { id: "pyro", label: "Pyro" },
     { id: "pyro_core", label: "Pyro Core" },
     { id: "pyro_2", label: "Pyro 2" },
-    { id: "raid", label: "Raid" },
   ];
   const NPC_FILTER_RANK_OPTIONS = [
     { id: "all", label: "Tutti rank" },
@@ -246,9 +245,9 @@
     put("RAIDON2", ["sector_y", "nyx_high"], "commander", true);
     put("IMPERON", ["x-6", "x-7", "sector_y"], "normal");
     put("IMPERON1", ["sector_y"], "elite");
-    // User overrides: Executioner → normali (raid/event maps).
-    put("EXECUTIONER", ["raid"], "normal");
-    put("EXECUTIONER1", ["raid"], "normal");
+    // User overrides: Executioner → normali; Imperon-swarm adds (same maps as Imperon).
+    put("EXECUTIONER", ["x-6", "x-7", "sector_y"], "normal");
+    put("EXECUTIONER1", ["x-6", "x-7", "sector_y"], "normal");
     // Pyro uniques → normali (user). Dread Sentinel also on NYX-HIGH → event flag.
     put("EMBER_MITE", ["pyro", "pyro_core", "pyro_2"], "normal");
     put("CINDER_STALKER", ["pyro_core", "pyro_2"], "normal");
