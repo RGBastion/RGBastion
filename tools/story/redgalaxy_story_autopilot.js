@@ -169,6 +169,99 @@
     NPC_TYPE_UI_ORDER.map((key, index) => [key, index])
   );
 
+  /**
+   * Attack NPC checklist filters (Map / Rank / Event).
+   * Map lists: https://wiki.redgalaxygame.space/en/npcs/ (Found on), cross-checked
+   * with client spawn families. Faction maps are grouped as x-1…x-8.
+   * Event rule: any alien whose maps include nyx_low / nyx_high is Event.
+   * Rank overrides (user): Ember/Cinder/Pyre + Dreadforge Titan + Executioner* → normali;
+   * Nyxar/Nyxin → Event only (not rank chips).
+   */
+  const NPC_FILTER_MAP_OPTIONS = [
+    { id: "all", label: "Tutte mappe" },
+    { id: "x-1", label: "x-1" },
+    { id: "x-2", label: "x-2" },
+    { id: "x-3", label: "x-3" },
+    { id: "x-4", label: "x-4" },
+    { id: "x-5", label: "x-5" },
+    { id: "x-6", label: "x-6" },
+    { id: "x-7", label: "x-7" },
+    { id: "x-8", label: "x-8" },
+    { id: "sector_y", label: "Sector Y" },
+    { id: "sector_x", label: "Sector X" },
+    { id: "pyro", label: "Pyro" },
+    { id: "pyro_core", label: "Pyro Core" },
+    { id: "pyro_2", label: "Pyro 2" },
+    { id: "raid", label: "Raid" },
+  ];
+  const NPC_FILTER_RANK_OPTIONS = [
+    { id: "all", label: "Tutti rank" },
+    { id: "normal", label: "Normali" },
+    { id: "elite", label: "Elite" },
+    { id: "commander", label: "Commander" },
+  ];
+  const NPC_FILTER_EVENT_OPTIONS = [
+    { id: "all", label: "Tutti" },
+    { id: "event", label: "Eventi" },
+    { id: "no_event", label: "No eventi" },
+  ];
+
+  /** @type {Record<string, { maps: string[], rank: "normal"|"elite"|"commander"|"none", event: boolean }>} */
+  const NPC_TYPE_FILTER_META = (() => {
+    const meta = {};
+    const put = (key, maps, rank, event = false) => {
+      if (!NPC_TYPES[key]) return;
+      meta[key] = { maps: maps.slice(), rank, event: Boolean(event) };
+    };
+    // Standard *0 / *1 / *2 families (wiki Found-on → x-N / sector_y / nyx).
+    put("ALIEN10", ["x-1", "x-2", "nyx_low"], "normal", true);
+    put("ALIEN11", ["x-1", "x-2"], "elite");
+    put("ALIEN12", ["sector_y", "nyx_high"], "commander", true);
+    put("ALIEN20", ["x-2", "x-3", "x-4", "x-5", "nyx_low"], "normal", true);
+    put("ALIEN21", ["x-2", "x-3", "x-4", "x-5"], "elite");
+    put("ALIEN22", ["sector_y", "nyx_high"], "commander", true);
+    put("ALIEN30", ["x-3", "nyx_low"], "normal", true);
+    put("ALIEN31", ["x-3"], "elite");
+    put("ALIEN32", ["sector_y", "nyx_high"], "commander", true);
+    put("ALIEN40", ["x-3", "x-4", "nyx_low"], "normal", true);
+    put("ALIEN41", ["x-3", "x-4"], "elite");
+    put("ALIEN42", ["sector_y", "nyx_high"], "commander", true);
+    put("ALIEN50", ["x-4", "nyx_low"], "normal", true);
+    put("ALIEN51", ["x-4"], "elite");
+    put("ALIEN52", ["sector_y", "nyx_high"], "commander", true);
+    put("NOXON", ["x-3", "x-4"], "normal");
+    put("NOXON1", ["x-3", "x-4"], "elite");
+    put("NOXON2", ["sector_y"], "commander");
+    put("VOXION", ["x-5", "nyx_low"], "normal", true);
+    put("VOXION1", ["x-5"], "elite");
+    put("VOXION2", ["sector_y", "nyx_high"], "commander", true);
+    put("TALON", ["x-5", "x-6", "x-7", "nyx_low"], "normal", true);
+    put("TALON1", ["x-5", "x-6", "x-7"], "elite");
+    put("TALON2", ["sector_y", "nyx_high"], "commander", true);
+    put("FROSTON", ["x-6", "x-7", "nyx_low"], "normal", true);
+    put("FROSTON1", ["x-6", "x-7"], "elite");
+    put("FROSTON2", ["sector_y", "nyx_high"], "commander", true);
+    put("RAIDON", ["x-8", "nyx_low"], "normal", true);
+    put("RAIDON1", ["x-8"], "elite");
+    put("RAIDON2", ["sector_y", "nyx_high"], "commander", true);
+    put("IMPERON", ["x-6", "x-7", "sector_y"], "normal");
+    put("IMPERON1", ["sector_y"], "elite");
+    // User overrides: Executioner → normali (raid/event maps).
+    put("EXECUTIONER", ["raid"], "normal");
+    put("EXECUTIONER1", ["raid"], "normal");
+    // Pyro uniques → normali (user). Dread Sentinel also on NYX-HIGH → event flag.
+    put("EMBER_MITE", ["pyro", "pyro_core", "pyro_2"], "normal");
+    put("CINDER_STALKER", ["pyro_core", "pyro_2"], "normal");
+    put("PYRE_WARDEN", ["pyro_core", "pyro_2"], "normal");
+    put("SECTOR_REAPER", ["pyro", "pyro_core", "pyro_2"], "normal");
+    put("DREAD_SENTINEL", ["pyro", "pyro_core", "pyro_2", "nyx_high"], "normal", true);
+    put("DREADFORGE_TITAN", ["pyro", "pyro_core", "pyro_2", "nyx_high"], "normal", true);
+    // Nyxar / Nyxin → Event only (rank none).
+    put("NYXAR", ["nyx_low", "nyx_high"], "none", true);
+    put("NYXIN", ["nyx_low", "nyx_high"], "none", true);
+    return meta;
+  })();
+
   const RAID_GATE_NPC_TYPES = {
     void: [],
     rift: [],
@@ -286,6 +379,10 @@
     wanderMinMs: 1800,
     wanderMaxMs: 4200,
     selectedNpcTypes: new Set(),
+    /** Attack checklist filters — do not change selection, only visibility. */
+    npcFilterMap: "all",
+    npcFilterRank: "all",
+    npcFilterEvent: "all",
     combatTargetTypes: null,
     combatTargetId: null,
     combatFocusId: null,
@@ -8407,6 +8504,37 @@
     return keys.map((key) => [key, NPC_TYPES[key]]);
   }
 
+  function getNpcFilterMeta(typeKey) {
+    return (
+      NPC_TYPE_FILTER_META[typeKey] || {
+        maps: [],
+        rank: "normal",
+        event: false,
+      }
+    );
+  }
+
+  function npcTypeMatchesFilters(typeKey) {
+    const meta = getNpcFilterMeta(typeKey);
+    const mapF = AUTO.npcFilterMap || "all";
+    const rankF = AUTO.npcFilterRank || "all";
+    const eventF = AUTO.npcFilterEvent || "all";
+    if (mapF !== "all") {
+      if (!meta.maps.includes(mapF)) return false;
+    }
+    if (rankF !== "all") {
+      // Event-only aliens (Nyxar/Nyxin) never match rank chips.
+      if (meta.rank === "none" || meta.rank !== rankF) return false;
+    }
+    if (eventF === "event" && !meta.event) return false;
+    if (eventF === "no_event" && meta.event) return false;
+    return true;
+  }
+
+  function listFilteredNpcTypeEntries() {
+    return orderedNpcTypeEntries().filter(([key]) => npcTypeMatchesFilters(key));
+  }
+
   function listNpcTypes() {
     const counts = countNpcsByTypeMap();
     return orderedNpcTypeEntries().map(([key, label]) => ({
@@ -8501,7 +8629,8 @@
       setStatus("status.npc_requires_attack");
       return;
     }
-    for (const key of Object.keys(NPC_TYPES)) {
+    // Select only types visible under current Map/Rank/Event filters.
+    for (const [key] of listFilteredNpcTypeEntries()) {
       AUTO.selectedNpcTypes.add(key);
     }
     if (AUTO.combatActive) refreshCombatTargetTypesFromSelection();
@@ -11897,17 +12026,32 @@
     });
   }
 
+  function updateNpcFilterControls() {
+    const mapSel = document.getElementById("rg-npc-filter-map");
+    const rankSel = document.getElementById("rg-npc-filter-rank");
+    const eventSel = document.getElementById("rg-npc-filter-event");
+    if (mapSel && mapSel.value !== AUTO.npcFilterMap) mapSel.value = AUTO.npcFilterMap || "all";
+    if (rankSel && rankSel.value !== AUTO.npcFilterRank) rankSel.value = AUTO.npcFilterRank || "all";
+    if (eventSel && eventSel.value !== AUTO.npcFilterEvent) {
+      eventSel.value = AUTO.npcFilterEvent || "all";
+    }
+  }
+
   function updateNpcListVisuals() {
     const listEl = document.getElementById("rg-npc-list");
     const countEl = document.getElementById("rg-npc-count");
     if (!listEl) return;
 
     ensureNpcListBuilt();
+    updateNpcFilterControls();
     const counts = new Map(listNpcTypes().map((t) => [t.key, t.count]));
     let visible = 0;
     const attackOn = Boolean(AUTO.modeAttack);
     listEl.querySelectorAll("[data-npc-type]").forEach((btn) => {
       const key = btn.dataset.npcType;
+      const passes = npcTypeMatchesFilters(key);
+      btn.hidden = !passes;
+      if (!passes) return;
       const count = counts.get(key) || 0;
       if (count > 0) visible += 1;
       btn.classList.toggle("selected", AUTO.selectedNpcTypes.has(key));
@@ -21785,6 +21929,28 @@
         background: rgba(20, 70, 48, 0.75);
       }
       #${PANEL_ID} .rg-npc-head-actions { display: flex; gap: 4px; }
+      #${PANEL_ID} .rg-npc-filters {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        margin: 6px 0 8px;
+      }
+      #${PANEL_ID} .rg-npc-filter {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 10px;
+        color: #8ea5cf;
+      }
+      #${PANEL_ID} .rg-npc-filter select {
+        width: 100%;
+        font-size: 11px;
+        padding: 4px 6px;
+        border-radius: 6px;
+        border: 1px solid rgba(142, 165, 207, 0.35);
+        background: rgba(8, 14, 28, 0.85);
+        color: #e8eefc;
+      }
       #${PANEL_ID} .rg-npc-name { font-weight: 600; font-size: 12px; }
       #${PANEL_ID} .rg-npc-meta { font-size: 10px; color: #8ea5cf; }
       #${PANEL_ID} .rg-npc-empty { color: #8ea5cf; font-size: 11px; padding: 8px 2px; }
@@ -22014,10 +22180,30 @@
         <div class="rg-npc-head">
           <span id="rg-npc-types-label">NPC types (<span id="rg-npc-count">0</span> visible)</span>
           <div class="rg-npc-head-actions">
-            <button id="rg-npc-select-all" type="button" class="secondary mini" data-i18n-title="ui.npc_select_all_title" title="Select all">All</button>
-            <button id="rg-npc-clear" type="button" class="secondary mini" data-i18n-title="ui.npc_clear_title" title="Clear selection">None</button>
+            <button id="rg-npc-select-all" type="button" class="secondary mini" data-i18n-title="ui.npc_select_all_title" title="Select all">tutti</button>
+            <button id="rg-npc-clear" type="button" class="secondary mini" data-i18n-title="ui.npc_clear_title" title="Clear selection">nessuno</button>
             <button id="rg-npc-refresh" type="button" class="secondary mini" data-i18n-title="ui.npc_refresh_title" title="Refresh">↻</button>
           </div>
+        </div>
+        <div class="rg-npc-filters" id="rg-npc-filters">
+          <label class="rg-npc-filter">
+            <span>Mappa</span>
+            <select id="rg-npc-filter-map">
+              ${NPC_FILTER_MAP_OPTIONS.map((o) => `<option value="${o.id}">${o.label}</option>`).join("")}
+            </select>
+          </label>
+          <label class="rg-npc-filter">
+            <span>Rank</span>
+            <select id="rg-npc-filter-rank">
+              ${NPC_FILTER_RANK_OPTIONS.map((o) => `<option value="${o.id}">${o.label}</option>`).join("")}
+            </select>
+          </label>
+          <label class="rg-npc-filter">
+            <span>Event</span>
+            <select id="rg-npc-filter-event">
+              ${NPC_FILTER_EVENT_OPTIONS.map((o) => `<option value="${o.id}">${o.label}</option>`).join("")}
+            </select>
+          </label>
         </div>
         <div id="rg-npc-list" class="rg-npc-list">
           <div class="rg-npc-empty" data-i18n="ui.npc_empty">Available NPC types</div>
@@ -22237,6 +22423,17 @@
       clearNpcTypeSelection();
       setStatus("status.npc_cleared");
     });
+    const bindNpcFilter = (id, field) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("change", () => {
+        AUTO[field] = el.value || "all";
+        updateNpcListVisuals();
+      });
+    };
+    bindNpcFilter("rg-npc-filter-map", "npcFilterMap");
+    bindNpcFilter("rg-npc-filter-rank", "npcFilterRank");
+    bindNpcFilter("rg-npc-filter-event", "npcFilterEvent");
 
     document.getElementById("rg-working-map").addEventListener("change", (ev) => {
       if (AUTO.raidGateId) return;

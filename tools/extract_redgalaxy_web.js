@@ -744,6 +744,62 @@ function copyMissingAssetTree(outDir, srcRel, dstRel) {
  * npc-pyro-raid). Until RGPAK_AES_KEY works, donor-copy same-faction / same-tier
  * art so backgrounds and NPC sprites resolve instead of 404.
  */
+/**
+ * Run tools/synthesize_0919_map_art.py when Python+PIL are available.
+ * Falls back to copying tools/asset-cache/{wiki-maps,synthesized-0919} directly.
+ */
+function synthesize0919MapArt(outDir) {
+  const scriptPath = path.join(__dirname, "synthesize_0919_map_art.py");
+  const absOut = path.resolve(outDir);
+  if (fs.existsSync(scriptPath)) {
+    try {
+      const { spawnSync } = require("child_process");
+      const r = spawnSync("python3", [scriptPath, absOut], {
+        encoding: "utf8",
+        timeout: 180000,
+      });
+      if (r.status === 0) {
+        if (r.stdout) console.log(String(r.stdout).trim().split("\n").slice(-12).join("\n"));
+        return;
+      }
+      if (r.stderr) console.warn("[synthesize0919]", String(r.stderr).slice(0, 500));
+    } catch (err) {
+      console.warn("[synthesize0919] python failed:", err.message || err);
+    }
+  }
+  // Offline fallback: seed from checked-in asset-cache.
+  const cacheRoot = path.join(__dirname, "asset-cache");
+  const wiki = path.join(cacheRoot, "wiki-maps");
+  const synth = path.join(cacheRoot, "synthesized-0919", "maps");
+  const wikiMap = {
+    map22: "map22.jpg",
+    map23: "map23.jpg",
+    map24: "map24.jpg",
+    pyro_core: "pyro_core.jpg",
+    pyro_2: "pyro_2.jpg",
+  };
+  for (const [folder, file] of Object.entries(wikiMap)) {
+    const src = path.join(wiki, file);
+    const dst = path.join(absOut, "maps", folder, "bg.jpg");
+    if (fs.existsSync(src) && (!fs.existsSync(dst) || fs.statSync(dst).size < 1000)) {
+      fs.mkdirSync(path.dirname(dst), { recursive: true });
+      fs.copyFileSync(src, dst);
+    }
+  }
+  if (fs.existsSync(synth)) {
+    const walk = (srcDir, dstDir) => {
+      fs.mkdirSync(dstDir, { recursive: true });
+      for (const name of fs.readdirSync(srcDir)) {
+        const from = path.join(srcDir, name);
+        const to = path.join(dstDir, name);
+        if (fs.statSync(from).isDirectory()) walk(from, to);
+        else if (!fs.existsSync(to) || fs.statSync(to).size === 0) fs.copyFileSync(from, to);
+      }
+    };
+    walk(synth, path.join(absOut, "maps"));
+  }
+}
+
 function ensureMissing0919ArtFallbacks(outDir) {
   // Faction -7 maps ← faction -8 donors (HELIOS/NOVA/ORION). Pyro tiers ← pyro hub.
   const mapTrees = [
@@ -914,6 +970,9 @@ function ensureRuntimeAssetAliases(outDir) {
 
   // 0.9.19 map/NPC gaps (encrypted packs) — after base aliases so donors exist.
   ensureMissing0919ArtFallbacks(outDir);
+  // Stronger 0.9.19 art: wiki BGs, real PNG fogs, pyro_walls.webp atlas, ab_*, named props.
+  // Same-name donor trees alone leave MAP22/Pyro visually black / walls invisible.
+  synthesize0919MapArt(outDir);
 
   // Mirror hangar equip trees into shop/** when donor shop packs are absent.
   ensureShopArtFallbacks(outDir);
@@ -1501,4 +1560,6 @@ module.exports = {
   EMBED_SPLICE_PERIOD,
   EMBED_SPLICE_MARKER,
   ensureRuntimeAssetAliases,
+  synthesize0919MapArt,
+  ensureMissing0919ArtFallbacks,
 };

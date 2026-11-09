@@ -1,7 +1,7 @@
 {
-  "version": "1.0.12",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.12/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.12/RedGalaxy-Bastion.exe",
-  "notes": "1.0.12: restore missing 0.9.19 map backgrounds (MAP22\u201324, Pyro Core/Pyro 2) and provisional Ember/Cinder/Pyre sprites via donor aliases while RGPAK AES key remains unrecovered. Nyx BGs/audio already OK. Attack NPC map/rank/event filter deferred pending user rules on multi-map/event categories.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.12"
+  "version": "1.0.13",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.13/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.13/RedGalaxy-Bastion.exe",
+  "notes": "1.0.13: fix MAP22\u201324/Pyro visuals for real \u2014 wiki map backgrounds, real PNG fogs (was JPEG-as-PNG blackout), synthesize pyro_walls.webp/json + ab_* garrison art (game loads these, not pyro_wall_A.png), named worldProp aliases. Attack NPC Map/Rank/Event filter (wiki.redgalaxygame.space/en/npcs). RGPAK still encrypted.",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.13"
 }

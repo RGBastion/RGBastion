@@ -1092,6 +1092,19 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
         for target, source in aliases.items():
             copy_asset_alias(out_dir, source, target)
     ensure_missing_0919_art_fallbacks(out_dir)
+    # Stronger 0.9.19 art (wiki BGs / pyro_walls.webp / real PNG fogs / named props).
+    try:
+        import subprocess
+
+        synth = Path(__file__).resolve().parent / "synthesize_0919_map_art.py"
+        if synth.is_file():
+            subprocess.run(
+                ["python3", str(synth), str(out_dir)],
+                check=False,
+                timeout=180,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[synthesize0919] skipped: {exc}")
     ensure_shop_art_fallbacks(out_dir)
     ensure_missing_ship_atlases(out_dir)
     fix_ship_atlas_page_names(out_dir)

@@ -1,7 +1,7 @@
 {
   "name": "redgalaxy-bastion",
-  "version": "1.0.12",
-  "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
+  "version": "1.0.13",
+  "description": "RedGalaxy Bastion \u2014 story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedGalaxy Bastion",
   "license": "UNLICENSED",
