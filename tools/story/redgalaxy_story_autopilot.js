@@ -133,12 +133,18 @@
     DREAD_SENTINEL: "-={{Dread Sentinel}}=-",
     SECTOR_REAPER: "-={{Sector Reaper}}=-",
     DREADFORGE_TITAN: "-={{Dreadforge Titan}}=-",
+    EMBER_MITE: "-={{Ember Mite}}=-",
+    CINDER_STALKER: "-={{Cinder Stalker}}=-",
+    PYRE_WARDEN: "-={{Pyre Warden}}=-",
+    NYXAR: "-={{Nyxar}}=-",
+    NYXIN: "-={{Nyxin}}=-",
   };
 
   /**
    * Attack tab order: normal then Elite per family, then Commanders, then bosses.
    * Family order: kryll, lorvax, zyron, noxon, tarkon, brakon, voxion, talon,
    * froston, raidon, executioner, imperion.
+   * Then pyro/nyx uniques (no elite variants in client enum).
    */
   const NPC_TYPE_UI_ORDER = [
     "ALIEN10", "ALIEN11",
@@ -156,6 +162,8 @@
     "ALIEN12", "ALIEN22", "ALIEN42", "NOXON2", "ALIEN32", "ALIEN52",
     "VOXION2", "TALON2", "FROSTON2", "RAIDON2",
     "DREAD_SENTINEL", "SECTOR_REAPER", "DREADFORGE_TITAN",
+    "EMBER_MITE", "CINDER_STALKER", "PYRE_WARDEN",
+    "NYXAR", "NYXIN",
   ];
   const NPC_TYPE_UI_RANK = new Map(
     NPC_TYPE_UI_ORDER.map((key, index) => [key, index])
@@ -979,7 +987,16 @@
    * Play travel to working maps may still use them when no other path exists.
    * JAIL = Sector Z (admin map; often no portals).
    */
-  const NAV_HUB_MAP_IDS = new Set(["SECTOR_X", "SECTOR_Y", "PYRO", "JAIL"]);
+  const NAV_HUB_MAP_IDS = new Set([
+    "SECTOR_X",
+    "SECTOR_Y",
+    "PYRO",
+    "PYRO_CORE",
+    "PYRO_2",
+    "NYX_LOW",
+    "NYX_HIGH",
+    "JAIL",
+  ]);
   /** Sector Z admin map id (map_graph name "Sector Z"). */
   const SECTOR_Z_MAP_ID = "JAIL";
   /** Known RedUniverse HTTP API bases (localStorage rg_selected_server). */
@@ -3069,7 +3086,9 @@
         (n) =>
           n.id.startsWith("MAP") ||
           n.id.startsWith("SECTOR") ||
-          n.id === "PYRO"
+          n.id === "PYRO" ||
+          n.id === "PYRO_CORE" ||
+          n.id === "PYRO_2"
       )
       .sort((a, b) => {
         const fa = a.faction.localeCompare(b.faction);
@@ -3208,7 +3227,8 @@
   }
 
   /**
-   * Faction maps that have a known safe base (fallback): prefer X-7 then home.
+   * Faction maps that have a known safe base (fallback): prefer X-8 then home.
+   * (0.9.19+: MAP19/20/21 are HELIOS/NOVA/ORION-8; MAP22–24 are -7 without bases.)
    * O-5/O-6 have no fallback — routing heal to home via Sector X caused the loop.
    */
   function getFactionSafeHealMapCandidates() {
@@ -3335,9 +3355,11 @@
     return match ? Number(match[2]) || 0 : 0;
   }
 
-  /** Faction hub map id for ring 1 or 7 (e.g. HELIOS → MAP1 / MAP19). */
+  /** Faction hub map id for ring 1 or high safe hub (8 / legacy 7 → MAP19+). */
   function getFactionHubMapId(ring) {
-    const want = Number(ring) === 7 ? 7 : 1;
+    // 0.9.19+: high safe-base maps are -8 (MAP19/20/21). Accept legacy "7" callers.
+    const want =
+      Number(ring) === 7 || Number(ring) === 8 ? 8 : 1;
     const faction = getRaidFactionId() || String(getLocalPlayer()?.faction || "").toUpperCase();
     const nodes = MAP_GRAPH?.nodes || {};
     for (const node of Object.values(nodes)) {
@@ -3348,7 +3370,7 @@
       if (m && Number(m[2]) === want) return node.id;
     }
     // Fallbacks if graph not loaded yet.
-    if (want === 7) {
+    if (want === 8) {
       if (faction === "HELIOS") return "MAP19";
       if (faction === "NOVA") return "MAP20";
       if (faction === "ORION") return "MAP21";

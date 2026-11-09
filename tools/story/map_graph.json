@@ -53,24 +53,24 @@
       "name": "NOVA-3",
       "short": "N-3",
       "faction": "NOVA",
-      "w": 16000,
-      "h": 10000
+      "w": 24000,
+      "h": 15000
     },
     "MAP8": {
       "id": "MAP8",
       "name": "HELIOS-3",
       "short": "H-3",
       "faction": "HELIOS",
-      "w": 16000,
-      "h": 10000
+      "w": 24000,
+      "h": 15000
     },
     "MAP9": {
       "id": "MAP9",
       "name": "ORION-3",
       "short": "O-3",
       "faction": "ORION",
-      "w": 16000,
-      "h": 10000
+      "w": 24000,
+      "h": 15000
     },
     "MAP10": {
       "id": "MAP10",
@@ -96,6 +96,102 @@
       "w": 16000,
       "h": 10000
     },
+    "MAP13": {
+      "id": "MAP13",
+      "name": "HELIOS-5",
+      "short": "H-5",
+      "faction": "HELIOS",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP14": {
+      "id": "MAP14",
+      "name": "NOVA-5",
+      "short": "N-5",
+      "faction": "NOVA",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP15": {
+      "id": "MAP15",
+      "name": "ORION-5",
+      "short": "O-5",
+      "faction": "ORION",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP16": {
+      "id": "MAP16",
+      "name": "HELIOS-6",
+      "short": "H-6",
+      "faction": "HELIOS",
+      "w": 31200,
+      "h": 19500
+    },
+    "MAP17": {
+      "id": "MAP17",
+      "name": "NOVA-6",
+      "short": "N-6",
+      "faction": "NOVA",
+      "w": 31200,
+      "h": 19500
+    },
+    "MAP18": {
+      "id": "MAP18",
+      "name": "ORION-6",
+      "short": "O-6",
+      "faction": "ORION",
+      "w": 31200,
+      "h": 19500
+    },
+    "MAP19": {
+      "id": "MAP19",
+      "name": "HELIOS-8",
+      "short": "H-8",
+      "faction": "HELIOS",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP20": {
+      "id": "MAP20",
+      "name": "NOVA-8",
+      "short": "N-8",
+      "faction": "NOVA",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP21": {
+      "id": "MAP21",
+      "name": "ORION-8",
+      "short": "O-8",
+      "faction": "ORION",
+      "w": 24000,
+      "h": 15000
+    },
+    "MAP22": {
+      "id": "MAP22",
+      "name": "HELIOS-7",
+      "short": "H-7",
+      "faction": "HELIOS",
+      "w": 31200,
+      "h": 19500
+    },
+    "MAP23": {
+      "id": "MAP23",
+      "name": "NOVA-7",
+      "short": "N-7",
+      "faction": "NOVA",
+      "w": 31200,
+      "h": 19500
+    },
+    "MAP24": {
+      "id": "MAP24",
+      "name": "ORION-7",
+      "short": "O-7",
+      "faction": "ORION",
+      "w": 31200,
+      "h": 19500
+    },
     "SECTOR_X": {
       "id": "SECTOR_X",
       "name": "Sector X",
@@ -109,8 +205,8 @@
       "name": "Sector Y",
       "short": "Sector Y",
       "faction": "NEUTRAL",
-      "w": 48000,
-      "h": 30000
+      "w": 33600,
+      "h": 21000
     },
     "PYRO": {
       "id": "PYRO",
@@ -120,69 +216,21 @@
       "w": 45000,
       "h": 27000
     },
-    "MAP13": {
-      "id": "MAP13",
-      "name": "HELIOS-5",
-      "short": "H-5",
-      "faction": "HELIOS",
-      "w": 16000,
-      "h": 10000
+    "PYRO_CORE": {
+      "id": "PYRO_CORE",
+      "name": "Pyro Core",
+      "short": "Pyro Core",
+      "faction": "NEUTRAL",
+      "w": 60000,
+      "h": 36000
     },
-    "MAP14": {
-      "id": "MAP14",
-      "name": "NOVA-5",
-      "short": "N-5",
-      "faction": "NOVA",
-      "w": 16000,
-      "h": 10000
-    },
-    "MAP15": {
-      "id": "MAP15",
-      "name": "ORION-5",
-      "short": "O-5",
-      "faction": "ORION",
-      "w": 16000,
-      "h": 10000
-    },
-    "MAP16": {
-      "id": "MAP16",
-      "name": "HELIOS-6",
-      "short": "H-6",
-      "faction": "HELIOS",
-      "w": 20800,
-      "h": 13000
-    },
-    "MAP17": {
-      "id": "MAP17",
-      "name": "NOVA-6",
-      "short": "N-6",
-      "faction": "NOVA",
-      "w": 20800,
-      "h": 13000
-    },
-    "MAP18": {
-      "id": "MAP18",
-      "name": "ORION-6",
-      "short": "O-6",
-      "faction": "ORION",
-      "w": 20800,
-      "h": 13000
-    },
-    "MAP19": {
-      "id": "MAP19",
-      "name": "HELIOS-7",
-      "short": "H-7",
-      "faction": "HELIOS",
-      "w": 16000,
-      "h": 10000
-    },
-    "MAP20": {
-      "id": "MAP20",
-      "name": "NOVA-7",
-      "short": "N-7",
-      "faction": "NOVA",
-      "w": 16000,
-      "h": 10000
+    "PYRO_2": {
+      "id": "PYRO_2",
+      "name": "Pyro 2",
+      "short": "Pyro 2",
+      "faction": "NEUTRAL",
+      "w": 54000,
+      "h": 33000
     },
     "JAIL": {
       "id": "JAIL",
@@ -192,13 +240,21 @@
       "w": 16000,
       "h": 10000
     },
-    "MAP21": {
-      "id": "MAP21",
-      "name": "ORION-7",
-      "short": "O-7",
-      "faction": "ORION",
-      "w": 16000,
-      "h": 10000
+    "NYX_LOW": {
+      "id": "NYX_LOW",
+      "name": "NYX-LOW",
+      "short": "NYX-L",
+      "faction": "NEUTRAL",
+      "w": 31200,
+      "h": 19500
+    },
+    "NYX_HIGH": {
+      "id": "NYX_HIGH",
+      "name": "NYX-HIGH",
+      "short": "NYX-H",
+      "faction": "NEUTRAL",
+      "w": 31200,
+      "h": 19500
     },
     "RAID_VOID": {
       "id": "RAID_VOID",
@@ -315,14 +371,14 @@
       "to": "MAP5",
       "portalId": "m7_to_m5",
       "x": 1000,
-      "y": 9000
+      "y": 14000
     },
     {
       "from": "MAP7",
       "to": "MAP10",
       "portalId": "m7_to_m10",
-      "x": 15000,
-      "y": 9000
+      "x": 23000,
+      "y": 14000
     },
     {
       "from": "MAP8",
@@ -336,7 +392,7 @@
       "to": "MAP11",
       "portalId": "m8_to_m11",
       "x": 1000,
-      "y": 9000
+      "y": 14000
     },
     {
       "from": "MAP9",
@@ -349,7 +405,7 @@
       "from": "MAP9",
       "to": "MAP12",
       "portalId": "m9_to_m12",
-      "x": 15000,
+      "x": 23000,
       "y": 1000
     },
     {
@@ -461,8 +517,8 @@
       "from": "SECTOR_Y",
       "to": "SECTOR_X",
       "portalId": "sy_to_sx",
-      "x": 24000,
-      "y": 15000
+      "x": 16800,
+      "y": 10500
     },
     {
       "from": "SECTOR_Y",
@@ -479,53 +535,88 @@
       "y": 26250
     },
     {
+      "from": "PYRO",
+      "to": "PYRO_CORE",
+      "portalId": "pyro_to_core",
+      "x": 1500,
+      "y": 12750
+    },
+    {
+      "from": "PYRO_CORE",
+      "to": "PYRO",
+      "portalId": "core_to_pyro",
+      "x": 1500,
+      "y": 18000
+    },
+    {
+      "from": "PYRO_CORE",
+      "to": "PYRO_2",
+      "portalId": "core_to_pyro2",
+      "x": 58500,
+      "y": 18000
+    },
+    {
+      "from": "PYRO_2",
+      "to": "PYRO_CORE",
+      "portalId": "pyro2_to_core",
+      "x": 52500,
+      "y": 31500
+    },
+    {
       "from": "MAP13",
       "to": "SECTOR_X",
       "portalId": "m13_to_sx",
-      "x": 8000,
+      "x": 12000,
       "y": 1000
     },
     {
       "from": "MAP13",
       "to": "MAP16",
       "portalId": "m13_to_m16",
-      "x": 15000,
-      "y": 9000
+      "x": 23000,
+      "y": 14000
     },
     {
       "from": "MAP13",
-      "to": "MAP19",
-      "portalId": "m13_to_m19",
+      "to": "MAP22",
+      "portalId": "m13_to_m22",
       "x": 1000,
-      "y": 9000
+      "y": 14000
     },
     {
       "from": "MAP13",
       "to": "SECTOR_Y",
       "portalId": "m13_to_sy",
-      "x": 8000,
-      "y": 9000
+      "x": 12000,
+      "y": 14000
+    },
+    {
+      "from": "MAP13",
+      "to": "PYRO",
+      "portalId": "m13_to_pyro",
+      "x": 23000,
+      "y": 7500
     },
     {
       "from": "MAP14",
       "to": "SECTOR_X",
       "portalId": "m14_to_sx",
       "x": 1000,
-      "y": 5000
+      "y": 7500
     },
     {
       "from": "MAP14",
       "to": "MAP17",
       "portalId": "m14_to_m17",
-      "x": 15000,
+      "x": 23000,
       "y": 1000
     },
     {
       "from": "MAP14",
-      "to": "MAP20",
-      "portalId": "m14_to_m20",
-      "x": 15000,
-      "y": 9000
+      "to": "MAP23",
+      "portalId": "m14_to_m23",
+      "x": 23000,
+      "y": 14000
     },
     {
       "from": "MAP14",
@@ -535,32 +626,46 @@
       "y": 1000
     },
     {
+      "from": "MAP14",
+      "to": "PYRO",
+      "portalId": "m14_to_pyro",
+      "x": 1000,
+      "y": 14000
+    },
+    {
       "from": "MAP15",
       "to": "SECTOR_X",
       "portalId": "m15_to_sx",
-      "x": 15000,
-      "y": 5000
+      "x": 23000,
+      "y": 7500
     },
     {
       "from": "MAP15",
       "to": "MAP18",
       "portalId": "m15_to_m18",
       "x": 1000,
-      "y": 9000
+      "y": 14000
     },
     {
       "from": "MAP15",
-      "to": "MAP21",
-      "portalId": "m15_to_m21",
-      "x": 8000,
+      "to": "MAP24",
+      "portalId": "m15_to_m24",
+      "x": 12000,
       "y": 1000
     },
     {
       "from": "MAP15",
       "to": "SECTOR_Y",
       "portalId": "m15_to_sy",
-      "x": 15000,
+      "x": 23000,
       "y": 1000
+    },
+    {
+      "from": "MAP15",
+      "to": "PYRO",
+      "portalId": "m15_to_pyro",
+      "x": 23000,
+      "y": 14000
     },
     {
       "from": "MAP16",
@@ -571,79 +676,163 @@
     },
     {
       "from": "MAP16",
+      "to": "MAP22",
+      "portalId": "m16_to_m22",
+      "x": 30200,
+      "y": 18500
+    },
+    {
+      "from": "MAP16",
       "to": "MAP19",
       "portalId": "m16_to_m19",
-      "x": 19800,
-      "y": 12000
+      "x": 1000,
+      "y": 18500
     },
     {
       "from": "MAP17",
       "to": "MAP14",
       "portalId": "m17_to_m14",
-      "x": 19800,
+      "x": 30200,
       "y": 1000
+    },
+    {
+      "from": "MAP17",
+      "to": "MAP23",
+      "portalId": "m17_to_m23",
+      "x": 1000,
+      "y": 18500
     },
     {
       "from": "MAP17",
       "to": "MAP20",
       "portalId": "m17_to_m20",
       "x": 1000,
-      "y": 12000
+      "y": 1000
     },
     {
       "from": "MAP18",
       "to": "MAP15",
       "portalId": "m18_to_m15",
-      "x": 10400,
-      "y": 12000
+      "x": 15600,
+      "y": 18500
+    },
+    {
+      "from": "MAP18",
+      "to": "MAP24",
+      "portalId": "m18_to_m24",
+      "x": 15600,
+      "y": 1000
     },
     {
       "from": "MAP18",
       "to": "MAP21",
       "portalId": "m18_to_m21",
-      "x": 10400,
+      "x": 30200,
+      "y": 9750
+    },
+    {
+      "from": "MAP19",
+      "to": "MAP22",
+      "portalId": "m19_to_m22",
+      "x": 1000,
       "y": 1000
     },
     {
       "from": "MAP19",
       "to": "MAP16",
       "portalId": "m19_to_m16",
-      "x": 1000,
-      "y": 1000
+      "x": 23000,
+      "y": 14000
     },
     {
-      "from": "MAP19",
-      "to": "MAP13",
-      "portalId": "m19_to_m13",
-      "x": 15000,
-      "y": 9000
+      "from": "MAP20",
+      "to": "MAP23",
+      "portalId": "m20_to_m23",
+      "x": 23000,
+      "y": 14000
     },
     {
       "from": "MAP20",
       "to": "MAP17",
       "portalId": "m20_to_m17",
-      "x": 15000,
-      "y": 9000
-    },
-    {
-      "from": "MAP20",
-      "to": "MAP14",
-      "portalId": "m20_to_m14",
       "x": 1000,
       "y": 1000
     },
     {
       "from": "MAP21",
-      "to": "MAP18",
-      "portalId": "m21_to_m18",
-      "x": 8000,
-      "y": 9000
+      "to": "MAP24",
+      "portalId": "m21_to_m24",
+      "x": 12000,
+      "y": 14000
     },
     {
       "from": "MAP21",
+      "to": "MAP18",
+      "portalId": "m21_to_m18",
+      "x": 23000,
+      "y": 1000
+    },
+    {
+      "from": "MAP22",
+      "to": "MAP16",
+      "portalId": "m22_to_m16",
+      "x": 15600,
+      "y": 1000
+    },
+    {
+      "from": "MAP22",
+      "to": "MAP19",
+      "portalId": "m22_to_m19",
+      "x": 15600,
+      "y": 18500
+    },
+    {
+      "from": "MAP22",
+      "to": "MAP13",
+      "portalId": "m22_to_m13",
+      "x": 1000,
+      "y": 9750
+    },
+    {
+      "from": "MAP23",
+      "to": "MAP17",
+      "portalId": "m23_to_m17",
+      "x": 30200,
+      "y": 9750
+    },
+    {
+      "from": "MAP23",
+      "to": "MAP20",
+      "portalId": "m23_to_m20",
+      "x": 1000,
+      "y": 9750
+    },
+    {
+      "from": "MAP23",
+      "to": "MAP14",
+      "portalId": "m23_to_m14",
+      "x": 15600,
+      "y": 18500
+    },
+    {
+      "from": "MAP24",
+      "to": "MAP18",
+      "portalId": "m24_to_m18",
+      "x": 30200,
+      "y": 18500
+    },
+    {
+      "from": "MAP24",
+      "to": "MAP21",
+      "portalId": "m24_to_m21",
+      "x": 1000,
+      "y": 1000
+    },
+    {
+      "from": "MAP24",
       "to": "MAP15",
-      "portalId": "m21_to_m15",
-      "x": 15000,
+      "portalId": "m24_to_m15",
+      "x": 30200,
       "y": 1000
     }
   ],
@@ -666,12 +855,20 @@
     "MAP16": "HELIOS-6",
     "MAP17": "NOVA-6",
     "MAP18": "ORION-6",
-    "MAP19": "HELIOS-7",
-    "MAP20": "NOVA-7",
-    "MAP21": "ORION-7",
+    "MAP19": "HELIOS-8",
+    "MAP20": "NOVA-8",
+    "MAP21": "ORION-8",
+    "MAP22": "HELIOS-7",
+    "MAP23": "NOVA-7",
+    "MAP24": "ORION-7",
     "SECTOR_X": "SECTOR X",
     "SECTOR_Y": "SECTOR Y",
     "PYRO": "PYRO",
+    "PYRO_CORE": "PYRO CORE",
+    "PYRO_2": "PYRO 2",
+    "JAIL": "Sector Z",
+    "NYX_LOW": "NYX-LOW",
+    "NYX_HIGH": "NYX-HIGH",
     "RAID_VOID": "VOID GATE",
     "RAID_RIFT": "RIFT GATE",
     "RAID_NEBULA": "NEBULA GATE",

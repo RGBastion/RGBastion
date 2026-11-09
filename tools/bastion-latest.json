@@ -1,7 +1,7 @@
 {
-  "version": "1.0.10",
-  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.10/RedGalaxy-Bastion.dmg",
-  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.10/RedGalaxy-Bastion.exe",
-  "notes": "Restore Negozio + Home hangar textures after 0.9.17: merge bundled/shop donors before depleted live web; require shop extras + ship previews; equip→shop/hangar fallbacks. Full RGPAK decrypt still needs compile-time AES key.",
-  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.10"
+  "version": "1.0.11",
+  "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.11/RedGalaxy-Bastion.dmg",
+  "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.11/RedGalaxy-Bastion.exe",
+  "notes": "Game 0.9.19 content: MAP22\u201324 (faction-7), MAP19\u201321 renamed to -8, Pyro Core/Pyro 2, new pyro/nyx NPCs (Ember Mite, Cinder Stalker, Pyre Warden, Nyxar, Nyxin). Pets left to native game UI (collect companion, no Bastion combat AI).",
+  "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.11"
 }
