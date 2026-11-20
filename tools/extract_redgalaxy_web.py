@@ -954,9 +954,20 @@ def resolve_asset_cache_root() -> Path:
         here.parent / "asset-cache",
         here.parent / "tools" / "asset-cache",
     ):
-        if (c / "wiki-maps").is_dir() or (c / "synthesized-0919").is_dir():
+        if (
+            (c / "wiki-maps").is_dir()
+            or (c / "synthesized-0919").is_dir()
+            or (c / "pets-official").is_dir()
+        ):
             return c
     return here / "asset-cache"
+
+
+def resolve_pets_official_cache_dir() -> Path | None:
+    """Official recovered pet kit under tools/asset-cache/pets-official."""
+    root = resolve_asset_cache_root()
+    marker = root / "pets-official" / "ships" / "pet" / "pet_base.webp"
+    return marker.parent.parent.parent if marker.is_file() else None
 
 
 def _is_real_png(path: Path) -> bool:
@@ -1078,38 +1089,73 @@ def _write_pet_single_frame_webp(donor: Path, out: Path, frame_size: int) -> Non
         frame.save(out, "WEBP", quality=90, method=4)
 
 
-def ensure_pet_art_fallbacks(out_dir: Path) -> None:
-    """Provisional ships/pet kit: real 172×172 single-frame WebPs (not a full atlas).
+def seed_pet_art_from_official_cache(out_dir: Path) -> int:
+    """Copy official recovered pet kit from tools/asset-cache/pets-official."""
+    cache = resolve_pets_official_cache_dir()
+    if cache is None:
+        return 0
+    n = 0
+    for rel in ("ships/pet", "shop/pet"):
+        src_root = cache / Path(rel)
+        if not src_root.is_dir():
+            continue
+        for src in src_root.rglob("*"):
+            if not src.is_file() or src.name.startswith(".") or src.name == "MAPPING.json":
+                continue
+            dst = out_dir / rel / src.relative_to(src_root)
+            missing = not dst.is_file() or dst.stat().st_size < 32
+            weak = (
+                dst.is_file()
+                and dst.stat().st_size > 0
+                and dst.stat().st_size < 50_000
+                and src.suffix.lower() == ".webp"
+            )
+            smaller = dst.is_file() and dst.stat().st_size < src.stat().st_size * 0.5
+            if not (missing or weak or smaller):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            n += 1
+    return n
 
-    pets.rgpak is still AES-encrypted. Copying donor atlases (e.g. sball 1764×1568,
-    frame 196) wholesale with frame_size 172 makes Phaser render the whole grid.
+
+def _remove_provisional_pet_webps(out_dir: Path) -> int:
+    """Strip tiny ships/pet donor crops; leave shop icons and real atlases alone."""
+    removed = 0
+    root = out_dir / "ships" / "pet"
+    if not root.is_dir():
+        return removed
+    for p in root.glob("*.webp"):
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        # Real recovered sheets are 150KB–1MB; old sball crops were ~7568B.
+        if 0 < size < 50_000:
+            p.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def ensure_pet_art_fallbacks(out_dir: Path) -> None:
+    """Seed ships/pet + shop/pet from pets-official cache when present.
+
+    Never crop sball / alien / random ship donors (that produced the wrong Spaceball pet).
+    Without the cache: strip tiny provisional webps and keep JSON stubs only.
     """
     import json
 
+    seeded = seed_pet_art_from_official_cache(out_dir)
+    if seeded:
+        print(f"[pet] seeded {seeded} file(s) from pets-official cache")
+    removed = _remove_provisional_pet_webps(out_dir)
+    if removed:
+        print(f"[pet] removed {removed} provisional tiny .webp stand-in(s)")
+
     pet_dir = out_dir / "ships" / "pet"
-    donors = [
-        out_dir / "ships" / "system" / "sball.webp",
-        out_dir / "ships" / "alien" / "ember_mite.webp",
-        out_dir / "ships" / "alien" / "alien10.webp",
-    ]
-    donor = next((p for p in donors if p.is_file() and p.stat().st_size > 1000), None)
-    if donor is None:
-        print("[pet] no donor sheet for ships/pet — skip")
-        return
     pet_dir.mkdir(parents=True, exist_ok=True)
     layers = ["pet_base", "pet_l2", "pet_l3", "pet_l4", "pet_l5"]
     frame_size = 172
-    wrote = 0
-    for layer in layers:
-        webp = pet_dir / f"{layer}.webp"
-        if not _pet_webp_needs_rewrite(webp, frame_size):
-            continue
-        try:
-            _write_pet_single_frame_webp(donor, webp, frame_size)
-            wrote += 1
-        except Exception as exc:
-            print(f"[pet] {layer}: {exc}")
-
     for level in range(1, 6):
         cfg_path = pet_dir / f"pet_l{level}.json"
         needs_write = True
@@ -1132,33 +1178,6 @@ def ensure_pet_art_fallbacks(out_dir: Path) -> None:
             "core_point": [0, 0],
         }
         cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
-
-    glow = pet_dir / "pet_l5_glow.webp"
-    l5 = pet_dir / "pet_l5.webp"
-    if _pet_webp_needs_rewrite(glow, frame_size) and l5.is_file():
-        shutil.copy2(l5, glow)
-        wrote += 1
-    tiny_png = bytes.fromhex(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
-        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
-    )
-    for name in ("pet_l5_corebloom.png", "pet_l5_trail.png"):
-        dst = pet_dir / name
-        if not dst.is_file() or dst.stat().st_size == 0:
-            dst.write_bytes(tiny_png)
-
-    # Hangar shop pet must be a single icon — force overwrite bad full-sheet copies.
-    base_pet = pet_dir / "pet_base.webp"
-    if base_pet.is_file() and not _pet_webp_needs_rewrite(base_pet, frame_size, exact=True):
-        for rel in ("shop/pet/pet.webp", "shop/pet/preview/pet.webp"):
-            dst = out_dir.joinpath(*rel.split("/"))
-            if not _pet_webp_needs_rewrite(dst, frame_size, exact=True):
-                continue
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(base_pet, dst)
-            wrote += 1
-    if wrote:
-        print(f"[pet] wrote {wrote} provisional 172×172 frame(s) from {donor.name}")
 
 
 def ensure_missing_0919_art_fallbacks(out_dir: Path) -> None:

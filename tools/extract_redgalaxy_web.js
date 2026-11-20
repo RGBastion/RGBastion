@@ -753,11 +753,23 @@ function resolveAssetCacheRoot() {
     path.join(__dirname, "..", "tools", "asset-cache"),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(path.join(c, "wiki-maps")) || fs.existsSync(path.join(c, "synthesized-0919"))) {
+    if (
+      fs.existsSync(path.join(c, "wiki-maps")) ||
+      fs.existsSync(path.join(c, "synthesized-0919")) ||
+      fs.existsSync(path.join(c, "pets-official"))
+    ) {
       return c;
     }
   }
   return path.join(__dirname, "asset-cache");
+}
+
+/** Official recovered pet kit (ships/pet + shop/pet), never sball/wiki donors. */
+function resolvePetsOfficialCacheDir() {
+  const root = resolveAssetCacheRoot();
+  const dir = path.join(root, "pets-official");
+  const marker = path.join(dir, "ships", "pet", "pet_base.webp");
+  return fs.existsSync(marker) ? dir : null;
 }
 
 /**
@@ -1058,39 +1070,97 @@ print(f"{out.name}:{target}x{target}")
 }
 
 /**
- * In-world pet sheets live in encrypted pets.rgpak. Until decrypt works, build a
- * minimal ships/pet kit: real single-frame 172×172 WebPs (NOT a full donor atlas).
- * Copying sball.webp (1764×1568, frame 196) wholesale with frame_size 172 makes
- * Phaser render the entire spritesheet grid as one sprite.
+ * Strip tiny provisional donor crops under ships/pet (sball stand-ins ~7KB).
+ * Real atlas sheets are 150KB–1MB. shop/pet icons are legitimately small (~4KB)
+ * 172×172 frames — never strip those by size alone.
+ */
+function removeProvisionalPetWebps(outDir) {
+  const shipsPet = path.join(outDir, "ships", "pet");
+  let removed = 0;
+  if (!fs.existsSync(shipsPet)) return removed;
+  for (const ent of fs.readdirSync(shipsPet, { withFileTypes: true })) {
+    if (!ent.isFile() || !/\.webp$/i.test(ent.name)) continue;
+    const full = path.join(shipsPet, ent.name);
+    let size = 0;
+    try {
+      size = fs.statSync(full).size;
+    } catch {
+      continue;
+    }
+    if (size > 0 && size < 50_000) {
+      try {
+        fs.unlinkSync(full);
+        removed += 1;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return removed;
+}
+
+/**
+ * Copy official pet kit from tools/asset-cache/pets-official into outDir.
+ * Prefer real recovered sheets over missing/tiny stand-ins. No sball/wiki donors.
+ */
+function seedPetArtFromOfficialCache(outDir) {
+  const cache = resolvePetsOfficialCacheDir();
+  if (!cache) return 0;
+  const absOut = path.resolve(outDir);
+  let n = 0;
+  const copyTree = (relDir) => {
+    const srcRoot = path.join(cache, ...relDir.split("/"));
+    if (!fs.existsSync(srcRoot)) return;
+    const walk = (srcDir, dstDir) => {
+      fs.mkdirSync(dstDir, { recursive: true });
+      for (const name of fs.readdirSync(srcDir)) {
+        if (name === "MAPPING.json" || name.startsWith(".")) continue;
+        const from = path.join(srcDir, name);
+        const to = path.join(dstDir, name);
+        if (fs.statSync(from).isDirectory()) {
+          walk(from, to);
+          continue;
+        }
+        const missing = !fs.existsSync(to) || fs.statSync(to).size < 32;
+        const weak =
+          fs.existsSync(to) &&
+          fs.statSync(to).size > 0 &&
+          fs.statSync(to).size < 50_000 &&
+          /\.webp$/i.test(name);
+        const smaller =
+          fs.existsSync(to) && fs.statSync(to).size < fs.statSync(from).size * 0.5;
+        if (missing || weak || smaller) {
+          fs.copyFileSync(from, to);
+          n += 1;
+        }
+      }
+    };
+    walk(srcRoot, path.join(absOut, ...relDir.split("/")));
+  };
+  copyTree("ships/pet");
+  copyTree("shop/pet");
+  return n;
+}
+
+/**
+ * Seed ships/pet + shop/pet from pets-official cache when present.
+ * Without the cache: strip tiny provisional webps and keep JSON stubs only.
+ * Never crop sball / alien / random ship donors.
  */
 function ensurePetArtFallbacks(outDir) {
-  const petDir = path.join(outDir, "ships", "pet");
-  const donors = [
-    path.join(outDir, "ships", "system", "sball.webp"),
-    path.join(outDir, "ships", "alien", "ember_mite.webp"),
-    path.join(outDir, "ships", "alien", "alien10.webp"),
-  ];
-  const donorWebp = donors.find((p) => fs.existsSync(p) && fs.statSync(p).size > 1000);
-  if (!donorWebp) {
-    console.warn("[pet] no donor sheet for ships/pet — skip");
-    return;
+  const seeded = seedPetArtFromOfficialCache(outDir);
+  if (seeded > 0) {
+    console.log(`[pet] seeded ${seeded} file(s) from pets-official cache`);
   }
+  const removed = removeProvisionalPetWebps(outDir);
+  if (removed > 0) {
+    console.warn(`[pet] removed ${removed} provisional tiny .webp stand-in(s)`);
+  }
+
+  const petDir = path.join(outDir, "ships", "pet");
   fs.mkdirSync(petDir, { recursive: true });
   const layers = ["pet_base", "pet_l2", "pet_l3", "pet_l4", "pet_l5"];
   const frameSize = 172;
-  let wrote = 0;
-  for (const layer of layers) {
-    const webp = path.join(petDir, `${layer}.webp`);
-    if (!petWebpNeedsRewrite(webp, frameSize)) continue;
-    try {
-      writePetSingleFrameWebp(donorWebp, webp, frameSize);
-      wrote += 1;
-    } catch (err) {
-      console.warn(`[pet] ${layer}:`, err.message || err);
-    }
-  }
-  // Config files are ships/pet/pet_l{level}.json (level 1..5). Always keep
-  // frame_size in sync with the actual sheet (must divide width/height).
   for (let level = 1; level <= 5; level++) {
     const cfgPath = path.join(petDir, `pet_l${level}.json`);
     let needsWrite = true;
@@ -1117,51 +1187,6 @@ function ensurePetArtFallbacks(outDir) {
     } catch {
       /* ignore */
     }
-  }
-  // L5 FX — single-frame glow + tiny PNG so loader does not hang on 404.
-  const glow = path.join(petDir, "pet_l5_glow.webp");
-  const l5 = path.join(petDir, "pet_l5.webp");
-  if (petWebpNeedsRewrite(glow, frameSize) && fs.existsSync(l5)) {
-    try {
-      fs.copyFileSync(l5, glow);
-      wrote += 1;
-    } catch {
-      /* ignore */
-    }
-  }
-  const tinyPng = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
-    "base64"
-  );
-  for (const name of ["pet_l5_corebloom.png", "pet_l5_trail.png"]) {
-    const dst = path.join(petDir, name);
-    if (fs.existsSync(dst) && fs.statSync(dst).size > 0) continue;
-    try {
-      fs.writeFileSync(dst, tinyPng);
-    } catch {
-      /* ignore */
-    }
-  }
-  // Hangar shop pet must be a SINGLE icon (force overwrite bad full-sheet copies).
-  const shopTargets = [
-    path.join(outDir, "shop", "pet", "pet.webp"),
-    path.join(outDir, "shop", "pet", "preview", "pet.webp"),
-  ];
-  const basePet = path.join(petDir, "pet_base.webp");
-  if (fs.existsSync(basePet) && !petWebpNeedsRewrite(basePet, frameSize, { exact: true })) {
-    for (const dst of shopTargets) {
-      if (!petWebpNeedsRewrite(dst, frameSize, { exact: true })) continue;
-      try {
-        fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.copyFileSync(basePet, dst);
-        wrote += 1;
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  if (wrote > 0) {
-    console.log(`[pet] wrote ${wrote} provisional 172×172 frame(s) from ${path.basename(donorWebp)}`);
   }
 }
 
@@ -1865,12 +1890,15 @@ if (require.main === module) {
 }
 
 module.exports = {
+  seedPetArtFromOfficialCache,
+  resolvePetsOfficialCacheDir,
   main,
   despliceEmbeddedPayload,
   EMBED_SPLICE_PERIOD,
   EMBED_SPLICE_MARKER,
   ensureRuntimeAssetAliases,
   ensurePetArtFallbacks,
+  removeProvisionalPetWebps,
   ensureCraftIconFallbacks,
   synthesize0919MapArt,
   ensureMissing0919ArtFallbacks,

@@ -1,0 +1,167 @@
+[
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_base.webp",
+    "dst": "ships/pet/pet_base.webp",
+    "game_path": "ships/pet/pet_base.webp",
+    "size": 639316,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "a330f994046e",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l2.webp",
+    "dst": "ships/pet/pet_l2.webp",
+    "game_path": "ships/pet/pet_l2.webp",
+    "size": 195880,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "566af2903579",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l3.webp",
+    "dst": "ships/pet/pet_l3.webp",
+    "game_path": "ships/pet/pet_l3.webp",
+    "size": 370556,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "a447afa05620",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l4.webp",
+    "dst": "ships/pet/pet_l4.webp",
+    "game_path": "ships/pet/pet_l4.webp",
+    "size": 340116,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "cf2655f285a9",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l5.webp",
+    "dst": "ships/pet/pet_l5.webp",
+    "game_path": "ships/pet/pet_l5.webp",
+    "size": 686280,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "11e9cadfec2b",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l1.json",
+    "dst": "ships/pet/pet_l1.json",
+    "game_path": "ships/pet/pet_l1.json",
+    "size": 10695,
+    "dims": null,
+    "md5": "678af94562f6",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l2.json",
+    "dst": "ships/pet/pet_l2.json",
+    "game_path": "ships/pet/pet_l2.json",
+    "size": 10735,
+    "dims": null,
+    "md5": "1a15bfd2b9bd",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l3.json",
+    "dst": "ships/pet/pet_l3.json",
+    "game_path": "ships/pet/pet_l3.json",
+    "size": 10761,
+    "dims": null,
+    "md5": "389416bf9047",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l4.json",
+    "dst": "ships/pet/pet_l4.json",
+    "game_path": "ships/pet/pet_l4.json",
+    "size": 12091,
+    "dims": null,
+    "md5": "4be4e8921cb7",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l5.json",
+    "dst": "ships/pet/pet_l5.json",
+    "game_path": "ships/pet/pet_l5.json",
+    "size": 12123,
+    "dims": null,
+    "md5": "ff843931fa80",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l5_glow.webp",
+    "dst": "ships/pet/pet_l5_glow.webp",
+    "game_path": "ships/pet/pet_l5_glow.webp",
+    "size": 1006662,
+    "dims": [
+      1548,
+      1376
+    ],
+    "md5": "5df48c74f8e3",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l5_corebloom.png",
+    "dst": "ships/pet/pet_l5_corebloom.png",
+    "game_path": "ships/pet/pet_l5_corebloom.png",
+    "size": 26636,
+    "dims": [
+      256,
+      256
+    ],
+    "md5": "161f7b18fdce",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "copy",
+    "src": "/Users/andersonguillin/Documents/Codex/2026-11-20/p/outputs/pets_recovered/ships/pet/pet_l5_trail.png",
+    "dst": "ships/pet/pet_l5_trail.png",
+    "game_path": "ships/pet/pet_l5_trail.png",
+    "size": 1238,
+    "dims": [
+      32,
+      32
+    ],
+    "md5": "e38e489a966d",
+    "rename": "exact official name \u2014 no rename"
+  },
+  {
+    "action": "derive_shop_icon",
+    "src": "pet_base.webp frame[0,0] 172x172",
+    "dst": "shop/pet/pet.webp (+ preview)",
+    "size": 3876,
+    "dims": [
+      172,
+      172
+    ],
+    "note": "shop icons not in recovered pack; cropped first atlas frame"
+  }
+]

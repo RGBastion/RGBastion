@@ -2,6 +2,9 @@
 /**
  * Pre-release gate: fail if critical 0.9.19+ art is missing from a web root.
  * Usage: node tools/verify_bastion_web_assets.js <webDir> [<webDir>...]
+ *
+ * Pet pixels ARE required (official recovered kit in tools/asset-cache/pets-official).
+ * Provisional donor crops (sball/etc.) remain FORBIDDEN.
  */
 const fs = require("fs");
 const path = require("path");
@@ -19,18 +22,34 @@ const REQUIRED = [
   "ships/alien/ember_mite.webp",
   "ships/alien/cinder_stalker.webp",
   "ships/alien/pyre_warden.webp",
-  "ships/pet/pet_base.webp",
   "ships/pet/pet_l1.json",
   "ships/pet/pet_l5.json",
+  "ships/pet/pet_base.webp",
+  "ships/pet/pet_l2.webp",
+  "ships/pet/pet_l3.webp",
+  "ships/pet/pet_l4.webp",
   "ships/pet/pet_l5.webp",
+  "ships/pet/pet_l5_glow.webp",
   "shop/pet/pet.webp",
+  "shop/pet/preview/pet.webp",
   "shop/gen/shg4.webp",
   "shop/launcher/rl3.webp",
   "equip/gen/shg4.png",
 ];
 
+/** If these exist, they must be real PNG (not JPEG-as-PNG). */
+const REAL_PNG_CHECKS = [
+  "maps/map22/fog_a.png",
+  "maps/map22/fog_b.png",
+  "maps/map23/fog_a.png",
+  "maps/map23/fog_b.png",
+  "maps/pyro/fog_ash_a.png",
+  "maps/pyro_core/core_fog_a.png",
+  "maps/pyro_core/core_fog_b.png",
+];
+
 const PET_FRAME = 172;
-const PET_DIM_CHECKS = [
+const PET_WEBP_PATHS = [
   "ships/pet/pet_base.webp",
   "ships/pet/pet_l2.webp",
   "ships/pet/pet_l3.webp",
@@ -71,6 +90,54 @@ sys.exit(0 if ok else 1)
   return { ok: r.status === 0, dims };
 }
 
+function fileMd5(filePath) {
+  const crypto = require("crypto");
+  return crypto.createHash("md5").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+/**
+ * Reject known provisional donor crops: tiny identical sheets across layers
+ * (sball crop stand-in was ~7568 bytes, identical MD5 for every layer).
+ */
+function findProvisionalPetStandins(webDir) {
+  const bad = [];
+  const present = [];
+  for (const rel of PET_WEBP_PATHS) {
+    const p = path.join(webDir, ...rel.split("/"));
+    if (!fs.existsSync(p) || fs.statSync(p).size < 32) continue;
+    present.push({ rel, path: p, size: fs.statSync(p).size, md5: fileMd5(p) });
+  }
+  if (!present.length) return bad;
+
+  // Identical tiny files across ships/pet *layers* ⇒ donor stand-in.
+  // shop/pet + preview are intentionally the same small 172×172 icon — skip those.
+  const layerRows = present.filter((r) => r.rel.startsWith("ships/pet/"));
+  const byHash = new Map();
+  for (const row of layerRows) {
+    if (!byHash.has(row.md5)) byHash.set(row.md5, []);
+    byHash.get(row.md5).push(row);
+  }
+  for (const [md5, rows] of byHash) {
+    if (rows.length >= 2 && rows.every((r) => r.size < 50_000)) {
+      for (const r of rows) {
+        bad.push(
+          `${r.rel} provisional stand-in (identical ${r.size}B md5=${md5.slice(0, 8)}…) — use tools/asset-cache/pets-official`
+        );
+      }
+    }
+  }
+
+  // Pet webps must be a clean frame_size grid (atlas sheets or 172×172 shop icons).
+  for (const row of present) {
+    if (bad.some((b) => b.startsWith(row.rel))) continue;
+    const { ok, dims } = checkPetDims(row.path, PET_FRAME);
+    if (!ok) {
+      bad.push(`${row.rel} dims ${dims} not multiple of ${PET_FRAME}`);
+    }
+  }
+  return bad;
+}
+
 function verifyOne(webDir) {
   const abs = path.resolve(webDir);
   const missing = [];
@@ -89,26 +156,14 @@ function verifyOne(webDir) {
       bad.push(`${rel} (not a real PNG — likely JPEG-as-PNG)`);
     }
   }
-  for (const rel of PET_DIM_CHECKS) {
+  for (const rel of REAL_PNG_CHECKS) {
     const p = path.join(abs, ...rel.split("/"));
     if (!fs.existsSync(p)) continue;
-    const { ok, dims } = checkPetDims(p, PET_FRAME);
-    if (!ok) {
-      bad.push(`${rel} dims ${dims} not multiple of ${PET_FRAME} (full atlas leak)`);
-    }
+    if (!isRealPng(p)) bad.push(`${rel} (not a real PNG — likely JPEG-as-PNG)`);
   }
-  // Prefer single-frame shop/pet icon (not a multi-cell sheet).
-  const shopPet = path.join(abs, "shop", "pet", "pet.webp");
-  if (fs.existsSync(shopPet)) {
-    const { ok, dims } = checkPetDims(shopPet, PET_FRAME);
-    if (ok && dims !== `${PET_FRAME}x${PET_FRAME}`) {
-      // Multiples of 172 still fail the hangar icon UX if >1 cell.
-      const [w, h] = dims.split("x").map(Number);
-      if (w > PET_FRAME || h > PET_FRAME) {
-        bad.push(`shop/pet/pet.webp dims ${dims} — want single ${PET_FRAME}x${PET_FRAME} icon`);
-      }
-    }
-  }
+  bad.push(...findProvisionalPetStandins(abs));
+
+  // asset-cache presence is checked at package time; here only web root.
   if (missing.length || bad.length) {
     console.error(`FAIL: ${abs}`);
     for (const m of missing) console.error(`  missing: ${m}`);
@@ -134,4 +189,4 @@ if (require.main === module) {
   process.exit(main(process.argv.slice(2)));
 }
 
-module.exports = { verifyOne, REQUIRED };
+module.exports = { verifyOne, REQUIRED, PET_WEBP_PATHS, removeProvisionalPetWebps: null };

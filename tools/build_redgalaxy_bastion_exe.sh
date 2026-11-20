@@ -140,7 +140,9 @@ gate_brand_web() {
     echo "Story web assets missing: $index" >&2
     exit 1
   }
-  # Fail build if 0.9.19 map/NPC/pet/craft art is missing (Windows/Mac parity).
+  # Seed official pet art from tools/asset-cache/pets-official (strip tiny donor crops only).
+  node -e "require('$SCRIPT_DIR/extract_redgalaxy_web.js').ensurePetArtFallbacks(process.argv[1])" "$web_dir"
+  # Fail build if 0.9.19 map/NPC/craft art is missing (Windows/Mac parity).
   if ! node "$SCRIPT_DIR/verify_bastion_web_assets.js" "$web_dir"; then
     echo "Refusing to package $brand — critical web assets missing." >&2
     exit 1
