@@ -1,5 +1,5 @@
 /**
- * RedUniverse Bastion Autopilot — UI translations
+ * RedGalaxy Bastion Autopilot — UI translations
  * Default locale: en
  */
 (function () {
@@ -20,7 +20,7 @@
 
   const STRINGS = {
     en: {
-      "app.title": "RedUniverse Bastion",
+      "app.title": "RedGalaxy Bastion",
       "ui.loading": "Loading...",
       "ui.play": "Play",
       "ui.pause": "Pause",
@@ -142,7 +142,7 @@
       "ui.device_id": "Device ID",
       "ui.device_id_hint": "Send this ID when purchasing a license. Each key works on one device only.",
       "ui.game_update": "Game update",
-      "ui.game_update_hint": "Downloads official RedUniverse web assets. Bastion autopilot/license stay under Bastion control.",
+      "ui.game_update_hint": "Downloads official RedGalaxy web assets. Bastion autopilot/license stay under Bastion control.",
       "ui.game_update_btn": "Update game",
       "ui.game_update_started": "Update started via host…",
       "ui.game_update_unavailable": "In-app update unavailable here — use menu Gioco → Aggiorna gioco (Mac) or rebuild.",
@@ -341,7 +341,7 @@
       "status.npc_requires_attack": "Enable Attack NPC to select NPCs",
     },
     it: {
-      "app.title": "RedUniverse Bastion",
+      "app.title": "RedGalaxy Bastion",
       "ui.loading": "Caricamento...",
       "ui.play": "Play",
       "ui.pause": "Pausa",
@@ -463,7 +463,7 @@
       "ui.device_id": "ID dispositivo",
       "ui.device_id_hint": "Invia questo ID per acquistare la licenza. Ogni chiave vale per un solo dispositivo.",
       "ui.game_update": "Aggiornamento gioco",
-      "ui.game_update_hint": "Scarica gli asset ufficiali RedUniverse. Autopilot e licenza Bastion restano sotto controllo Bastion.",
+      "ui.game_update_hint": "Scarica gli asset ufficiali RedGalaxy. Autopilot e licenza Bastion restano sotto controllo Bastion.",
       "ui.game_update_btn": "Aggiorna gioco",
       "ui.game_update_started": "Aggiornamento avviato dall'host…",
       "ui.game_update_unavailable": "Aggiornamento in-app non disponibile qui — usa menu Gioco → Aggiorna gioco (Mac) oppure ricostruisci.",
@@ -662,7 +662,7 @@
       "status.npc_requires_attack": "Attiva Attacca NPC per selezionare gli NPC",
     },
     es: {
-      "app.title": "RedUniverse Bastion",
+      "app.title": "RedGalaxy Bastion",
       "ui.loading": "Cargando...",
       "ui.play": "Play",
       "ui.pause": "Pausa",
@@ -784,7 +784,7 @@
       "ui.device_id": "ID de dispositivo",
       "ui.device_id_hint": "Envía este ID al comprar. Cada clave funciona en un solo dispositivo.",
       "ui.game_update": "Actualización del juego",
-      "ui.game_update_hint": "Descarga los assets oficiales de RedUniverse. Autopilot y licencia Bastion siguen bajo control Bastion.",
+      "ui.game_update_hint": "Descarga los assets oficiales de RedGalaxy. Autopilot y licencia Bastion siguen bajo control Bastion.",
       "ui.game_update_btn": "Actualizar juego",
       "ui.game_update_started": "Actualización iniciada por el host…",
       "ui.game_update_unavailable": "Actualización in-app no disponible aquí — usa el menú o reconstruye.",
@@ -1000,7 +1000,7 @@
       table["app.title"] = product;
       if (typeof table["ui.game_update_hint"] === "string") {
         table["ui.game_update_hint"] = table["ui.game_update_hint"].replace(
-          /RedUniverse|RedGalaxy/g,
+          /RedGalaxy|RedGalaxy/g,
           base
         );
       }

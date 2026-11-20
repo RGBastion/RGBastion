@@ -744,46 +744,51 @@ function copyMissingAssetTree(outDir, srcRel, dstRel) {
  * npc-pyro-raid). Until RGPAK_AES_KEY works, donor-copy same-faction / same-tier
  * art so backgrounds and NPC sprites resolve instead of 404.
  */
-/**
- * Run tools/synthesize_0919_map_art.py when Python+PIL are available.
- * Falls back to copying tools/asset-cache/{wiki-maps,synthesized-0919} directly.
- */
-function synthesize0919MapArt(outDir) {
-  const scriptPath = path.join(__dirname, "synthesize_0919_map_art.py");
-  const absOut = path.resolve(outDir);
-  if (fs.existsSync(scriptPath)) {
-    try {
-      const { spawnSync } = require("child_process");
-      const r = spawnSync("python3", [scriptPath, absOut], {
-        encoding: "utf8",
-        timeout: 180000,
-      });
-      if (r.status === 0) {
-        if (r.stdout) console.log(String(r.stdout).trim().split("\n").slice(-12).join("\n"));
-        return;
-      }
-      if (r.stderr) console.warn("[synthesize0919]", String(r.stderr).slice(0, 500));
-    } catch (err) {
-      console.warn("[synthesize0919] python failed:", err.message || err);
+/** Resolve tools/asset-cache whether running from repo or Windows/Mac extraResources. */
+function resolveAssetCacheRoot() {
+  const candidates = [
+    path.join(__dirname, "asset-cache"),
+    path.join(__dirname, "tools", "asset-cache"),
+    path.join(__dirname, "..", "asset-cache"),
+    path.join(__dirname, "..", "tools", "asset-cache"),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(path.join(c, "wiki-maps")) || fs.existsSync(path.join(c, "synthesized-0919"))) {
+      return c;
     }
   }
-  // Offline fallback: seed from checked-in asset-cache.
-  const cacheRoot = path.join(__dirname, "asset-cache");
+  return path.join(__dirname, "asset-cache");
+}
+
+/**
+ * Seed 0.9.19 map art from checked-in asset-cache (no Python required).
+ * Prefer this on Windows Aggiorna where python3/PIL are often missing.
+ */
+function seed0919ArtFromAssetCache(outDir, { overwriteWeak = true } = {}) {
+  const absOut = path.resolve(outDir);
+  const cacheRoot = resolveAssetCacheRoot();
   const wiki = path.join(cacheRoot, "wiki-maps");
   const synth = path.join(cacheRoot, "synthesized-0919", "maps");
+  let n = 0;
   const wikiMap = {
     map22: "map22.jpg",
     map23: "map23.jpg",
     map24: "map24.jpg",
     pyro_core: "pyro_core.jpg",
     pyro_2: "pyro_2.jpg",
+    pyro: "pyro.jpg",
   };
   for (const [folder, file] of Object.entries(wikiMap)) {
     const src = path.join(wiki, file);
     const dst = path.join(absOut, "maps", folder, "bg.jpg");
-    if (fs.existsSync(src) && (!fs.existsSync(dst) || fs.statSync(dst).size < 1000)) {
+    if (!fs.existsSync(src)) continue;
+    const weak = !fs.existsSync(dst) || fs.statSync(dst).size < 1000;
+    if (!weak && !overwriteWeak) continue;
+    // Always prefer wiki BG over tiny/donor placeholders when seeding.
+    if (!fs.existsSync(dst) || fs.statSync(dst).size < fs.statSync(src).size * 0.5 || weak) {
       fs.mkdirSync(path.dirname(dst), { recursive: true });
       fs.copyFileSync(src, dst);
+      n += 1;
     }
   }
   if (fs.existsSync(synth)) {
@@ -792,11 +797,66 @@ function synthesize0919MapArt(outDir) {
       for (const name of fs.readdirSync(srcDir)) {
         const from = path.join(srcDir, name);
         const to = path.join(dstDir, name);
-        if (fs.statSync(from).isDirectory()) walk(from, to);
-        else if (!fs.existsSync(to) || fs.statSync(to).size === 0) fs.copyFileSync(from, to);
+        if (fs.statSync(from).isDirectory()) {
+          walk(from, to);
+          continue;
+        }
+        const missing = !fs.existsSync(to) || fs.statSync(to).size === 0;
+        // Replace JPEG-disguised-as-PNG fog leftovers (broken Phaser decode → black maps).
+        let replaceBadPng = false;
+        if (!missing && /\.png$/i.test(name) && fs.existsSync(to)) {
+          try {
+            const fd = Buffer.alloc(8);
+            const fh = fs.openSync(to, "r");
+            fs.readSync(fh, fd, 0, 8, 0);
+            fs.closeSync(fh);
+            const isPng = fd[0] === 0x89 && fd[1] === 0x50 && fd[2] === 0x4e && fd[3] === 0x47;
+            const isJpeg = fd[0] === 0xff && fd[1] === 0xd8;
+            replaceBadPng = isJpeg || !isPng;
+          } catch {
+            replaceBadPng = true;
+          }
+        }
+        if (missing || replaceBadPng) {
+          fs.copyFileSync(from, to);
+          n += 1;
+        }
       }
     };
     walk(synth, path.join(absOut, "maps"));
+  }
+  return n;
+}
+
+/**
+ * Run tools/synthesize_0919_map_art.py when Python+PIL are available.
+ * Always seeds from asset-cache first so Windows Aggiorna stays coherent without Python.
+ */
+function synthesize0919MapArt(outDir) {
+  const absOut = path.resolve(outDir);
+  const seeded = seed0919ArtFromAssetCache(absOut, { overwriteWeak: true });
+  if (seeded > 0) console.log(`[synthesize0919] seeded ${seeded} file(s) from asset-cache`);
+
+  const scriptCandidates = [
+    path.join(__dirname, "synthesize_0919_map_art.py"),
+    path.join(__dirname, "tools", "synthesize_0919_map_art.py"),
+    path.join(__dirname, "..", "synthesize_0919_map_art.py"),
+  ];
+  const scriptPath = scriptCandidates.find((p) => fs.existsSync(p));
+  if (!scriptPath) return;
+  try {
+    const { spawnSync } = require("child_process");
+    const r = spawnSync("python3", [scriptPath, absOut], {
+      encoding: "utf8",
+      timeout: 180000,
+    });
+    if (r.status === 0) {
+      if (r.stdout) console.log(String(r.stdout).trim().split("\n").slice(-12).join("\n"));
+      return;
+    }
+    if (r.stderr) console.warn("[synthesize0919]", String(r.stderr).slice(0, 500));
+  } catch (err) {
+    console.warn("[synthesize0919] python failed:", err.message || err);
   }
 }
 
@@ -814,6 +874,8 @@ function ensureMissing0919ArtFallbacks(outDir) {
   }
 
   // MAP22/23 request fog_a/fog_b; donors ship dust_* instead.
+  // NEVER alias .jpg → .png (Phaser PNG decode fails → black maps). Real PNG
+  // fogs come from asset-cache / synthesize0919MapArt.
   const fogAliases = [
     ["maps/map22/fog_a.png", "maps/map22/dust_ember.png"],
     ["maps/map22/fog_a.png", "maps/map22/dust_crimson.png"],
@@ -823,15 +885,13 @@ function ensureMissing0919ArtFallbacks(outDir) {
     ["maps/map23/fog_a.png", "maps/map23/dust_gold.png"],
     ["maps/map23/fog_b.png", "maps/map23/dust_gold.png"],
     ["maps/map23/fog_b.png", "maps/map23/dust_blue.png"],
-    ["maps/pyro_core/core_fog_a.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro_core/core_fog_b.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro_2/fog_ash_a.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro_2/fog_ash_b.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro/fog_ash_a.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro/fog_ash_b.png", "maps/pyro/bg.jpg"],
-    ["maps/pyro/fog_ash_c.png", "maps/pyro/bg.jpg"],
+    ["maps/pyro_core/core_fog_a.png", "maps/pyro/fog_ash_a.png"],
+    ["maps/pyro_core/core_fog_b.png", "maps/pyro/fog_ash_b.png"],
+    ["maps/pyro_2/fog_ash_a.png", "maps/pyro/fog_ash_a.png"],
+    ["maps/pyro_2/fog_ash_b.png", "maps/pyro/fog_ash_b.png"],
   ];
   for (const [target, source] of fogAliases) {
+    if (/\.png$/i.test(target) && /\.jpe?g$/i.test(source)) continue;
     copyAssetAlias(outDir, source, target);
   }
 
@@ -859,6 +919,250 @@ function ensureMissing0919ArtFallbacks(outDir) {
 
   // Neutral pyro base icon (xY.NEUTRAL) — PE never embeds base/pyro.png.
   copyAssetAlias(outDir, "base/helios.png", "base/pyro.png");
+}
+
+/**
+ * SHG-4 / RL-3 (and previews) are craft-only tiers absent from PE embeds.
+ * Alias from previous tier so Produzione / Negozio stop showing blue [?].
+ */
+function ensureCraftIconFallbacks(outDir) {
+  const pairs = [
+    // shields
+    ["shop/gen/shg3.webp", "shop/gen/shg4.webp"],
+    ["shop/gen/preview/shg3.webp", "shop/gen/preview/shg4.webp"],
+    ["equip/gen/shg3.png", "equip/gen/shg4.png"],
+    ["shop/gen/shg3.png", "shop/gen/shg4.png"],
+    // rocket launchers
+    ["shop/launcher/rl2.webp", "shop/launcher/rl3.webp"],
+    ["shop/launcher/preview/rl2.webp", "shop/launcher/preview/rl3.webp"],
+    ["shop/launcher/rl2.png", "shop/launcher/rl3.png"],
+    ["equip/launcher/rl2.webp", "equip/launcher/rl3.webp"],
+    ["equip/launcher/rl2.png", "equip/launcher/rl3.png"],
+  ];
+  for (const [source, target] of pairs) {
+    copyAssetAlias(outDir, source, target);
+  }
+  // If preview missing but base exists (or vice versa), mirror within folder.
+  for (const stem of ["shg4", "rl3"]) {
+    const bases =
+      stem === "shg4"
+        ? [
+            ["shop/gen", "webp"],
+            ["shop/gen/preview", "webp"],
+            ["equip/gen", "png"],
+          ]
+        : [
+            ["shop/launcher", "webp"],
+            ["shop/launcher/preview", "webp"],
+            ["equip/launcher", "webp"],
+            ["equip/launcher", "png"],
+          ];
+    for (const [dir, ext] of bases) {
+      const file = path.join(outDir, ...dir.split("/"), `${stem}.${ext}`);
+      const previewDir = path.join(outDir, ...dir.split("/"), "preview");
+      const preview = path.join(previewDir, `${stem}.${ext}`);
+      if (fs.existsSync(file) && !fs.existsSync(preview)) {
+        try {
+          fs.mkdirSync(previewDir, { recursive: true });
+          fs.copyFileSync(file, preview);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Return true when a pet webp is missing or not a clean frame_size grid
+ * (Phaser spritesheet requires width/height multiples of frame_size).
+ */
+function petWebpNeedsRewrite(webpPath, frameSize, { exact = false } = {}) {
+  if (!fs.existsSync(webpPath) || fs.statSync(webpPath).size < 64) return true;
+  if (!isValidWebp(webpPath)) return true;
+  const py = `
+from PIL import Image
+import sys
+im = Image.open(sys.argv[1])
+w, h = im.size
+fs = int(sys.argv[2])
+exact = sys.argv[3] == "1"
+if exact:
+    sys.exit(0 if (w == fs and h == fs) else 1)
+sys.exit(0 if (w % fs == 0 and h % fs == 0 and w > 0 and h > 0) else 1)
+`;
+  const r = spawnSync(
+    "python3",
+    ["-c", py, webpPath, String(frameSize), exact ? "1" : "0"],
+    {
+      encoding: "utf8",
+      timeout: 30000,
+    }
+  );
+  // If PIL unavailable, treat oversized donor copies (>200KB single-icon budget) as bad.
+  if (r.error || r.status === null) {
+    return fs.statSync(webpPath).size > 200_000;
+  }
+  return r.status !== 0;
+}
+
+/**
+ * Crop one donor frame and write a single frameSize×frameSize WebP.
+ * Prefer donor JSON frame_size; else pick a size that evenly divides the sheet.
+ */
+function writePetSingleFrameWebp(donorWebp, outWebp, frameSize) {
+  const py = `
+import json, sys
+from pathlib import Path
+from PIL import Image
+
+donor = Path(sys.argv[1])
+out = Path(sys.argv[2])
+target = int(sys.argv[3])
+im = Image.open(donor).convert("RGBA")
+w, h = im.size
+fs = None
+jpath = donor.with_suffix(".json")
+if jpath.is_file():
+    try:
+        raw = json.loads(jpath.read_text(encoding="utf-8"))
+        cand = int(raw.get("frame_size") or 0)
+        if cand > 0 and w >= cand and h >= cand:
+            fs = cand
+    except Exception:
+        pass
+if fs is None:
+    for cand in (256, 196, 192, 172, 160, 128):
+        if w % cand == 0 and h % cand == 0 and w >= cand and h >= cand:
+            fs = cand
+            break
+if fs is None:
+    fs = min(w, h, target)
+fs = min(fs, w, h)
+frame = im.crop((0, 0, fs, fs))
+if frame.size != (target, target):
+    frame = frame.resize((target, target), Image.Resampling.LANCZOS)
+out.parent.mkdir(parents=True, exist_ok=True)
+frame.save(out, "WEBP", quality=90, method=4)
+print(f"{out.name}:{target}x{target}")
+`;
+  const r = spawnSync("python3", ["-c", py, donorWebp, outWebp, String(frameSize)], {
+    encoding: "utf8",
+    timeout: 60000,
+  });
+  if (r.status !== 0) {
+    const err = (r.stderr || r.stdout || r.error || "").toString().slice(0, 400);
+    throw new Error(`pet frame write failed: ${err}`);
+  }
+  return true;
+}
+
+/**
+ * In-world pet sheets live in encrypted pets.rgpak. Until decrypt works, build a
+ * minimal ships/pet kit: real single-frame 172×172 WebPs (NOT a full donor atlas).
+ * Copying sball.webp (1764×1568, frame 196) wholesale with frame_size 172 makes
+ * Phaser render the entire spritesheet grid as one sprite.
+ */
+function ensurePetArtFallbacks(outDir) {
+  const petDir = path.join(outDir, "ships", "pet");
+  const donors = [
+    path.join(outDir, "ships", "system", "sball.webp"),
+    path.join(outDir, "ships", "alien", "ember_mite.webp"),
+    path.join(outDir, "ships", "alien", "alien10.webp"),
+  ];
+  const donorWebp = donors.find((p) => fs.existsSync(p) && fs.statSync(p).size > 1000);
+  if (!donorWebp) {
+    console.warn("[pet] no donor sheet for ships/pet — skip");
+    return;
+  }
+  fs.mkdirSync(petDir, { recursive: true });
+  const layers = ["pet_base", "pet_l2", "pet_l3", "pet_l4", "pet_l5"];
+  const frameSize = 172;
+  let wrote = 0;
+  for (const layer of layers) {
+    const webp = path.join(petDir, `${layer}.webp`);
+    if (!petWebpNeedsRewrite(webp, frameSize)) continue;
+    try {
+      writePetSingleFrameWebp(donorWebp, webp, frameSize);
+      wrote += 1;
+    } catch (err) {
+      console.warn(`[pet] ${layer}:`, err.message || err);
+    }
+  }
+  // Config files are ships/pet/pet_l{level}.json (level 1..5). Always keep
+  // frame_size in sync with the actual sheet (must divide width/height).
+  for (let level = 1; level <= 5; level++) {
+    const cfgPath = path.join(petDir, `pet_l${level}.json`);
+    let needsWrite = true;
+    if (fs.existsSync(cfgPath) && fs.statSync(cfgPath).size > 20) {
+      try {
+        const cur = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        if (Number(cur.frame_size) === frameSize && Array.isArray(cur.layers)) {
+          needsWrite = false;
+        }
+      } catch {
+        needsWrite = true;
+      }
+    }
+    if (!needsWrite) continue;
+    const used = level <= 1 ? ["pet_base"] : layers.slice(0, level);
+    const cfg = {
+      layers: used,
+      frame_size: frameSize,
+      engine_flames: [],
+      core_point: [0, 0],
+    };
+    try {
+      fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n", "utf8");
+    } catch {
+      /* ignore */
+    }
+  }
+  // L5 FX — single-frame glow + tiny PNG so loader does not hang on 404.
+  const glow = path.join(petDir, "pet_l5_glow.webp");
+  const l5 = path.join(petDir, "pet_l5.webp");
+  if (petWebpNeedsRewrite(glow, frameSize) && fs.existsSync(l5)) {
+    try {
+      fs.copyFileSync(l5, glow);
+      wrote += 1;
+    } catch {
+      /* ignore */
+    }
+  }
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64"
+  );
+  for (const name of ["pet_l5_corebloom.png", "pet_l5_trail.png"]) {
+    const dst = path.join(petDir, name);
+    if (fs.existsSync(dst) && fs.statSync(dst).size > 0) continue;
+    try {
+      fs.writeFileSync(dst, tinyPng);
+    } catch {
+      /* ignore */
+    }
+  }
+  // Hangar shop pet must be a SINGLE icon (force overwrite bad full-sheet copies).
+  const shopTargets = [
+    path.join(outDir, "shop", "pet", "pet.webp"),
+    path.join(outDir, "shop", "pet", "preview", "pet.webp"),
+  ];
+  const basePet = path.join(petDir, "pet_base.webp");
+  if (fs.existsSync(basePet) && !petWebpNeedsRewrite(basePet, frameSize, { exact: true })) {
+    for (const dst of shopTargets) {
+      if (!petWebpNeedsRewrite(dst, frameSize, { exact: true })) continue;
+      try {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
+        fs.copyFileSync(basePet, dst);
+        wrote += 1;
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  if (wrote > 0) {
+    console.log(`[pet] wrote ${wrote} provisional 172×172 frame(s) from ${path.basename(donorWebp)}`);
+  }
 }
 
 function ensureRuntimeAssetAliases(outDir) {
@@ -968,14 +1272,20 @@ function ensureRuntimeAssetAliases(outDir) {
     }
   }
 
-  // 0.9.19 map/NPC gaps (encrypted packs) — after base aliases so donors exist.
-  ensureMissing0919ArtFallbacks(outDir);
-  // Stronger 0.9.19 art: wiki BGs, real PNG fogs, pyro_walls.webp atlas, ab_*, named props.
-  // Same-name donor trees alone leave MAP22/Pyro visually black / walls invisible.
+  // Stronger 0.9.19 art FIRST (wiki BGs + real PNG fogs + pyro_walls) so Windows
+  // Aggiorna without Python still gets coherent maps from bundled asset-cache.
   synthesize0919MapArt(outDir);
+  // 0.9.19 map/NPC gaps (encrypted packs) — fill anything still missing from donors.
+  ensureMissing0919ArtFallbacks(outDir);
+  // Re-seed cache after donors so wiki/PNG fogs win over any leftover weak files.
+  seed0919ArtFromAssetCache(outDir, { overwriteWeak: true });
 
   // Mirror hangar equip trees into shop/** when donor shop packs are absent.
   ensureShopArtFallbacks(outDir);
+  // Crafting tier-4 / RL-3 icons (missing from PE + shop packs).
+  ensureCraftIconFallbacks(outDir);
+  // Pet in-world sheets (pets.rgpak encrypted) — provisional until AES key works.
+  ensurePetArtFallbacks(outDir);
 
   // Synthesize missing ship atlases from a sibling sheet (shared frame layout).
   ensureMissingShipAtlases(outDir);
@@ -1560,6 +1870,8 @@ module.exports = {
   EMBED_SPLICE_PERIOD,
   EMBED_SPLICE_MARKER,
   ensureRuntimeAssetAliases,
+  ensurePetArtFallbacks,
+  ensureCraftIconFallbacks,
   synthesize0919MapArt,
   ensureMissing0919ArtFallbacks,
 };

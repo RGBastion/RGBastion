@@ -528,12 +528,10 @@ def default_roots() -> list[Path]:
     home = Path.home()
     roots = [
         home / "Library/Application Support/RedGalaxy Bastion/web",
-        home / "Library/Application Support/RedUniverse Bastion/web",
     ]
     proj = SCRIPT_DIR.parent
-    for brand in ("redgalaxy", "reduniverse"):
-        for kind in ("story", "native"):
-            roots.append(proj / f"artifacts/redgalaxy-{kind}-web-{brand}")
+    for kind in ("story", "native"):
+        roots.append(proj / f"artifacts/redgalaxy-{kind}-web-redgalaxy")
     return [r for r in roots if r.is_dir()]
 
 

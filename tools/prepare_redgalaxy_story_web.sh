@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 STORY_DIR="$SCRIPT_DIR/story"
 PATCHER="$SCRIPT_DIR/apply_bastion_patches.py"
-BRAND="${BASTION_BRAND:-}"
+BRAND="${BASTION_BRAND:-redgalaxy}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -14,66 +14,49 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     *)
-      echo "Unknown arg: $1 (use --brand redgalaxy|reduniverse)" >&2
+      echo "Unknown arg: $1 (use --brand redgalaxy)" >&2
       exit 1
       ;;
   esac
 done
 
-if [[ -z "$BRAND" ]]; then
-  echo "Usage: prepare_redgalaxy_story_web.sh --brand redgalaxy|reduniverse" >&2
-  echo "Or: BASTION_BRAND=redgalaxy $0" >&2
-  exit 1
-fi
-
 case "$BRAND" in
-  redgalaxy|reduniverse) ;;
+  redgalaxy|"")
+    BRAND="redgalaxy"
+    ;;
+  reduniverse|both|all)
+    echo "RedUniverse Bastion prepare is disabled. Use --brand redgalaxy (default)." >&2
+    exit 1
+    ;;
   *)
-    echo "Unknown brand='$BRAND' (use redgalaxy|reduniverse)" >&2
+    echo "Unknown brand='$BRAND' (only redgalaxy is supported)" >&2
     exit 1
     ;;
 esac
 
-# Dual extracts: never share one game payload across brands.
-#   artifacts/redgalaxy-native-web-redgalaxy   ← RedGalaxy client (redgalaxygame.space)
-#   artifacts/redgalaxy-native-web-reduniverse ← RedUniverse client (reduniverse.space)
+# RedGalaxy Bastion only — never mix with RedUniverse game extracts.
+#   artifacts/redgalaxy-native-web-redgalaxy ← RedGalaxy client (redgalaxygame.space)
 SRC_WEB="$PROJECT_DIR/artifacts/redgalaxy-native-web-$BRAND"
 DST_WEB="$PROJECT_DIR/artifacts/redgalaxy-story-web-$BRAND"
 
 [[ -f "$SRC_WEB/index.html" ]] || {
   echo "Missing $BRAND game web assets: $SRC_WEB/index.html" >&2
   echo "Extract the matching installer first, e.g.:" >&2
-  if [[ "$BRAND" == "redgalaxy" ]]; then
-    echo "  BASTION_BRAND=redgalaxy ./bin/redgalaxy-mac-runner extract-web --exe ~/Desktop/RedGalaxy-Setup.exe" >&2
-  else
-    echo "  BASTION_BRAND=reduniverse ./bin/redgalaxy-mac-runner extract-web --exe ~/Desktop/RedUniverse_*_setup.exe" >&2
-  fi
+  echo "  BASTION_BRAND=redgalaxy ./bin/redgalaxy-mac-runner extract-web --exe ~/Desktop/RedGalaxy-Setup.exe" >&2
   exit 1
 }
 
-# Hard gate: refuse to prepare RG Bastion from a RedUniverse game extract (or vice versa).
+# Hard gate: refuse to prepare RG Bastion from a RedUniverse game extract.
 main_js="$(grep -oE 'assets/index-[^\"'\'']+\.js' "$SRC_WEB/index.html" | head -1 || true)"
 if [[ -n "$main_js" && -f "$SRC_WEB/$main_js" ]]; then
-  if [[ "$BRAND" == "redgalaxy" ]]; then
-    if grep -q 'aws-prod-api\.reduniverse\.space\|aws-test-api\.reduniverse\.space' "$SRC_WEB/$main_js"; then
-      echo "Refusing: $SRC_WEB is a RedUniverse game extract (reduniverse.space APIs)." >&2
-      echo "RedGalaxy Bastion requires redgalaxygame.space game assets." >&2
-      exit 1
-    fi
-    if ! grep -q 'redgalaxygame\.space' "$SRC_WEB/$main_js"; then
-      echo "Refusing: $SRC_WEB missing redgalaxygame.space — not a RedGalaxy game extract." >&2
-      exit 1
-    fi
-  else
-    if grep -q 'aws-prod-api\.redgalaxygame\.space\|aws-api\.redgalaxygame\.space' "$SRC_WEB/$main_js"; then
-      echo "Refusing: $SRC_WEB is a RedGalaxy game extract (redgalaxygame.space APIs)." >&2
-      echo "RedUniverse Bastion requires reduniverse.space game assets." >&2
-      exit 1
-    fi
-    if ! grep -q 'reduniverse\.space' "$SRC_WEB/$main_js"; then
-      echo "Refusing: $SRC_WEB missing reduniverse.space — not a RedUniverse game extract." >&2
-      exit 1
-    fi
+  if grep -q 'aws-prod-api\.reduniverse\.space\|aws-test-api\.reduniverse\.space' "$SRC_WEB/$main_js"; then
+    echo "Refusing: $SRC_WEB is a RedUniverse game extract (reduniverse.space APIs)." >&2
+    echo "RedGalaxy Bastion requires redgalaxygame.space game assets." >&2
+    exit 1
+  fi
+  if ! grep -q 'redgalaxygame\.space' "$SRC_WEB/$main_js"; then
+    echo "Refusing: $SRC_WEB missing redgalaxygame.space — not a RedGalaxy game extract." >&2
+    exit 1
   fi
 fi
 

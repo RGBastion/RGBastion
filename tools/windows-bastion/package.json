@@ -1,7 +1,7 @@
 {
   "name": "redgalaxy-bastion",
-  "version": "1.0.14",
-  "description": "RedGalaxy Bastion \u2014 story/autopilot Windows host (Electron + local HTTP)",
+  "version": "1.0.15",
+  "description": "RedGalaxy Bastion — story/autopilot Windows host (Electron + local HTTP)",
   "main": "main.js",
   "author": "RedGalaxy Bastion",
   "license": "UNLICENSED",
@@ -57,6 +57,17 @@
       {
         "from": "../rgpak_unpack.js",
         "to": "rgpak_unpack.js"
+      },
+      {
+        "from": "../asset-cache",
+        "to": "asset-cache",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../synthesize_0919_map_art.py",
+        "to": "synthesize_0919_map_art.py"
       }
     ],
     "asar": true,

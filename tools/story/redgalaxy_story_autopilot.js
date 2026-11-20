@@ -1,5 +1,5 @@
 /**
- * RedUniverse Bastion Autopilot
+ * RedGalaxy Bastion Autopilot
  * - orbita via minimappa (anti-radiazione ai bordi mappa)
  * - attacco/raccolta bonus via gameplay normale
  * - keep-alive in background
@@ -66,8 +66,8 @@
  *   (drop x-3 cross links + runtime harden + portal graph refresh).
  *   (3) Attack NPC list ordered by ascending strength (base→Elite, Commanders
  *   last). (4) Security waits/limits persist via localStorage.
- *   mac77: rebrand to RedUniverse Bastion — same twin game; new App Support,
- *   update URLs (R2), APIs on reduniverse.space. Keep __RG_* internals.
+ *   mac77: rebrand to RedGalaxy Bastion — same twin game; new App Support,
+ *   update URLs (R2), APIs on redgalaxygame.space. Keep __RG_* internals.
  */
 (function () {
   "use strict";
@@ -91,7 +91,7 @@
   const LICENSE_HMAC_SECRET = "2c7c804951626a3a47eb5a1cdf4b871a9d7ef755e658b301";
   const LICENSE_VALIDATE_URL = "";
   /** Keep in sync with tools/bastion_version.txt, Mac Info.plist, Windows package.json. */
-  const BASTION_APP_VERSION = "1.0.10";
+  const BASTION_APP_VERSION = "1.0.15";
   /** Raid portals spawn on own-faction X-1 (HELIOS-1 / NOVA-1 / ORION-1). */
   const RAID_HUB_RING = 1;
 
@@ -1095,11 +1095,11 @@
   ]);
   /** Sector Z admin map id (map_graph name "Sector Z"). */
   const SECTOR_Z_MAP_ID = "JAIL";
-  /** Known RedUniverse HTTP API bases (localStorage rg_selected_server). */
+  /** Known RedGalaxy HTTP API bases (localStorage rg_selected_server). */
   const GAME_API_BY_SERVER = {
-    global: "https://aws-prod-api.reduniverse.space",
-    test: "https://aws-test-api.reduniverse.space",
-    aws: "https://aws-test-api.reduniverse.space",
+    global: "https://aws-prod-api.redgalaxygame.space",
+    test: "https://aws-api.redgalaxygame.space",
+    aws: "https://aws-api.redgalaxygame.space",
   };
 
   let MAP_GRAPH = null;
@@ -21985,7 +21985,7 @@
       <div class="rg-panel-expanded">
       <div class="rg-story-chrome">
       <div class="rg-story-head">
-        <span class="rg-story-head-title" id="rg-story-head-title">RedUniverse Bastion</span>
+        <span class="rg-story-head-title" id="rg-story-head-title">RedGalaxy Bastion</span>
         <div class="rg-story-head-actions">
           <button id="rg-panel-minimize" type="button" class="rg-panel-icon-btn" data-i18n-title="ui.orb.minimize" title="Minimize to orb">◎</button>
         </div>
@@ -22325,7 +22325,7 @@
           </div>
           <div class="rg-group" style="margin-top:10px">
             <div class="rg-group-title" data-i18n="ui.game_update">Game update</div>
-            <div class="rg-story-meta" data-i18n="ui.game_update_hint">Downloads official RedUniverse web assets. Bastion autopilot/license stay under Bastion control.</div>
+            <div class="rg-story-meta" data-i18n="ui.game_update_hint">Downloads official RedGalaxy web assets. Bastion autopilot/license stay under Bastion control.</div>
             <div class="rg-mode-actions" style="margin-top:8px">
               <button id="rg-game-update" type="button" class="auto" data-i18n="ui.game_update_btn">Update game</button>
             </div>

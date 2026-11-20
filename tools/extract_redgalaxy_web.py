@@ -946,6 +946,221 @@ def copy_missing_asset_tree(out_dir: Path, src_rel: str, dst_rel: str) -> int:
     return n
 
 
+def resolve_asset_cache_root() -> Path:
+    here = Path(__file__).resolve().parent
+    for c in (
+        here / "asset-cache",
+        here / "tools" / "asset-cache",
+        here.parent / "asset-cache",
+        here.parent / "tools" / "asset-cache",
+    ):
+        if (c / "wiki-maps").is_dir() or (c / "synthesized-0919").is_dir():
+            return c
+    return here / "asset-cache"
+
+
+def _is_real_png(path: Path) -> bool:
+    try:
+        head = path.read_bytes()[:8]
+    except OSError:
+        return False
+    return head.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def seed_0919_art_from_asset_cache(out_dir: Path) -> int:
+    """Copy wiki BGs + synthesized PNG fogs/walls without requiring Python PIL."""
+    cache = resolve_asset_cache_root()
+    wiki = cache / "wiki-maps"
+    synth = cache / "synthesized-0919" / "maps"
+    n = 0
+    wiki_map = {
+        "map22": "map22.jpg",
+        "map23": "map23.jpg",
+        "map24": "map24.jpg",
+        "pyro_core": "pyro_core.jpg",
+        "pyro_2": "pyro_2.jpg",
+        "pyro": "pyro.jpg",
+    }
+    for folder, file in wiki_map.items():
+        src = wiki / file
+        dst = out_dir / "maps" / folder / "bg.jpg"
+        if not src.is_file():
+            continue
+        weak = (not dst.is_file()) or dst.stat().st_size < 1000
+        if weak or (dst.is_file() and dst.stat().st_size < src.stat().st_size * 0.5):
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            n += 1
+    if synth.is_dir():
+        for src_path in synth.rglob("*"):
+            if not src_path.is_file():
+                continue
+            rel = src_path.relative_to(synth)
+            dst_path = out_dir / "maps" / rel
+            missing = (not dst_path.is_file()) or dst_path.stat().st_size == 0
+            replace_bad = False
+            if (
+                not missing
+                and dst_path.suffix.lower() == ".png"
+                and dst_path.is_file()
+                and not _is_real_png(dst_path)
+            ):
+                replace_bad = True
+            if missing or replace_bad:
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_path, dst_path)
+                n += 1
+    if n:
+        print(f"[synthesize0919] seeded {n} file(s) from asset-cache")
+    return n
+
+
+def ensure_craft_icon_fallbacks(out_dir: Path) -> None:
+    for source, target in (
+        ("shop/gen/shg3.webp", "shop/gen/shg4.webp"),
+        ("shop/gen/preview/shg3.webp", "shop/gen/preview/shg4.webp"),
+        ("equip/gen/shg3.png", "equip/gen/shg4.png"),
+        ("shop/gen/shg3.png", "shop/gen/shg4.png"),
+        ("shop/launcher/rl2.webp", "shop/launcher/rl3.webp"),
+        ("shop/launcher/preview/rl2.webp", "shop/launcher/preview/rl3.webp"),
+        ("shop/launcher/rl2.png", "shop/launcher/rl3.png"),
+        ("equip/launcher/rl2.webp", "equip/launcher/rl3.webp"),
+        ("equip/launcher/rl2.png", "equip/launcher/rl3.png"),
+    ):
+        copy_asset_alias(out_dir, source, target)
+
+
+def _pet_webp_needs_rewrite(webp: Path, frame_size: int, *, exact: bool = False) -> bool:
+    if not webp.is_file() or webp.stat().st_size < 64:
+        return True
+    try:
+        from PIL import Image
+
+        with Image.open(webp) as im:
+            w, h = im.size
+        if exact:
+            return not (w == frame_size and h == frame_size)
+        return not (w % frame_size == 0 and h % frame_size == 0 and w > 0 and h > 0)
+    except Exception:
+        return webp.stat().st_size > 200_000
+
+
+def _write_pet_single_frame_webp(donor: Path, out: Path, frame_size: int) -> None:
+    import json
+
+    from PIL import Image
+
+    with Image.open(donor) as im0:
+        im = im0.convert("RGBA")
+        w, h = im.size
+        fs = None
+        jpath = donor.with_suffix(".json")
+        if jpath.is_file():
+            try:
+                raw = json.loads(jpath.read_text(encoding="utf-8"))
+                cand = int(raw.get("frame_size") or 0)
+                if cand > 0 and w >= cand and h >= cand:
+                    fs = cand
+            except Exception:
+                pass
+        if fs is None:
+            for cand in (256, 196, 192, 172, 160, 128):
+                if w % cand == 0 and h % cand == 0 and w >= cand and h >= cand:
+                    fs = cand
+                    break
+        if fs is None:
+            fs = min(w, h, frame_size)
+        fs = min(fs, w, h)
+        frame = im.crop((0, 0, fs, fs))
+        if frame.size != (frame_size, frame_size):
+            frame = frame.resize((frame_size, frame_size), Image.Resampling.LANCZOS)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        frame.save(out, "WEBP", quality=90, method=4)
+
+
+def ensure_pet_art_fallbacks(out_dir: Path) -> None:
+    """Provisional ships/pet kit: real 172×172 single-frame WebPs (not a full atlas).
+
+    pets.rgpak is still AES-encrypted. Copying donor atlases (e.g. sball 1764×1568,
+    frame 196) wholesale with frame_size 172 makes Phaser render the whole grid.
+    """
+    import json
+
+    pet_dir = out_dir / "ships" / "pet"
+    donors = [
+        out_dir / "ships" / "system" / "sball.webp",
+        out_dir / "ships" / "alien" / "ember_mite.webp",
+        out_dir / "ships" / "alien" / "alien10.webp",
+    ]
+    donor = next((p for p in donors if p.is_file() and p.stat().st_size > 1000), None)
+    if donor is None:
+        print("[pet] no donor sheet for ships/pet — skip")
+        return
+    pet_dir.mkdir(parents=True, exist_ok=True)
+    layers = ["pet_base", "pet_l2", "pet_l3", "pet_l4", "pet_l5"]
+    frame_size = 172
+    wrote = 0
+    for layer in layers:
+        webp = pet_dir / f"{layer}.webp"
+        if not _pet_webp_needs_rewrite(webp, frame_size):
+            continue
+        try:
+            _write_pet_single_frame_webp(donor, webp, frame_size)
+            wrote += 1
+        except Exception as exc:
+            print(f"[pet] {layer}: {exc}")
+
+    for level in range(1, 6):
+        cfg_path = pet_dir / f"pet_l{level}.json"
+        needs_write = True
+        if cfg_path.is_file() and cfg_path.stat().st_size > 20:
+            try:
+                cur = json.loads(cfg_path.read_text(encoding="utf-8"))
+                if int(cur.get("frame_size") or 0) == frame_size and isinstance(
+                    cur.get("layers"), list
+                ):
+                    needs_write = False
+            except Exception:
+                needs_write = True
+        if not needs_write:
+            continue
+        used = ["pet_base"] if level <= 1 else layers[:level]
+        cfg = {
+            "layers": used,
+            "frame_size": frame_size,
+            "engine_flames": [],
+            "core_point": [0, 0],
+        }
+        cfg_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+    glow = pet_dir / "pet_l5_glow.webp"
+    l5 = pet_dir / "pet_l5.webp"
+    if _pet_webp_needs_rewrite(glow, frame_size) and l5.is_file():
+        shutil.copy2(l5, glow)
+        wrote += 1
+    tiny_png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+        "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+    )
+    for name in ("pet_l5_corebloom.png", "pet_l5_trail.png"):
+        dst = pet_dir / name
+        if not dst.is_file() or dst.stat().st_size == 0:
+            dst.write_bytes(tiny_png)
+
+    # Hangar shop pet must be a single icon — force overwrite bad full-sheet copies.
+    base_pet = pet_dir / "pet_base.webp"
+    if base_pet.is_file() and not _pet_webp_needs_rewrite(base_pet, frame_size, exact=True):
+        for rel in ("shop/pet/pet.webp", "shop/pet/preview/pet.webp"):
+            dst = out_dir.joinpath(*rel.split("/"))
+            if not _pet_webp_needs_rewrite(dst, frame_size, exact=True):
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(base_pet, dst)
+            wrote += 1
+    if wrote:
+        print(f"[pet] wrote {wrote} provisional 172×172 frame(s) from {donor.name}")
+
+
 def ensure_missing_0919_art_fallbacks(out_dir: Path) -> None:
     """Donor-fill 0.9.19 map/NPC art until encrypted .rgpak packs decrypt."""
     for src, dst in (
@@ -966,13 +1181,11 @@ def ensure_missing_0919_art_fallbacks(out_dir: Path) -> None:
         ("maps/map23/fog_a.png", "maps/map23/dust_gold.png"),
         ("maps/map23/fog_b.png", "maps/map23/dust_gold.png"),
         ("maps/map23/fog_b.png", "maps/map23/dust_blue.png"),
-        ("maps/pyro_core/core_fog_a.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro_core/core_fog_b.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro_2/fog_ash_a.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro_2/fog_ash_b.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro/fog_ash_a.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro/fog_ash_b.png", "maps/pyro/bg.jpg"),
-        ("maps/pyro/fog_ash_c.png", "maps/pyro/bg.jpg"),
+        # Never alias JPEG → PNG (Phaser decode fails → black maps).
+        ("maps/pyro_core/core_fog_a.png", "maps/pyro/fog_ash_a.png"),
+        ("maps/pyro_core/core_fog_b.png", "maps/pyro/fog_ash_b.png"),
+        ("maps/pyro_2/fog_ash_a.png", "maps/pyro/fog_ash_a.png"),
+        ("maps/pyro_2/fog_ash_b.png", "maps/pyro/fog_ash_b.png"),
         ("ships/alien/ember_mite.webp", "ships/alien/alien10.webp"),
         ("ships/alien/ember_mite.json", "ships/alien/alien10.json"),
         ("ships/alien/ember_mite.atlas", "ships/alien/alien10.atlas"),
@@ -1091,8 +1304,10 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
     for _ in range(2):
         for target, source in aliases.items():
             copy_asset_alias(out_dir, source, target)
+    # Seed asset-cache first (Windows Aggiorna often has no usable Python/PIL).
+    seed_0919_art_from_asset_cache(out_dir)
     ensure_missing_0919_art_fallbacks(out_dir)
-    # Stronger 0.9.19 art (wiki BGs / pyro_walls.webp / real PNG fogs / named props).
+    seed_0919_art_from_asset_cache(out_dir)
     try:
         import subprocess
 
@@ -1106,6 +1321,8 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"[synthesize0919] skipped: {exc}")
     ensure_shop_art_fallbacks(out_dir)
+    ensure_craft_icon_fallbacks(out_dir)
+    ensure_pet_art_fallbacks(out_dir)
     ensure_missing_ship_atlases(out_dir)
     fix_ship_atlas_page_names(out_dir)
 

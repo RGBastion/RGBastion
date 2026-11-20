@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Build RedGalaxy / RedUniverse Bastion for Windows (.zip / .exe) via Electron.
+# Build RedGalaxy Bastion for Windows (.zip / .exe) via Electron.
 # Run from any cwd; designed for macOS and Linux hosts.
 #
 # Usage:
-#   ./tools/build_redgalaxy_bastion_exe.sh                 # both brands, zip+portable
+#   ./tools/build_redgalaxy_bastion_exe.sh                 # RedGalaxy only, zip+portable
 #   BASTION_BRAND=redgalaxy ./tools/build_redgalaxy_bastion_exe.sh
-#   BASTION_BRAND=reduniverse ./tools/build_redgalaxy_bastion_exe.sh portable
 #   ./tools/build_redgalaxy_bastion_exe.sh zip|portable|nsis|dir|all
+#
+# RedUniverse Bastion is obsolete in this workflow and is refused.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -16,7 +17,7 @@ OUT_DIR="$PROJECT_DIR/dist/windows-bastion"
 DIST_DIR="$PROJECT_DIR/dist"
 
 TARGET="${1:-auto}" # auto | zip | portable | nsis | dir | all
-BASTION_BRAND="${BASTION_BRAND:-both}"
+BASTION_BRAND="${BASTION_BRAND:-redgalaxy}"
 BASTION_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/bastion_version.txt" 2>/dev/null || true)"
 BASTION_VERSION="${BASTION_VERSION:-1.0.1}"
 
@@ -80,15 +81,12 @@ configure_brand_package_json() {
       unpack_dir="RedGalaxyBastionPortable"
       shortcut="RedGalaxy Bastion"
       ;;
-    reduniverse)
-      product_name="RedUniverse Bastion"
-      app_id="local.reduniverse.bastion"
-      dmg_slug="RedUniverse-Bastion"
-      unpack_dir="RedUniverseBastionPortable"
-      shortcut="RedUniverse Bastion"
+    reduniverse|both|all)
+      echo "RedUniverse Bastion builds are disabled. Use BASTION_BRAND=redgalaxy (default)." >&2
+      exit 1
       ;;
     *)
-      echo "Unknown brand='$brand'" >&2
+      echo "Unknown brand='$brand' (only redgalaxy is supported)" >&2
       exit 1
       ;;
   esac
@@ -106,7 +104,7 @@ const slug = process.argv[5];
 const unpackDir = process.argv[6];
 const shortcut = process.argv[7];
 const storyWeb = process.argv[8];
-j.name = brand === "redgalaxy" ? "redgalaxy-bastion" : "reduniverse-bastion";
+j.name = "redgalaxy-bastion";
 j.version = version;
 j.description = productName + " — story/autopilot Windows host (Electron + local HTTP)";
 j.author = productName;
@@ -142,48 +140,38 @@ gate_brand_web() {
     echo "Story web assets missing: $index" >&2
     exit 1
   }
+  # Fail build if 0.9.19 map/NPC/pet/craft art is missing (Windows/Mac parity).
+  if ! node "$SCRIPT_DIR/verify_bastion_web_assets.js" "$web_dir"; then
+    echo "Refusing to package $brand — critical web assets missing." >&2
+    exit 1
+  fi
   for needle in '__RG_STORY_MODE__' '/story/i18n.js' '/story/autopilot.js'; do
     if ! grep -q "$needle" "$index"; then
       echo "ERROR: $needle missing from $index" >&2
       exit 1
     fi
   done
-  if [[ "$brand" == "redgalaxy" ]]; then
-    if rg -q 'RedUniverse Bastion' "$web_dir/story/i18n.js" "$web_dir/story/autopilot.js" 2>/dev/null; then
-      echo "Refusing to package RedGalaxy Bastion with RedUniverse Bastion UI strings." >&2
-      exit 1
-    fi
-    if ! rg -q '"app.title": "RedGalaxy Bastion"' "$web_dir/story/i18n.js"; then
-      echo "RedGalaxy story i18n missing RedGalaxy Bastion app.title" >&2
-      exit 1
-    fi
-    local main_js
-    main_js="$(rg -o 'assets/index-[^\"'\'']+\.js' "$index" | head -1 || true)"
-    if [[ -z "$main_js" || ! -f "$web_dir/$main_js" ]]; then
-      echo "RedGalaxy Bastion missing game entry JS" >&2
-      exit 1
-    fi
-    if rg -q 'aws-prod-api\.reduniverse\.space|aws-test-api\.reduniverse\.space' "$web_dir/$main_js"; then
-      echo "Refusing to package RedGalaxy Bastion with RedUniverse game APIs." >&2
-      exit 1
-    fi
-    if ! rg -q 'redgalaxygame\.space' "$web_dir/$main_js"; then
-      echo "Refusing to package RedGalaxy Bastion without redgalaxygame.space game APIs." >&2
-      exit 1
-    fi
-  else
-    local main_js
-    main_js="$(rg -o 'assets/index-[^\"'\'']+\.js' "$index" | head -1 || true)"
-    if [[ -n "$main_js" && -f "$web_dir/$main_js" ]]; then
-      if rg -q 'aws-prod-api\.redgalaxygame\.space|aws-api\.redgalaxygame\.space' "$web_dir/$main_js"; then
-        echo "Refusing to package RedUniverse Bastion with RedGalaxy game APIs." >&2
-        exit 1
-      fi
-      if ! rg -q 'reduniverse\.space' "$web_dir/$main_js"; then
-        echo "Refusing to package RedUniverse Bastion without reduniverse.space game APIs." >&2
-        exit 1
-      fi
-    fi
+  if rg -q 'RedUniverse Bastion' "$web_dir/story/i18n.js" "$web_dir/story/autopilot.js" 2>/dev/null; then
+    echo "Refusing to package RedGalaxy Bastion with RedUniverse Bastion UI strings." >&2
+    exit 1
+  fi
+  if ! rg -q '"app.title": "RedGalaxy Bastion"' "$web_dir/story/i18n.js"; then
+    echo "RedGalaxy story i18n missing RedGalaxy Bastion app.title" >&2
+    exit 1
+  fi
+  local main_js
+  main_js="$(rg -o 'assets/index-[^\"'\'']+\.js' "$index" | head -1 || true)"
+  if [[ -z "$main_js" || ! -f "$web_dir/$main_js" ]]; then
+    echo "RedGalaxy Bastion missing game entry JS" >&2
+    exit 1
+  fi
+  if rg -q 'aws-prod-api\.reduniverse\.space|aws-test-api\.reduniverse\.space' "$web_dir/$main_js"; then
+    echo "Refusing to package RedGalaxy Bastion with RedUniverse game APIs." >&2
+    exit 1
+  fi
+  if ! rg -q 'redgalaxygame\.space' "$web_dir/$main_js"; then
+    echo "Refusing to package RedGalaxy Bastion without redgalaxygame.space game APIs." >&2
+    exit 1
   fi
 }
 
@@ -207,11 +195,7 @@ pick_targets() {
 
 publish_brand_artifacts() {
   local brand="$1"
-  local slug
-  case "$brand" in
-    redgalaxy) slug="RedGalaxy-Bastion" ;;
-    reduniverse) slug="RedUniverse-Bastion" ;;
-  esac
+  local slug="RedGalaxy-Bastion"
 
   echo "==> Publishing $slug convenience copies under dist/"
   mkdir -p "$DIST_DIR"
@@ -231,7 +215,7 @@ publish_brand_artifacts() {
   shopt -u nullglob
 
   cat > "$DIST_DIR/${slug}-Windows-README.txt" <<EOF
-${slug//-/ } — Windows
+RedGalaxy Bastion — Windows
 ===========================
 
 Files:
@@ -250,7 +234,7 @@ Usage:
 
 Game updates (no Bastion rebuild):
   - Launch check + Security tab "Update game"
-  - Official assets → %APPDATA%\\${brand}-bastion\\game-web\\web
+  - Official assets → %APPDATA%\\redgalaxy-bastion\\game-web\\web
   - Autopilot/license re-applied from Bastion bundle
 
 Version: ${BASTION_VERSION}
@@ -262,11 +246,12 @@ EOF
 build_one_brand() {
   local brand="$1"
   local story_web="$PROJECT_DIR/artifacts/redgalaxy-story-web-$brand"
-  local slug
-  case "$brand" in
-    redgalaxy) slug="RedGalaxy-Bastion" ;;
-    reduniverse) slug="RedUniverse-Bastion" ;;
-  esac
+  local slug="RedGalaxy-Bastion"
+
+  [[ "$brand" == "redgalaxy" ]] || {
+    echo "RedUniverse Bastion builds are disabled. Use BASTION_BRAND=redgalaxy (default)." >&2
+    exit 1
+  }
 
   echo
   echo "======== Building Windows Bastion brand=$brand version=$BASTION_VERSION ========"
@@ -314,21 +299,21 @@ build_one_brand() {
 }
 
 case "$BASTION_BRAND" in
-  both)
+  redgalaxy|"")
     build_one_brand redgalaxy
-    build_one_brand reduniverse
     ;;
-  redgalaxy|reduniverse)
-    build_one_brand "$BASTION_BRAND"
+  reduniverse|both|all)
+    echo "RedUniverse Bastion builds are disabled. Default is RedGalaxy Bastion only." >&2
+    exit 1
     ;;
   *)
-    echo "Unknown BASTION_BRAND='$BASTION_BRAND' (use redgalaxy|reduniverse|both)" >&2
+    echo "Unknown BASTION_BRAND='$BASTION_BRAND' (only redgalaxy is supported)" >&2
     exit 1
     ;;
 esac
 
 echo
-echo "Done. Artifacts:"
-ls -lh "$OUT_DIR" 2>/dev/null | sed -n '1,60p' || true
+echo "Done. RedGalaxy Bastion artifacts:"
+ls -lh "$OUT_DIR"/RedGalaxy-Bastion* 2>/dev/null | sed -n '1,60p' || true
 echo
-ls -lh "$DIST_DIR"/RedGalaxy-Bastion* "$DIST_DIR"/RedUniverse-Bastion* 2>/dev/null || true
+ls -lh "$DIST_DIR"/RedGalaxy-Bastion* 2>/dev/null || true

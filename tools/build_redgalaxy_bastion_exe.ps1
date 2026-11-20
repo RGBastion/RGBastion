@@ -1,4 +1,4 @@
-# Build RedUniverse Bastion for Windows (.exe / .zip) via Electron.
+# Build RedGalaxy Bastion for Windows (.exe / .zip) via Electron.
 # Prefer Git Bash or WSL so prepare_redgalaxy_story_web.sh can run.
 param(
   [ValidateSet("auto", "zip", "portable", "nsis", "dir", "all")]
@@ -13,6 +13,7 @@ $WinDir = Join-Path $ProjectDir "tools\windows-bastion"
 $OutDir = Join-Path $ProjectDir "dist\windows-bastion"
 $DistDir = Join-Path $ProjectDir "dist"
 $PrepareSh = Join-Path $ScriptDir "prepare_redgalaxy_story_web.sh"
+$env:BASTION_BRAND = "redgalaxy"
 
 function Need-Command([string]$Name) {
   if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
@@ -23,24 +24,27 @@ function Need-Command([string]$Name) {
 Need-Command node
 Need-Command npm
 
-Write-Host "==> Preparing story web assets..."
+Write-Host "==> Preparing RedGalaxy Bastion story web assets..."
 $bash = Get-Command bash -ErrorAction SilentlyContinue
 if ($bash) {
-  & bash $PrepareSh
+  & bash $PrepareSh --brand redgalaxy
 } elseif (Get-Command wsl -ErrorAction SilentlyContinue) {
   $wslPath = (& wsl wslpath -a $PrepareSh).Trim()
-  & wsl bash $wslPath
+  & wsl bash $wslPath --brand redgalaxy
 } else {
   throw "Need Git Bash or WSL to run prepare_redgalaxy_story_web.sh"
 }
 
-$Index = Join-Path $ProjectDir "artifacts\redgalaxy-story-web\index.html"
+$Index = Join-Path $ProjectDir "artifacts\redgalaxy-story-web-redgalaxy\index.html"
 if (-not (Test-Path $Index)) { throw "Story web assets missing after prepare." }
 $IndexText = Get-Content -Raw $Index
 foreach ($needle in @("__RG_STORY_MODE__", "/story/i18n.js", "/story/autopilot.js")) {
   if ($IndexText -notlike "*$needle*") {
     throw "ERROR: $needle missing from index.html"
   }
+}
+if ($IndexText -like "*RedUniverse Bastion*") {
+  throw "Refusing to package RedGalaxy Bastion with RedUniverse Bastion UI strings."
 }
 
 Write-Host "==> Installing Electron build deps..."
@@ -68,17 +72,17 @@ finally {
 
 Write-Host "==> Publishing convenience copies under dist/"
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
-Get-ChildItem -Path $OutDir -Filter "RedUniverse-Bastion*" -File -ErrorAction SilentlyContinue | ForEach-Object {
+Get-ChildItem -Path $OutDir -Filter "RedGalaxy-Bastion*" -File -ErrorAction SilentlyContinue | ForEach-Object {
   Copy-Item -Force $_.FullName (Join-Path $DistDir $_.Name)
   Write-Host "Copied: $(Join-Path $DistDir $_.Name)"
 }
 
-$portable = Join-Path $OutDir "RedUniverse-Bastion.exe"
+$portable = Join-Path $OutDir "RedGalaxy-Bastion.exe"
 if (Test-Path $portable) {
-  Copy-Item -Force $portable (Join-Path $DistDir "RedUniverse-Bastion.exe")
-  Write-Host "Copied: $(Join-Path $DistDir 'RedUniverse-Bastion.exe')"
+  Copy-Item -Force $portable (Join-Path $DistDir "RedGalaxy-Bastion.exe")
+  Write-Host "Copied: $(Join-Path $DistDir 'RedGalaxy-Bastion.exe')"
 }
 
 Write-Host ""
-Write-Host "Done. Artifacts in $OutDir and $DistDir"
-Get-ChildItem $OutDir -ErrorAction SilentlyContinue | Format-Table Name, Length
+Write-Host "Done. RedGalaxy Bastion artifacts in $OutDir and $DistDir"
+Get-ChildItem $OutDir -Filter "RedGalaxy-Bastion*" -ErrorAction SilentlyContinue | Format-Table Name, Length

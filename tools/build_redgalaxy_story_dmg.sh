@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Build RedGalaxy Bastion and/or RedUniverse Bastion Mac DMGs.
+# Build RedGalaxy Bastion Mac DMG only.
 #
 # Usage:
-#   ./tools/build_redgalaxy_story_dmg.sh                 # both brands
+#   ./tools/build_redgalaxy_story_dmg.sh
 #   BASTION_BRAND=redgalaxy ./tools/build_redgalaxy_story_dmg.sh
-#   BASTION_BRAND=reduniverse ./tools/build_redgalaxy_story_dmg.sh
-#   BASTION_BRAND=both ./tools/build_redgalaxy_story_dmg.sh
+#
+# RedUniverse Bastion is obsolete in this workflow and is refused.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 BASTION_VERSION="$(tr -d '[:space:]' < "$SCRIPT_DIR/bastion_version.txt" 2>/dev/null || true)"
 BASTION_VERSION="${BASTION_VERSION:-1.0.5}"
-BASTION_BRAND="${BASTION_BRAND:-both}"
+BASTION_BRAND="${BASTION_BRAND:-redgalaxy}"
 
 DIST_DIR="$PROJECT_DIR/dist"
 ICON_ICNS="$PROJECT_DIR/dist/build/RedGalaxy.icns"
@@ -43,16 +43,12 @@ build_one_brand() {
       host_exec_name="redgalaxy-bastion-host"
       server_exec_name="redgalaxy-bastion-server"
       ;;
-    reduniverse)
-      product_name="RedUniverse Bastion"
-      bundle_id="local.reduniverse.bastion"
-      dmg_slug="RedUniverse-Bastion"
-      brand_define="BASTION_BRAND_REDUNIVERSE"
-      host_exec_name="reduniverse-bastion-host"
-      server_exec_name="reduniverse-bastion-server"
+    reduniverse|both|all)
+      echo "RedUniverse Bastion builds are disabled. Use BASTION_BRAND=redgalaxy (default)." >&2
+      exit 1
       ;;
     *)
-      echo "Unknown BASTION_BRAND='$brand' (use redgalaxy|reduniverse|both)" >&2
+      echo "Unknown BASTION_BRAND='$brand' (only redgalaxy is supported)" >&2
       exit 1
       ;;
   esac
@@ -73,6 +69,10 @@ build_one_brand() {
     echo "Missing Home hangar ship preview: $web_dir/shop/ship/preview/ship10.webp" >&2
     exit 1
   }
+  if ! node "$SCRIPT_DIR/verify_bastion_web_assets.js" "$web_dir"; then
+    echo "Refusing to package $brand DMG — critical 0.9.19 web assets missing." >&2
+    exit 1
+  fi
   if [[ "$brand" == "redgalaxy" ]]; then
     if rg -q "RedUniverse Bastion" "$web_dir/story/i18n.js" "$web_dir/story/autopilot.js"; then
       echo "Refusing to package RedGalaxy Bastion with RedUniverse Bastion UI strings." >&2
@@ -97,20 +97,6 @@ build_one_brand() {
     fi
     if rg -q 'reduniverse\.space' "$web_dir/story/autopilot.js"; then
       echo "Refusing: RedGalaxy story/autopilot.js still references reduniverse.space" >&2
-      exit 1
-    fi
-  elif [[ "$brand" == "reduniverse" ]]; then
-    main_js="$(rg -o 'assets/index-[^\"'\'']+\.js' "$web_dir/index.html" | head -1 || true)"
-    if [[ -z "$main_js" || ! -f "$web_dir/$main_js" ]]; then
-      echo "RedUniverse Bastion missing game entry JS" >&2
-      exit 1
-    fi
-    if rg -q 'aws-prod-api\.redgalaxygame\.space|aws-api\.redgalaxygame\.space' "$web_dir/$main_js"; then
-      echo "Refusing to package RedUniverse Bastion with RedGalaxy game APIs (redgalaxygame.space)." >&2
-      exit 1
-    fi
-    if ! rg -q 'reduniverse\.space' "$web_dir/$main_js"; then
-      echo "Refusing to package RedUniverse Bastion without reduniverse.space game APIs." >&2
       exit 1
     fi
   fi
@@ -180,6 +166,10 @@ build_one_brand() {
   cp "$PROJECT_DIR/tools/apply_bastion_patches.py" "$app_dir/Contents/Resources/apply_bastion_patches.py"
   cp "$PROJECT_DIR/tools/apply_bastion_patches.js" "$app_dir/Contents/Resources/apply_bastion_patches.js"
   cp "$PROJECT_DIR/tools/rgpak_unpack.js" "$app_dir/Contents/Resources/rgpak_unpack.js"
+  # Offline 0.9.19 map art for Aggiorna (no Python/PIL required).
+  cp "$PROJECT_DIR/tools/synthesize_0919_map_art.py" "$app_dir/Contents/Resources/synthesize_0919_map_art.py"
+  rm -rf "$app_dir/Contents/Resources/asset-cache"
+  cp -R "$PROJECT_DIR/tools/asset-cache" "$app_dir/Contents/Resources/asset-cache"
   chmod +x "$app_dir/Contents/Resources/redgalaxy-mac-runner"
   chmod +x "$app_dir/Contents/Resources/apply_bastion_patches.py"
   chmod +x "$SCRIPT_DIR/bundle_brotli_runtime.sh"
@@ -292,17 +282,17 @@ APPLESCRIPT
 }
 
 case "$BASTION_BRAND" in
-  both|all|"")
+  redgalaxy|"")
     build_one_brand redgalaxy
-    build_one_brand reduniverse
     ;;
-  redgalaxy|reduniverse)
-    build_one_brand "$BASTION_BRAND"
+  reduniverse|both|all)
+    echo "RedUniverse Bastion builds are disabled. Default is RedGalaxy Bastion only." >&2
+    exit 1
     ;;
   *)
-    echo "Unknown BASTION_BRAND='$BASTION_BRAND' (use redgalaxy|reduniverse|both)" >&2
+    echo "Unknown BASTION_BRAND='$BASTION_BRAND' (only redgalaxy is supported)" >&2
     exit 1
     ;;
 esac
 
-echo "Bastion DMG build complete."
+echo "Bastion DMG build complete (RedGalaxy Bastion only)."

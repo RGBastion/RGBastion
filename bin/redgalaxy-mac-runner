@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="RedUniverse Mac Runner"
+APP_NAME="RedGalaxy Mac Runner"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BUNDLE_MODE=0
 BASTION_MODE=0
@@ -24,8 +24,8 @@ if [[ -z "$PRODUCT_BRAND" ]]; then
   elif [[ "$SCRIPT_DIR" == *"/RedUniverse Bastion.app/"* ]] || [[ "$SCRIPT_DIR" == *"/RedUniverse.app/"* ]] || [[ "$SCRIPT_DIR" == *"/RedUniverse Native.app/"* ]] || [[ "${REDUNIVERSE_BASTION:-0}" == "1" ]]; then
     PRODUCT_BRAND="reduniverse"
   else
-    # Dev/tree default follows the twin-client installer currently on Desktop.
-    PRODUCT_BRAND="reduniverse"
+    # This project workflow is RedGalaxy only (Native + Bastion).
+    PRODUCT_BRAND="redgalaxy"
   fi
 fi
 
@@ -47,21 +47,11 @@ case "$PRODUCT_BRAND" in
     BRAND_SETUP_GLOBS=('RedGalaxy*setup*.exe' 'redgalaxy*setup*.exe' 'redgalaxy-game*.exe')
     ;;
   reduniverse|ru)
-    PRODUCT_BRAND="reduniverse"
-    PRODUCT_BASE_NAME="RedUniverse"
-    PRODUCT_NATIVE_NAME="RedUniverse"
-    PRODUCT_BASTION_NAME="RedUniverse Bastion"
-    DEFAULT_EXE_CANDIDATES=(
-      "$HOME/Desktop/RedUniverse_1.0.12_x64-setup.exe"
-      "$HOME/Desktop/RedUniverse-Setup.exe"
-    )
-    BRAND_OFFICIAL_SITE="https://reduniverse.space"
-    BRAND_UPDATE_MANIFEST_URL="https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/updates/latest.json"
-    BRAND_UPDATE_INSTALLER_URL="https://pub-792ad9615ccc4d05840f6f77a6fb33b9.r2.dev/RedUniverse_1.0.12_x64-setup.exe"
-    BRAND_SETUP_GLOBS=('RedUniverse*setup*.exe' 'reduniverse*setup*.exe')
+    echo "PRODUCT_BRAND=reduniverse is obsolete in this workflow. Use redgalaxy (RedGalaxy / Native / Bastion)." >&2
+    exit 1
     ;;
   *)
-    echo "Unknown PRODUCT_BRAND='$PRODUCT_BRAND' (use redgalaxy|reduniverse)" >&2
+    echo "Unknown PRODUCT_BRAND='$PRODUCT_BRAND' (only redgalaxy is supported)" >&2
     exit 1
     ;;
 esac

@@ -2,16 +2,16 @@
 """Apply Bastion/story overlays and game hooks onto extracted RedGalaxy web assets.
 
 Usage:
-  apply_bastion_patches.py --game-src DIR --story-src DIR --out DIR [--brand redgalaxy|reduniverse]
-  apply_bastion_patches.py --in-place DIR --story-src DIR [--brand redgalaxy|reduniverse]
+  apply_bastion_patches.py --game-src DIR --story-src DIR --out DIR [--brand redgalaxy]
+  apply_bastion_patches.py --in-place DIR --story-src DIR [--brand redgalaxy]
 
 Story sources expected under --story-src:
   i18n.js | redgalaxy_story_autopilot.js | map_graph.json | scripts/*.json
   OR already-normalized: i18n.js | autopilot.js | map_graph.json | scripts/*.json
 
-Canonical story sources use RedUniverse display strings. Pass --brand redgalaxy to
-rewrite product UI strings to RedGalaxy before writing the overlay (never ships
-RedUniverse Bastion chrome inside a RedGalaxy Bastion app).
+This workflow ships RedGalaxy Bastion only. Story sources are authored as RedGalaxy.
+RedUniverse brand builds are refused. Any leftover RU chrome/API strings are rewritten
+as a safety net and then leak-checked.
 """
 from __future__ import annotations
 
@@ -23,26 +23,22 @@ import sys
 from pathlib import Path
 
 BASTION_STAMP_NAME = ".bastion-stamp"
-VALID_BRANDS = ("redgalaxy", "reduniverse")
+VALID_BRANDS = ("redgalaxy",)
 
-# Canonical story tree is authored as RedUniverse; rewrite for the twin brand.
+# Safety net: story tree is authored as RedGalaxy; scrub accidental RU leftovers.
 _BRANDIFY_PHRASES = (
     ("RedUniverse Bastion", "RedGalaxy Bastion"),
     ("official RedUniverse web assets", "official RedGalaxy web assets"),
     ("ufficiali RedUniverse", "ufficiali RedGalaxy"),
     ("oficiales de RedUniverse", "oficiales de RedGalaxy"),
-    # Story helper API hosts must follow the game brand (not UI-only rename).
     ("aws-prod-api.reduniverse.space", "aws-prod-api.redgalaxygame.space"),
     ("aws-test-api.reduniverse.space", "aws-api.redgalaxygame.space"),
     ("ticket.reduniverse.space", "www.redgalaxygame.space"),
-    # Any remaining domain references (comments, docs) — never leave RU hosts in RG.
     ("reduniverse.space", "redgalaxygame.space"),
 )
-# Remaining product-name tokens that are not domains (reduniverse.space etc.).
 _BRANDIFY_NAME_RE = re.compile(r"RedUniverse(?!\.(?:space|com|io|net|org)\b)")
 
-# Game payload identity — package name is still "redgalaxy-client@" for both;
-# distinguish by live API hosts embedded in the Vite entry chunk.
+# Game payload identity — distinguish by live API hosts in the Vite entry chunk.
 _RG_API_MARKERS = ("aws-prod-api.redgalaxygame.space", "aws-api.redgalaxygame.space")
 _RU_API_MARKERS = ("aws-prod-api.reduniverse.space", "aws-test-api.reduniverse.space")
 
@@ -67,34 +63,22 @@ def _main_asset_text(root: Path) -> str:
 
 
 def assert_game_matches_brand(root: Path, brand: str) -> None:
-    """Refuse to ship the twin game under the wrong Bastion brand."""
+    """Refuse to ship a non-RedGalaxy game under Bastion."""
+    if brand != "redgalaxy":
+        die(f"Only brand 'redgalaxy' is supported (got '{brand}')")
     js = _main_asset_text(root)
     if not js:
         die(f"Cannot verify game brand for {root}: missing index.html entry asset")
-    if brand == "redgalaxy":
-        if any(m in js for m in _RU_API_MARKERS):
-            die(
-                f"Refusing RedGalaxy Bastion build: game web at {root} talks to "
-                "reduniverse.space APIs. Extract RedGalaxy-Setup.exe / redgalaxy-client.exe instead."
-            )
-        if not any(m in js for m in _RG_API_MARKERS):
-            die(
-                f"Refusing RedGalaxy Bastion build: game web at {root} has no "
-                "redgalaxygame.space API hosts."
-            )
-    elif brand == "reduniverse":
-        if any(m in js for m in _RG_API_MARKERS):
-            die(
-                f"Refusing RedUniverse Bastion build: game web at {root} talks to "
-                "redgalaxygame.space APIs. Extract RedUniverse setup / reduniverse-pc-client.exe instead."
-            )
-        if not any(m in js for m in _RU_API_MARKERS):
-            die(
-                f"Refusing RedUniverse Bastion build: game web at {root} has no "
-                "reduniverse.space API hosts."
-            )
-    else:
-        die(f"Unknown brand for game identity check: {brand}")
+    if any(m in js for m in _RU_API_MARKERS):
+        die(
+            f"Refusing RedGalaxy Bastion build: game web at {root} talks to "
+            "reduniverse.space APIs. Extract RedGalaxy-Setup.exe / redgalaxy-client.exe instead."
+        )
+    if not any(m in js for m in _RG_API_MARKERS):
+        die(
+            f"Refusing RedGalaxy Bastion build: game web at {root} has no "
+            "redgalaxygame.space API hosts."
+        )
 
 
 def resolve_story_files(story_src: Path) -> dict[str, Path]:
@@ -155,11 +139,9 @@ def compute_story_stamp(story: dict[str, Path]) -> str:
 
 
 def brandify_text(text: str, brand: str) -> str:
-    """Rewrite canonical RedUniverse UI chrome to the target product brand."""
-    if brand == "reduniverse":
-        return text
+    """Ensure story overlay is RedGalaxy-only (scrub accidental RU leftovers)."""
     if brand != "redgalaxy":
-        die(f"Unknown brand for story rewrite: {brand}")
+        die(f"Only brand 'redgalaxy' is supported (got '{brand}')")
     for src, dst in _BRANDIFY_PHRASES:
         text = text.replace(src, dst)
     text = _BRANDIFY_NAME_RE.sub("RedGalaxy", text)
@@ -219,10 +201,12 @@ def overlay_story(out_dir: Path, story: dict[str, Path], brand: str) -> None:
 
 
 def patch_index_html(root: Path, brand: str) -> None:
+    if brand != "redgalaxy":
+        die(f"Only brand 'redgalaxy' is supported (got '{brand}')")
     index_path = root / "index.html"
     html = index_path.read_text(encoding="utf-8")
-    product = "RedGalaxy Bastion" if brand == "redgalaxy" else "RedUniverse Bastion"
-    base = "RedGalaxy" if brand == "redgalaxy" else "RedUniverse"
+    product = "RedGalaxy Bastion"
+    base = "RedGalaxy"
     hook = f"""    <script>
       window.__RG_STORY_MODE__ = true;
       window.__BASTION_BRAND__ = "{brand}";
@@ -512,15 +496,16 @@ def apply_patches(out_dir: Path, story_src: Path, brand: str) -> None:
 
 def infer_brand_from_story_src(story_src: Path) -> str | None:
     """When host re-patches App Support from a bundled story/, detect brand from files."""
-    for name in ("i18n.js", "autopilot.js"):
+    for name in ("i18n.js", "autopilot.js", "redgalaxy_story_autopilot.js"):
         path = story_src / name
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
-        if "RedGalaxy Bastion" in text and "RedUniverse Bastion" not in text:
-            return "redgalaxy"
-        if "RedUniverse Bastion" in text:
-            return "reduniverse"
+        if "RedUniverse Bastion" in text and "RedGalaxy Bastion" not in text:
+            die(
+                f"Story source {path} is still branded RedUniverse Bastion. "
+                "This workflow is RedGalaxy Bastion only."
+            )
         if "RedGalaxy Bastion" in text:
             return "redgalaxy"
     return None
@@ -536,14 +521,14 @@ def main() -> int:
         "--brand",
         choices=VALID_BRANDS,
         default=None,
-        help="Product brand for UI strings (required for clean dual builds; inferred from story-src when omitted)",
+        help="Product brand (only redgalaxy; default/inferred redgalaxy)",
     )
     args = parser.parse_args()
 
     brand = args.brand
     story_src = args.story_src.resolve()
     if brand is None:
-        brand = infer_brand_from_story_src(story_src) or "reduniverse"
+        brand = infer_brand_from_story_src(story_src) or "redgalaxy"
         print(f"Inferred Bastion brand={brand} from story-src", file=sys.stderr)
 
     if args.in_place:

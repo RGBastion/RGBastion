@@ -2469,7 +2469,7 @@ async function applyBastionSelfUpdate() {
     });
     const downloads = path.join(app.getPath("userData"), "bastion-updates");
     fs.mkdirSync(downloads, { recursive: true });
-    const fileName = path.basename(new URL(exeUrl).pathname) || `RedUniverse-Bastion-${remote}.exe`;
+    const fileName = path.basename(new URL(exeUrl).pathname) || `RedGalaxy-Bastion-${remote}.exe`;
     const destPath = path.join(downloads, fileName);
     await downloadFile(exeUrl, destPath, (pct) => {
       setUpdateStatus({
