@@ -1,0 +1,38 @@
+[
+  {
+    "game_path": "turrets/preview/turret.webp",
+    "size": 3564,
+    "md5": "68caadb5498e",
+    "source": "artifacts/redgalaxy-native-web-redgalaxy/turrets/preview/turret.webp",
+    "rename": "exact official name",
+    "dims": [
+      100,
+      100
+    ]
+  },
+  {
+    "game_path": "turrets/turret.atlas",
+    "size": 7895,
+    "md5": "108cc45f515a",
+    "source": "artifacts/redgalaxy-native-web-redgalaxy/turrets/turret.atlas",
+    "rename": "exact official name"
+  },
+  {
+    "game_path": "turrets/turret.json",
+    "size": 7731,
+    "md5": "74ac6eba589c",
+    "source": "artifacts/redgalaxy-native-web-redgalaxy/turrets/turret.json",
+    "rename": "exact official name"
+  },
+  {
+    "game_path": "turrets/turret.webp",
+    "size": 576556,
+    "md5": "048268f722cb",
+    "source": "artifacts/redgalaxy-native-web-redgalaxy/turrets/turret.webp",
+    "rename": "exact official name",
+    "dims": [
+      2304,
+      2048
+    ]
+  }
+]

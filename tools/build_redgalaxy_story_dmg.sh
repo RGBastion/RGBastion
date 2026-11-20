@@ -69,8 +69,8 @@ build_one_brand() {
     echo "Missing Home hangar ship preview: $web_dir/shop/ship/preview/ship10.webp" >&2
     exit 1
   }
-  # Seed official pet art from tools/asset-cache/pets-official (strip tiny donor crops only).
-  node -e "require('$SCRIPT_DIR/extract_redgalaxy_web.js').ensurePetArtFallbacks(process.argv[1])" "$web_dir"
+  # Seed official pet + turret art from asset-cache (strip tiny pet donor crops only).
+  node -e "const m=require('$SCRIPT_DIR/extract_redgalaxy_web.js'); m.ensurePetArtFallbacks(process.argv[1]); m.ensureTurretArtFallbacks(process.argv[1]);" "$web_dir"
   if ! node "$SCRIPT_DIR/verify_bastion_web_assets.js" "$web_dir"; then
     echo "Refusing to package $brand DMG — critical 0.9.19 web assets missing." >&2
     exit 1

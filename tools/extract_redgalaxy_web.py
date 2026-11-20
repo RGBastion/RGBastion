@@ -958,9 +958,45 @@ def resolve_asset_cache_root() -> Path:
             (c / "wiki-maps").is_dir()
             or (c / "synthesized-0919").is_dir()
             or (c / "pets-official").is_dir()
+            or (c / "turrets-official").is_dir()
         ):
             return c
     return here / "asset-cache"
+
+
+def resolve_turrets_official_cache_dir() -> Path | None:
+    root = resolve_asset_cache_root()
+    marker = root / "turrets-official" / "turrets" / "preview" / "turret.webp"
+    return marker.parent.parent.parent if marker.is_file() else None
+
+
+def seed_turret_art_from_official_cache(out_dir: Path) -> int:
+    """Seed turrets/* (Hangar Ricerca Torretta ausiliaria + in-world sheet)."""
+    cache = resolve_turrets_official_cache_dir()
+    if cache is None:
+        return 0
+    src_root = cache / "turrets"
+    if not src_root.is_dir():
+        return 0
+    n = 0
+    for src in src_root.rglob("*"):
+        if not src.is_file() or src.name.startswith(".") or src.name == "MAPPING.json":
+            continue
+        dst = out_dir / "turrets" / src.relative_to(src_root)
+        missing = not dst.is_file() or dst.stat().st_size < 32
+        smaller = dst.is_file() and dst.stat().st_size < src.stat().st_size * 0.5
+        if not (missing or smaller):
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        n += 1
+    return n
+
+
+def ensure_turret_art_fallbacks(out_dir: Path) -> None:
+    seeded = seed_turret_art_from_official_cache(out_dir)
+    if seeded:
+        print(f"[turret] seeded {seeded} file(s) from turrets-official cache")
 
 
 def resolve_pets_official_cache_dir() -> Path | None:
@@ -1342,6 +1378,7 @@ def ensure_runtime_asset_aliases(out_dir: Path) -> None:
     ensure_shop_art_fallbacks(out_dir)
     ensure_craft_icon_fallbacks(out_dir)
     ensure_pet_art_fallbacks(out_dir)
+    ensure_turret_art_fallbacks(out_dir)
     ensure_missing_ship_atlases(out_dir)
     fix_ship_atlas_page_names(out_dir)
 

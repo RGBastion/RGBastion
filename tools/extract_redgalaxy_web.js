@@ -756,7 +756,8 @@ function resolveAssetCacheRoot() {
     if (
       fs.existsSync(path.join(c, "wiki-maps")) ||
       fs.existsSync(path.join(c, "synthesized-0919")) ||
-      fs.existsSync(path.join(c, "pets-official"))
+      fs.existsSync(path.join(c, "pets-official")) ||
+      fs.existsSync(path.join(c, "turrets-official"))
     ) {
       return c;
     }
@@ -1142,6 +1143,56 @@ function seedPetArtFromOfficialCache(outDir) {
   return n;
 }
 
+/** Official raid/support turret kit (Hangar Ricerca icon + in-world sheet). */
+function resolveTurretsOfficialCacheDir() {
+  const root = resolveAssetCacheRoot();
+  const dir = path.join(root, "turrets-official");
+  const marker = path.join(dir, "turrets", "preview", "turret.webp");
+  return fs.existsSync(marker) ? dir : null;
+}
+
+/**
+ * Seed turrets/* from tools/asset-cache/turrets-official.
+ * Hangar → Ricerca → Torretta ausiliaria loads turrets/preview/turret.webp;
+ * Aggiorna game-web sometimes omits the whole turrets/ tree.
+ */
+function seedTurretArtFromOfficialCache(outDir) {
+  const cache = resolveTurretsOfficialCacheDir();
+  if (!cache) return 0;
+  const absOut = path.resolve(outDir);
+  const srcRoot = path.join(cache, "turrets");
+  if (!fs.existsSync(srcRoot)) return 0;
+  let n = 0;
+  const walk = (srcDir, dstDir) => {
+    fs.mkdirSync(dstDir, { recursive: true });
+    for (const name of fs.readdirSync(srcDir)) {
+      if (name === "MAPPING.json" || name.startsWith(".")) continue;
+      const from = path.join(srcDir, name);
+      const to = path.join(dstDir, name);
+      if (fs.statSync(from).isDirectory()) {
+        walk(from, to);
+        continue;
+      }
+      const missing = !fs.existsSync(to) || fs.statSync(to).size < 32;
+      const smaller =
+        fs.existsSync(to) && fs.statSync(to).size < fs.statSync(from).size * 0.5;
+      if (missing || smaller) {
+        fs.copyFileSync(from, to);
+        n += 1;
+      }
+    }
+  };
+  walk(srcRoot, path.join(absOut, "turrets"));
+  return n;
+}
+
+function ensureTurretArtFallbacks(outDir) {
+  const seeded = seedTurretArtFromOfficialCache(outDir);
+  if (seeded > 0) {
+    console.log(`[turret] seeded ${seeded} file(s) from turrets-official cache`);
+  }
+}
+
 /**
  * Seed ships/pet + shop/pet from pets-official cache when present.
  * Without the cache: strip tiny provisional webps and keep JSON stubs only.
@@ -1311,6 +1362,7 @@ function ensureRuntimeAssetAliases(outDir) {
   ensureCraftIconFallbacks(outDir);
   // Pet in-world sheets (pets.rgpak encrypted) — provisional until AES key works.
   ensurePetArtFallbacks(outDir);
+  ensureTurretArtFallbacks(outDir);
 
   // Synthesize missing ship atlases from a sibling sheet (shared frame layout).
   ensureMissingShipAtlases(outDir);
@@ -1892,6 +1944,9 @@ if (require.main === module) {
 module.exports = {
   seedPetArtFromOfficialCache,
   resolvePetsOfficialCacheDir,
+  seedTurretArtFromOfficialCache,
+  resolveTurretsOfficialCacheDir,
+  ensureTurretArtFallbacks,
   main,
   despliceEmbeddedPayload,
   EMBED_SPLICE_PERIOD,

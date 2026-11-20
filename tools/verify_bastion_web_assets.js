@@ -32,6 +32,10 @@ const REQUIRED = [
   "ships/pet/pet_l5_glow.webp",
   "shop/pet/pet.webp",
   "shop/pet/preview/pet.webp",
+  // Hangar → Ricerca → Mobilità e utilità → Torretta ausiliaria
+  "turrets/preview/turret.webp",
+  "turrets/turret.webp",
+  "turrets/turret.json",
   "shop/gen/shg4.webp",
   "shop/launcher/rl3.webp",
   "equip/gen/shg4.png",

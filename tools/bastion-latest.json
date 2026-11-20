@@ -2,6 +2,6 @@
   "version": "1.0.16",
   "dmg": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.16/RedGalaxy-Bastion.dmg",
   "exe": "https://github.com/RGBastion/RGBastion/releases/download/v1.0.16/RedGalaxy-Bastion.exe",
-  "notes": "1.0.16 — Official pet art restored (ships/pet atlas 1548×1376 frame_size 172 + L5 FX + shop icons) from recovered pets kit; Aggiorna seeds tools/asset-cache/pets-official (no sball/wiki donors). Maps/NPC/SHG4 OK. RedUniverse NOT included. Mac: open DMG → drag/run RedGalaxy Bastion.app.",
+  "notes": "1.0.16 — Official pet art restored (ships/pet atlas 1548×1376 frame_size 172 + L5 FX + shop icons). Torretta ausiliaria icon restored (turrets/preview/turret.webp + sheet) via turrets-official cache for Aggiorna. Maps/NPC/SHG4 OK. RedUniverse NOT included. Mac: open DMG → drag/run RedGalaxy Bastion.app.",
   "releaseUrl": "https://github.com/RGBastion/RGBastion/releases/tag/v1.0.16"
 }
